@@ -155,12 +155,13 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 /* ===== MAPA VISUAL ===== */
 .map-canvas{position:relative;width:100%;height:520px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;background-image:linear-gradient(var(--surface2) 1px,transparent 1px),linear-gradient(90deg,var(--surface2) 1px,transparent 1px);background-size:24px 24px;touch-action:none;}
 .map-canvas.editing{border-color:var(--accent);border-style:dashed;}
-.map-node{position:absolute;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:11px;font-weight:700;text-align:center;cursor:pointer;user-select:none;padding:4px;box-shadow:0 1px 3px rgba(0,0,0,0.12);overflow:hidden;}
+.map-node{position:absolute;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:11px;font-weight:700;text-align:center;cursor:pointer;user-select:none;padding:4px;box-shadow:0 1px 3px rgba(0,0,0,0.12);overflow:hidden;box-sizing:border-box;}
 .map-node.shelf{background:var(--surface);border:1.5px solid var(--border2);}
-.map-node.shelf .nname{font-family:'DM Mono',monospace;font-size:11px;line-height:1.1;color:var(--text);}
+.map-node.shelf .nname{font-family:'DM Mono',monospace;line-height:1.1;color:var(--text);width:100%;overflow-wrap:break-word;word-break:break-word;hyphens:auto;}
 .map-node.shelf .ncount{font-size:9px;color:var(--text3);font-family:'DM Mono',monospace;margin-top:2px;}
 .map-node.shelf .nbar{position:absolute;left:0;bottom:0;height:3px;border-radius:0 0 6px 6px;}
 .map-node.aisle{background:var(--surface2);border:1px dashed var(--border2);color:var(--text2);font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:0.5px;}
+.map-node.aisle span{width:100%;overflow-wrap:break-word;word-break:break-word;line-height:1.1;}
 .map-node.editing-node{cursor:move;border-color:var(--accent);box-shadow:0 3px 10px rgba(0,0,0,0.2);z-index:10;}
 .map-node .node-del{position:absolute;top:-7px;right:-7px;width:20px;height:20px;border-radius:50%;background:var(--red-text);color:#fff;border:2px solid var(--surface);font-size:13px;line-height:1;cursor:pointer;display:none;align-items:center;justify-content:center;z-index:11;}
 .map-node.editing-node .node-del{display:flex;}
@@ -371,6 +372,35 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div id="ai-photo-preview" style="margin-bottom:16px;"></div>
     <div id="ai-result"></div>
     <button class="btn btn-block" style="margin-top:14px;" onclick="closeModal('modal-ai')">Cerrar</button>
+  </div>
+</div>
+
+<!-- EDITAR ESTANTERÍA (desde el mapa) -->
+<div class="modal-bg center" id="modal-edit-shelf">
+  <div class="modal small">
+    <h2>Editar estantería</h2>
+    <div class="msub">Cambia el nombre, el código o el número de baldas.</div>
+    <div class="fg"><label>Nombre visible</label><input type="text" class="fi" id="es-name" placeholder="Ej: Estantería pasillo A"></div>
+    <div class="fg"><label>Código (se usa en las ubicaciones)</label><input type="text" class="fi" id="es-code" placeholder="Ej: 01"></div>
+    <div class="fg"><label>Número de baldas</label><input type="number" class="fi" id="es-baldas" min="1" max="20"></div>
+    <div id="es-warn" style="display:none;font-size:12px;color:var(--text2);background:var(--surface2);border-radius:10px;padding:10px 12px;margin-bottom:12px;line-height:1.4;"></div>
+    <div class="fr">
+      <button class="btn" onclick="closeModal('modal-edit-shelf')">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveEditShelf()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- EDITAR PASILLO / ETIQUETA -->
+<div class="modal-bg center" id="modal-edit-aisle">
+  <div class="modal small">
+    <h2>Editar etiqueta</h2>
+    <div class="msub">Texto del pasillo o etiqueta.</div>
+    <div class="fg"><label>Texto</label><input type="text" class="fi" id="ea-label" placeholder="Ej: Pasillo central" onkeydown="if(event.key==='Enter')saveEditAisle()"></div>
+    <div class="fr">
+      <button class="btn" onclick="closeModal('modal-edit-aisle')">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveEditAisle()">Guardar</button>
+    </div>
   </div>
 </div>
 
@@ -787,6 +817,7 @@ function renderMap(){
     </div>`;
   });
   canvas.innerHTML=html;
+  fitMapText(canvas);
 
   if(mapEditing){
     enableDrag(canvas);
@@ -795,6 +826,26 @@ function renderMap(){
     // En modo vista, doble función: tocar estantería en modo edición la renombra
     document.getElementById('map-list-fallback').innerHTML='';
   }
+}
+
+// Ajusta el tamaño de letra de cada nodo para que el texto quepa en su recuadro
+function fitMapText(canvas){
+  canvas.querySelectorAll('.map-node').forEach(node=>{
+    const textEl = node.querySelector('.nname') || node.querySelector('span');
+    if(!textEl)return;
+    const count = node.querySelector('.ncount');
+    // Espacio vertical disponible (descontando el contador si existe y el padding)
+    const reserved = (count?count.offsetHeight+2:0) + 8;
+    const availH = node.clientHeight - reserved;
+    const availW = node.clientWidth - 8;
+    // Empezar grande e ir bajando hasta que quepa (límites entre 7 y 16 px)
+    let size = 16;
+    textEl.style.fontSize = size + 'px';
+    while(size > 7 && (textEl.scrollHeight > availH || textEl.scrollWidth > availW)){
+      size -= 0.5;
+      textEl.style.fontSize = size + 'px';
+    }
+  });
 }
 
 // Arrastrar y redimensionar nodos
@@ -824,6 +875,9 @@ function enableDrag(canvas){
         node.w=Math.max(40,Math.round(orig.w+dx));
         node.h=Math.max(36,Math.round(orig.h+dy));
         el.style.width=node.w+'px'; el.style.height=node.h+'px';
+        // Reajustar el texto al nuevo tamaño en tiempo real
+        const t=el.querySelector('.nname')||el.querySelector('span');
+        if(t){let size=16;t.style.fontSize=size+'px';const c=el.querySelector('.ncount');const rH=(c?c.offsetHeight+2:0)+8;while(size>7&&(t.scrollHeight>el.clientHeight-rH||t.scrollWidth>el.clientWidth-8)){size-=0.5;t.style.fontSize=size+'px';}}
       }
     });
     const end=e=>{
@@ -890,20 +944,84 @@ function delMapNode(type,idx){
   }
   renderMap();
 }
+let editShelfIdx=null;
 function editMapShelf(idx){
+  editShelfIdx=idx;
   const s=mapDraftShelves[idx];
-  const name=prompt('Nombre de la estantería:',s.name);
-  if(name===null)return;
-  s.name=name.trim()||s.name;
-  const b=prompt('Número de baldas:',s.baldas);
-  if(b!==null){const n=parseInt(b);if(!isNaN(n)&&n>=1&&n<=20)s.baldas=n;}
-  renderMap();
+  document.getElementById('es-name').value=s.name||'';
+  document.getElementById('es-code').value=s.id||'';
+  document.getElementById('es-baldas').value=s.baldas||5;
+  // Avisar de cuántos repuestos hay en esta estantería
+  const n=items.filter(i=>i.loc&&i.loc.startsWith(s.id+'-')).length;
+  const warn=document.getElementById('es-warn');
+  if(n>0){warn.style.display='block';warn.textContent=`Esta estantería tiene ${n} repuesto(s). Si cambias el código, se actualizarán automáticamente sus ubicaciones.`;}
+  else{warn.style.display='none';}
+  openModal('modal-edit-shelf');
+  setTimeout(()=>document.getElementById('es-name').focus(),100);
 }
+
+async function saveEditShelf(){
+  if(editShelfIdx===null)return;
+  const s=mapDraftShelves[editShelfIdx];
+  const oldId=s.id;
+  const newName=document.getElementById('es-name').value.trim();
+  const newCode=document.getElementById('es-code').value.trim();
+  const newBaldas=parseInt(document.getElementById('es-baldas').value);
+
+  if(!newName){toast('El nombre no puede estar vacío');return;}
+  if(!newCode){toast('El código no puede estar vacío');return;}
+
+  // Comprobar que el código no choque con otra estantería
+  if(newCode!==oldId && mapDraftShelves.some((o,i)=>i!==editShelfIdx && o.id===newCode)){
+    toast('Ya existe una estantería con ese código');return;
+  }
+
+  s.name=newName;
+  if(!isNaN(newBaldas)&&newBaldas>=1&&newBaldas<=20)s.baldas=newBaldas;
+
+  // Si cambia el código, actualizar los repuestos y guardarlos
+  let movedItems=[];
+  if(newCode!==oldId){
+    s.id=newCode;
+    movedItems=items.filter(i=>i.loc&&i.loc.startsWith(oldId+'-'));
+    for(const it of movedItems){
+      const balda=it.loc.split('-').slice(1).join('-'); // parte tras el código
+      it.loc=newCode+'-'+balda;
+      await dbPut(it);await cloudPut(it);
+    }
+  }
+
+  // Persistir las estanterías de inmediato (nombre/código/baldas), no solo en el borrador,
+  // para que el cambio de código quede sincronizado con los repuestos ya reubicados.
+  shelves=JSON.parse(JSON.stringify(mapDraftShelves));
+  await cfgPut('shelves',shelves);await cloudCfgPut('shelves',shelves);
+
+  closeModal('modal-edit-shelf');
+  editShelfIdx=null;
+  renderMap();
+  if(movedItems.length){
+    items=await dbGetAll();
+    renderAll();
+    toast(`✓ Estantería actualizada (${movedItems.length} repuesto(s) reubicados)`);
+  }else{
+    toast('✓ Estantería actualizada');
+  }
+}
+let editAisleIdx=null;
 function editMapAisle(idx){
+  editAisleIdx=idx;
   const a=mapDraftAisles[idx];
-  const label=prompt('Texto de la etiqueta/pasillo:',a.label);
-  if(label===null)return;
-  a.label=label.trim()||a.label;
+  document.getElementById('ea-label').value=a.label||'';
+  openModal('modal-edit-aisle');
+  setTimeout(()=>document.getElementById('ea-label').focus(),100);
+}
+function saveEditAisle(){
+  if(editAisleIdx===null)return;
+  const a=mapDraftAisles[editAisleIdx];
+  const label=document.getElementById('ea-label').value.trim();
+  if(label)a.label=label;
+  closeModal('modal-edit-aisle');
+  editAisleIdx=null;
   renderMap();
 }
 function filterByShelf(sid){cameFromShelf=true;document.getElementById('search-input').value=sid+'-';currentCat='';showPage('buscar');renderCats();renderItems();}
