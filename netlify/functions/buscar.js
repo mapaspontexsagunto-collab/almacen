@@ -53,7 +53,13 @@ exports.handler = async (event) => {
 
     const data = await res.json();
 
+    // --- DIAGNÓSTICO: registrar la respuesta de Google en el log de Netlify ---
+    console.log('GEMINI status:', res.status);
+    console.log('GEMINI respuesta:', JSON.stringify(data).slice(0, 800));
+
     if (!res.ok) {
+      const msg = (data && data.error && data.error.message) ? data.error.message : 'desconocido';
+      console.log('GEMINI ERROR:', msg);
       return {
         statusCode: 502,
         body: JSON.stringify({ error: 'Error de Gemini', detail: data })
@@ -68,12 +74,15 @@ exports.handler = async (event) => {
         data.candidates[0].content.parts &&
         data.candidates[0].content.parts.map(p => p.text || '').join('')) || '';
 
+    console.log('GEMINI texto extraído (primeros 200):', text.slice(0, 200));
+
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text })
     };
   } catch (err) {
+    console.log('FALLO al llamar a Gemini:', String(err));
     return {
       statusCode: 500,
       body: JSON.stringify({ error: 'Fallo al llamar a Gemini', detail: String(err) })
