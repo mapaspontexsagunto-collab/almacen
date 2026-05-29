@@ -36,6 +36,20 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .page-head-row{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;}
 .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:20px;}
 .stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;}
+.stat-btn{cursor:pointer;transition:transform .08s,box-shadow .12s,border-color .12s;-webkit-tap-highlight-color:transparent;}
+.stat-btn:active{transform:scale(0.97);}
+.stat-btn.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent) inset;}
+/* Estanterías plegables en buscar */
+.shelf-groups{display:flex;flex-direction:column;gap:10px;}
+.shelf-group{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;}
+.shelf-group-head{display:flex;align-items:center;gap:8px;padding:15px 16px;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;}
+.shelf-group-head:active{background:var(--surface2);}
+.shelf-group-head .shelf-count{font-size:12px;color:var(--text3);font-family:'DM Mono',monospace;margin-right:4px;}
+.shelf-group-head .chev{transition:transform .2s;color:var(--text3);flex-shrink:0;}
+.shelf-group-head.open .chev{transform:rotate(180deg);}
+.shelf-group-head.open{border-bottom:1px solid var(--border);}
+.shelf-group-body{padding:10px;}
+.shelf-group-body .items-grid{margin:0;}
 .stat .l{font-size:11px;font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:0.5px;color:var(--text3);margin-bottom:4px;}
 .stat .v{font-size:28px;font-weight:700;letter-spacing:-1px;}
 .stat .v.warn{color:#d97706;}.stat .v.danger{color:#dc2626;}
@@ -174,10 +188,10 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div class="stats">
       <div class="stat"><div class="l">Referencias</div><div class="v" id="s-total">0</div></div>
       <div class="stat"><div class="l">Ubicaciones usadas</div><div class="v" id="s-locs">0</div></div>
-      <div class="stat"><div class="l">Stock bajo</div><div class="v warn" id="s-low">0</div></div>
-      <div class="stat"><div class="l">Sin stock</div><div class="v danger" id="s-out">0</div></div>
+      <div class="stat stat-btn" id="stat-low" onclick="setAlertFilter('low')"><div class="l">Stock bajo</div><div class="v warn" id="s-low">0</div></div>
+      <div class="stat stat-btn" id="stat-out" onclick="setAlertFilter('out')"><div class="l">Sin stock</div><div class="v danger" id="s-out">0</div></div>
     </div>
-    <div class="card"><div class="card-h">Alertas de stock</div><div id="alerts-list"></div></div>
+    <div class="card"><div class="card-h" id="alerts-title">Alertas de stock</div><div id="alerts-list"></div></div>
   </div>
 
   <div class="page" id="page-buscar">
@@ -500,19 +514,57 @@ function showPage(id){
   document.getElementById('page-'+id).classList.add('active');
   const nav=document.getElementById('nav-'+id);if(nav)nav.classList.add('active');
   if(id==='inicio')updateStats();
-  if(id==='buscar'){renderCats();renderItems();}
+  if(id==='buscar'){
+    if(!cameFromShelf){document.getElementById('search-input').value='';currentCat='';expandedShelf=null;}
+    cameFromShelf=false;
+    renderCats();renderItems();
+  }
   if(id==='mapa')renderMap();
   if(id==='ajustes'){renderCatManage();renderShelfSummary();setCloudStatus(cloudOK);}
   window.scrollTo(0,0);
 }
+
+let alertFilter=''; // '', 'low' o 'out'
 
 function updateStats(){
   document.getElementById('s-total').textContent=items.length;
   document.getElementById('s-locs').textContent=new Set(items.map(i=>i.loc)).size;
   document.getElementById('s-low').textContent=items.filter(i=>i.stock>0&&i.stock<=i.min).length;
   document.getElementById('s-out').textContent=items.filter(i=>i.stock===0).length;
-  const alerts=items.filter(i=>i.stock<=i.min);
-  document.getElementById('alerts-list').innerHTML=alerts.length?alerts.map(i=>`<div class="detail-row" style="padding:13px 16px;cursor:pointer;" onclick="openDetail('${i.id}')"><div><strong>${esc(i.name)}</strong><br><span style="font-size:12px;color:var(--text2);">${i.loc}</span></div><div>${stockBadge(i)}</div></div>`).join(''):'<div class="empty"><p>✓ Todo el stock está en niveles correctos</p></div>';
+  renderAlerts();
+}
+
+function setAlertFilter(f){
+  // Si se pulsa el que ya está activo, se desactiva (vuelve a mostrar todo)
+  alertFilter = (alertFilter===f) ? '' : f;
+  renderAlerts();
+}
+
+function renderAlerts(){
+  // Resaltar el botón activo
+  document.getElementById('stat-low').classList.toggle('sel',alertFilter==='low');
+  document.getElementById('stat-out').classList.toggle('sel',alertFilter==='out');
+
+  let list, titulo;
+  if(alertFilter==='low'){
+    list=items.filter(i=>i.stock>0&&i.stock<=i.min);
+    titulo='Material con stock bajo';
+  }else if(alertFilter==='out'){
+    list=items.filter(i=>i.stock===0);
+    titulo='Material sin stock';
+  }else{
+    list=items.filter(i=>i.stock<=i.min);
+    titulo='Alertas de stock';
+  }
+  document.getElementById('alerts-title').textContent=titulo;
+
+  const vacioMsg = alertFilter==='low' ? 'No hay material con stock bajo'
+    : alertFilter==='out' ? 'No hay material sin stock'
+    : '✓ Todo el stock está en niveles correctos';
+
+  document.getElementById('alerts-list').innerHTML = list.length
+    ? list.map(i=>`<div class="detail-row" style="padding:13px 16px;cursor:pointer;" onclick="openDetail('${i.id}')"><div><strong>${esc(i.name)}</strong><br><span style="font-size:12px;color:var(--text2);">${i.loc}</span></div><div>${stockBadge(i)}</div></div>`).join('')
+    : `<div class="empty"><p>${vacioMsg}</p></div>`;
 }
 
 function renderCats(){
@@ -546,15 +598,75 @@ function updateBaldaOptions(){
   document.getElementById('f-balda').innerHTML=html;
 }
 
+let expandedShelf=null; // id de la estantería desplegada
+let cameFromShelf=false; // marca si se llega a buscar desde el mapa
+
 function setView(v){currentView=v;document.getElementById('view-gallery').classList.toggle('active',v==='gallery');document.getElementById('view-list').classList.toggle('active',v==='list');renderItems();}
 function getFiltered(){const q=(document.getElementById('search-input')||{}).value||'';const ql=q.toLowerCase();return items.filter(i=>{const mc=!currentCat||i.cat===currentCat;const mq=!ql||[i.name,i.ref,i.brand,i.notes,i.machine,i.loc].some(v=>(v||'').toLowerCase().includes(ql));return mc&&mq;});}
+
+function toggleShelfGroup(sid){
+  expandedShelf = (expandedShelf===sid) ? null : sid;
+  renderItems();
+}
+
+function itemCardHTML(i){
+  return `<div class="item-card" onclick="openDetail('${i.id}')"><div class="item-photo">${i.photo?`<img src="${i.photo}" loading="lazy">`:`<div class="ph"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.5"/><path d="M21 15l-5-5L5 21" stroke-width="1.5"/></svg></div>`}</div><div class="item-body"><div class="item-name">${esc(i.name)}</div><div class="item-meta"><span class="badge badge-loc">${i.loc}</span>${stockBadge(i)}</div></div></div>`;
+}
+function itemRowHTML(i){
+  return `<div class="detail-row" style="padding:13px 16px;cursor:pointer;align-items:center;" onclick="openDetail('${i.id}')"><div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;"><div style="width:44px;height:44px;border-radius:8px;background:var(--surface2);overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;">${i.photo?`<img src="${i.photo}" style="width:100%;height:100%;object-fit:cover;">`:`<svg width="20" height="20" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>`}</div><div style="min-width:0;"><strong style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(i.name)}</strong><span style="font-size:12px;color:var(--text2);">${esc(i.cat)} · ${i.loc}</span></div></div>${stockBadge(i)}</div>`;
+}
+
 function renderItems(){
-  const f=getFiltered();const c=document.getElementById('items-container');
+  const c=document.getElementById('items-container');
+  const q=(document.getElementById('search-input')||{}).value||'';
+  const hayBusqueda = q.trim()!=='' || currentCat!=='';
+
+  // MODO ESTANTERÍAS: sin búsqueda ni categoría activa → mostrar estanterías plegables
+  if(!hayBusqueda){
+    let html='<div class="shelf-groups">';
+    shelves.forEach(s=>{
+      const its=items.filter(i=>i.loc&&i.loc.startsWith(s.id+'-'));
+      const abierta = expandedShelf===s.id;
+      // Color del contador según estado de stock
+      let dot='';
+      if(its.length){const cls=its.some(i=>i.stock===0)?'out':its.some(i=>i.stock>0&&i.stock<=i.min)?'low':'occ';dot=`<span class="balda-dot ${cls}" style="margin-right:6px;"></span>`;}
+      html+=`<div class="shelf-group">
+        <div class="shelf-group-head ${abierta?'open':''}" onclick="toggleShelfGroup('${s.id}')">
+          <div style="display:flex;align-items:center;flex:1;">${dot}<strong>${esc(s.name)}</strong></div>
+          <span class="shelf-count">${its.length} ref.</span>
+          <svg class="chev" width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>`;
+      if(abierta){
+        if(its.length){
+          html+='<div class="shelf-group-body">'+(currentView==='gallery'
+            ? '<div class="items-grid">'+its.map(itemCardHTML).join('')+'</div>'
+            : its.map(itemRowHTML).join(''))+'</div>';
+        }else{
+          html+='<div class="shelf-group-body"><div class="empty" style="padding:20px;"><p>Estantería vacía</p></div></div>';
+        }
+      }
+      html+='</div>';
+    });
+    html+='</div>';
+    // Material sin ubicación válida
+    const huérfanos=items.filter(i=>!i.loc||!shelves.some(s=>i.loc.startsWith(s.id+'-')));
+    if(huérfanos.length){
+      const abierta=expandedShelf==='__none__';
+      html+=`<div class="shelf-group"><div class="shelf-group-head ${abierta?'open':''}" onclick="toggleShelfGroup('__none__')"><div style="flex:1;"><strong>Sin ubicación</strong></div><span class="shelf-count">${huérfanos.length} ref.</span><svg class="chev" width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>`;
+      if(abierta)html+='<div class="shelf-group-body">'+(currentView==='gallery'?'<div class="items-grid">'+huérfanos.map(itemCardHTML).join('')+'</div>':huérfanos.map(itemRowHTML).join(''))+'</div>';
+      html+='</div>';
+    }
+    c.innerHTML=html;
+    return;
+  }
+
+  // MODO BÚSQUEDA: con texto o categoría → lista plana como antes
+  const f=getFiltered();
   if(!f.length){c.innerHTML='<div class="empty"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" stroke-width="1.8"/><path d="m20 20-3-3" stroke-width="1.8" stroke-linecap="round"/></svg><p>No hay material que coincida</p></div>';return;}
   if(currentView==='gallery'){
-    c.innerHTML='<div class="items-grid">'+f.map(i=>`<div class="item-card" onclick="openDetail('${i.id}')"><div class="item-photo">${i.photo?`<img src="${i.photo}" loading="lazy">`:`<div class="ph"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.5"/><path d="M21 15l-5-5L5 21" stroke-width="1.5"/></svg></div>`}</div><div class="item-body"><div class="item-name">${esc(i.name)}</div><div class="item-meta"><span class="badge badge-loc">${i.loc}</span>${stockBadge(i)}</div></div></div>`).join('')+'</div>';
+    c.innerHTML='<div class="items-grid">'+f.map(itemCardHTML).join('')+'</div>';
   }else{
-    c.innerHTML='<div class="card">'+f.map(i=>`<div class="detail-row" style="padding:13px 16px;cursor:pointer;align-items:center;" onclick="openDetail('${i.id}')"><div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;"><div style="width:44px;height:44px;border-radius:8px;background:var(--surface2);overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;">${i.photo?`<img src="${i.photo}" style="width:100%;height:100%;object-fit:cover;">`:`<svg width="20" height="20" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>`}</div><div style="min-width:0;"><strong style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(i.name)}</strong><span style="font-size:12px;color:var(--text2);">${esc(i.cat)} · ${i.loc}</span></div></div>${stockBadge(i)}</div>`).join('')+'</div>';
+    c.innerHTML='<div class="card">'+f.map(itemRowHTML).join('')+'</div>';
   }
 }
 
@@ -794,7 +906,7 @@ function editMapAisle(idx){
   a.label=label.trim()||a.label;
   renderMap();
 }
-function filterByShelf(sid){document.getElementById('search-input').value=sid+'-';currentCat='';showPage('buscar');renderCats();renderItems();}
+function filterByShelf(sid){cameFromShelf=true;document.getElementById('search-input').value=sid+'-';currentCat='';showPage('buscar');renderCats();renderItems();}
 
 // ===== GESTOR DE ESTANTERÍAS =====
 function openShelfManager(){
