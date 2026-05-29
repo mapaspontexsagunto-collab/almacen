@@ -1,16 +1,19 @@
 // Función intermediaria segura: recibe la imagen desde la app,
-// llama a Google Gemini con la clave secreta (guardada en Netlify),
+// llama a Groq (Llama con visión) usando la clave secreta guardada en Netlify,
 // y devuelve el texto de respuesta. La clave NUNCA llega al navegador.
+//
+// Groq es gratuito y sin tarjeta. La clave empieza por "gsk_".
+// Se guarda en Netlify como variable GEMINI_API_KEY (reutilizamos el nombre
+// para no tener que cambiar nada más).
 
 exports.handler = async (event) => {
-  // Solo aceptar POST
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, body: 'Method Not Allowed' };
   }
 
   const API_KEY = process.env.GEMINI_API_KEY;
   if (!API_KEY) {
-    return { statusCode: 500, body: JSON.stringify({ error: 'Falta GEMINI_API_KEY' }) };
+    return { statusCode: 500, body: JSON.stringify({ error: 'Falta la clave (GEMINI_API_KEY)' }) };
   }
 
   let body;
@@ -25,20 +28,27 @@ exports.handler = async (event) => {
     return { statusCode: 400, body: JSON.stringify({ error: 'Faltan datos (image/prompt)' }) };
   }
 
-  // Modelo gratuito y rápido con visión
-  const MODEL = 'gemini-2.5-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
+  // Modelo de Groq con visión (ve imágenes). Rápido y gratuito.
+  const MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
+  const url = 'https://api.groq.com/openai/v1/chat/completions';
 
+  // Groq usa el formato compatible con OpenAI: la imagen va como data URL
   const payload = {
-    contents: [
+    model: MODEL,
+    temperature: 0.2,
+    max_tokens: 1000,
+    messages: [
       {
-        parts: [
-          { text: prompt },
-          { inline_data: { mime_type: 'image/jpeg', data: image } }
+        role: 'user',
+        content: [
+          { type: 'text', text: prompt },
+          {
+            type: 'image_url',
+            image_url: { url: 'data:image/jpeg;base64,' + image }
+          }
         ]
       }
-    ],
-    generationConfig: { temperature: 0.2, maxOutputTokens: 1000 }
+    ]
   };
 
   try {
@@ -46,35 +56,34 @@ exports.handler = async (event) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-goog-api-key': API_KEY
+        'Authorization': 'Bearer ' + API_KEY
       },
       body: JSON.stringify(payload)
     });
 
     const data = await res.json();
 
-    // --- DIAGNÓSTICO: registrar la respuesta de Google en el log de Netlify ---
-    console.log('GEMINI status:', res.status);
-    console.log('GEMINI respuesta:', JSON.stringify(data).slice(0, 800));
+    // --- DIAGNÓSTICO: se ve en el log de Netlify ---
+    console.log('GROQ status:', res.status);
+    console.log('GROQ respuesta:', JSON.stringify(data).slice(0, 800));
 
     if (!res.ok) {
       const msg = (data && data.error && data.error.message) ? data.error.message : 'desconocido';
-      console.log('GEMINI ERROR:', msg);
+      console.log('GROQ ERROR:', msg);
       return {
         statusCode: 502,
-        body: JSON.stringify({ error: 'Error de Gemini', detail: data })
+        body: JSON.stringify({ error: 'Error de Groq', detail: data })
       };
     }
 
-    // Extraer el texto de la respuesta de Gemini
+    // Extraer el texto de la respuesta (formato OpenAI)
     const text =
-      (data.candidates &&
-        data.candidates[0] &&
-        data.candidates[0].content &&
-        data.candidates[0].content.parts &&
-        data.candidates[0].content.parts.map(p => p.text || '').join('')) || '';
+      (data.choices &&
+        data.choices[0] &&
+        data.choices[0].message &&
+        data.choices[0].message.content) || '';
 
-    console.log('GEMINI texto extraído (primeros 200):', text.slice(0, 200));
+    console.log('GROQ texto extraído (primeros 200):', text.slice(0, 200));
 
     return {
       statusCode: 200,
@@ -82,10 +91,10 @@ exports.handler = async (event) => {
       body: JSON.stringify({ text })
     };
   } catch (err) {
-    console.log('FALLO al llamar a Gemini:', String(err));
+    console.log('FALLO al llamar a Groq:', String(err));
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: 'Fallo al llamar a Gemini', detail: String(err) })
+      body: JSON.stringify({ error: 'Fallo al llamar a Groq', detail: String(err) })
     };
   }
 };
