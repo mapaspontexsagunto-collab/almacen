@@ -162,6 +162,52 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .map-node.shelf .nbar{position:absolute;left:0;bottom:0;height:3px;border-radius:0 0 6px 6px;}
 .map-node.aisle{background:var(--surface2);border:1px dashed var(--border2);color:var(--text2);font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:0.5px;}
 .map-node.aisle span{width:100%;overflow-wrap:break-word;word-break:break-word;line-height:1.1;}
+/* ===== ETIQUETAS QR ===== */
+.label-tabs{display:flex;gap:8px;margin-bottom:14px;}
+.label-tab{flex:1;padding:11px;border:1px solid var(--border);background:var(--surface);border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;color:var(--text2);display:flex;align-items:center;justify-content:center;gap:6px;}
+.label-tab.active{background:var(--text);color:var(--surface);border-color:var(--text);}
+.lt-badge{background:var(--red-text);color:#fff;border-radius:10px;font-size:11px;padding:1px 7px;min-width:18px;}
+.label-tab.active .lt-badge{background:rgba(255,255,255,0.25);}
+.label-actions{display:flex;gap:8px;margin-bottom:12px;align-items:center;}
+.label-row{display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:8px;cursor:pointer;-webkit-tap-highlight-color:transparent;}
+.label-row.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent) inset;}
+.label-row .lcheck{width:22px;height:22px;border-radius:6px;border:2px solid var(--border2);flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+.label-row.sel .lcheck{background:var(--accent);border-color:var(--accent);color:var(--accent-text);}
+.label-row .linfo{flex:1;min-width:0;}
+.label-row .linfo strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.label-row .linfo span{font-size:12px;color:var(--text2);}
+.label-row .lprinted{font-size:10px;color:var(--text3);background:var(--surface2);border-radius:6px;padding:2px 6px;flex-shrink:0;}
+
+/* Contenedor de impresión: oculto en pantalla, visible solo al imprimir */
+#print-area{display:none;}
+@media print{
+  /* Ocultar TODA la app al imprimir */
+  body > *{display:none !important;}
+  #print-area{display:block !important;}
+  @page{size:A4;margin:8mm 5mm;}
+  html,body{background:#fff !important;margin:0;padding:0;}
+  .labels-sheet{display:flex;flex-wrap:wrap;align-content:flex-start;}
+  .print-label{
+    width:70mm;height:37mm;box-sizing:border-box;
+    padding:2.5mm;display:flex;gap:2.5mm;align-items:center;
+    overflow:hidden;page-break-inside:avoid;break-inside:avoid;
+  }
+  .print-label .pl-qr{width:30mm;height:30mm;flex-shrink:0;}
+  .print-label .pl-qr img,.print-label .pl-qr canvas{width:30mm !important;height:30mm !important;}
+  .print-label .pl-text{flex:1;min-width:0;font-family:Arial,sans-serif;color:#000;}
+  .print-label .pl-name{font-size:9pt;font-weight:bold;line-height:1.1;margin-bottom:1mm;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+  .print-label .pl-ref{font-size:7.5pt;line-height:1.2;color:#333;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .print-label .pl-loc{font-size:11pt;font-weight:bold;line-height:1.1;margin-top:1mm;}
+  .print-label.empty-label{visibility:hidden;}
+}
+/* Rejilla visual para elegir posición inicial */
+.start-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:8px 0 14px;}
+.start-cell{aspect-ratio:70/37;border:1.5px solid var(--border2);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;color:var(--text2);cursor:pointer;font-family:'DM Mono',monospace;-webkit-tap-highlight-color:transparent;}
+.start-cell.before{background:repeating-linear-gradient(45deg,var(--surface2),var(--surface2) 4px,transparent 4px,transparent 8px);color:var(--text3);}
+.start-cell.start{background:var(--accent);color:var(--accent-text);border-color:var(--accent);}
+.start-cell.after{background:var(--surface);}
 .map-node.editing-node{cursor:move;border-color:var(--accent);box-shadow:0 3px 10px rgba(0,0,0,0.2);z-index:10;}
 .map-node .node-del{position:absolute;top:-7px;right:-7px;width:20px;height:20px;border-radius:50%;background:var(--red-text);color:#fff;border:2px solid var(--surface);font-size:13px;line-height:1;cursor:pointer;display:none;align-items:center;justify-content:center;z-index:11;}
 .map-node.editing-node .node-del{display:flex;}
@@ -250,6 +296,15 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
         </button>
       </div>
     </div>
+    <div class="card"><div class="card-h">Etiquetas QR</div>
+      <div style="padding:16px;">
+        <p style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.5;">Imprime etiquetas adhesivas con el QR, nombre, referencia y ubicación de cada material, en hojas A4 de pegatinas.</p>
+        <button class="btn btn-block btn-primary" onclick="openLabels()">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z" stroke-width="1.7" stroke-linejoin="round"/></svg>
+          Imprimir etiquetas
+        </button>
+      </div>
+    </div>
     <div class="card"><div class="card-h"><span>Estanterías</span><button class="btn btn-sm" onclick="openShelfManager()">Gestionar</button></div>
       <div style="padding:16px;" id="shelf-summary"></div>
     </div>
@@ -263,6 +318,30 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <p style="text-align:center;font-size:11px;color:var(--text3);margin-top:20px;">Almacén Eléctrico · funciona sin internet</p>
   </div>
 
+  <div class="page" id="page-labels">
+    <div class="page-head-row">
+      <div><div class="page-title">Etiquetas QR</div><div class="page-sub" id="labels-sub">Selecciona y imprime</div></div>
+      <button class="btn btn-sm" onclick="showPage('ajustes')">← Volver</button>
+    </div>
+    <div class="label-tabs">
+      <button class="label-tab active" id="ltab-all" onclick="setLabelTab('all')">Todas</button>
+      <button class="label-tab" id="ltab-pending" onclick="setLabelTab('pending')">Sin imprimir <span class="lt-badge" id="pending-count">0</span></button>
+    </div>
+    <div class="label-actions">
+      <button class="btn btn-sm" onclick="labelSelectAll(true)">Seleccionar todas</button>
+      <button class="btn btn-sm" onclick="labelSelectAll(false)">Quitar selección</button>
+      <span style="flex:1;"></span>
+      <span style="font-size:13px;color:var(--text2);align-self:center;"><span id="label-sel-count">0</span> sel.</span>
+    </div>
+    <div id="labels-list"></div>
+    <div style="position:sticky;bottom:80px;padding-top:12px;">
+      <button class="btn btn-block btn-primary" onclick="printLabels()">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        Imprimir seleccionadas (<span id="print-count">0</span>)
+      </button>
+    </div>
+  </div>
+
   <div class="bottomnav">
     <button class="navbtn active" id="nav-inicio" onclick="showPage('inicio')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Inicio</span></button>
     <button class="navbtn" id="nav-buscar" onclick="showPage('buscar')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" stroke-width="1.8"/><path d="m20 20-3-3" stroke-width="1.8" stroke-linecap="round"/></svg><span>Buscar</span></button>
@@ -271,6 +350,9 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <button class="navbtn" id="nav-ajustes" onclick="showPage('ajustes')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" stroke-width="1.8"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z" stroke-width="1.8"/></svg><span>Ajustes</span></button>
   </div>
 </div>
+
+<!-- Contenedor de impresión de etiquetas (oculto salvo al imprimir) -->
+<div id="print-area"><div class="labels-sheet" id="labels-sheet"></div></div>
 
 <div class="modal-bg" id="modal-detail">
   <div class="modal">
@@ -372,6 +454,20 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div id="ai-photo-preview" style="margin-bottom:16px;"></div>
     <div id="ai-result"></div>
     <button class="btn btn-block" style="margin-top:14px;" onclick="closeModal('modal-ai')">Cerrar</button>
+  </div>
+</div>
+
+<!-- POSICIÓN INICIAL DE IMPRESIÓN -->
+<div class="modal-bg center" id="modal-start-pos">
+  <div class="modal small">
+    <h2>¿Desde qué etiqueta?</h2>
+    <div class="msub">Si la hoja ya tiene pegatinas usadas, elige la primera posición libre. Se imprimirá a partir de ahí (la hoja tiene 24 etiquetas: 3 columnas × 8 filas).</div>
+    <div id="start-grid" class="start-grid"></div>
+    <div style="font-size:13px;color:var(--text2);text-align:center;margin:4px 0 14px;">Empezar en la posición <strong id="start-pos-num">1</strong></div>
+    <div class="fr">
+      <button class="btn" onclick="closeModal('modal-start-pos')">Cancelar</button>
+      <button class="btn btn-primary" onclick="doPrintLabels()">Imprimir</button>
+    </div>
   </div>
 </div>
 
@@ -502,6 +598,7 @@ async function init(){
   categories=await cfgGet('categories')||[];
   shelves=await cfgGet('shelves');
   aisles=await cfgGet('aisles')||[];
+  await loadPrintedIds();
   if(!shelves||!shelves.length){shelves=defaultShelves();}
   items=await dbGetAll();
   renderAll();
@@ -550,6 +647,7 @@ function showPage(id){
     renderCats();renderItems();
   }
   if(id==='mapa')renderMap();
+  if(id==='labels')renderLabels();
   if(id==='ajustes'){renderCatManage();renderShelfSummary();setCloudStatus(cloudOK);}
   window.scrollTo(0,0);
 }
@@ -1073,6 +1171,132 @@ async function saveShelves(){
   closeModal('modal-shelves');
   renderAll();
   toast('✓ Estanterías actualizadas');
+}
+
+// ===== ETIQUETAS QR =====
+let labelTab='all';            // 'all' o 'pending'
+let labelSel=new Set();        // ids seleccionados
+let printedIds=new Set();      // ids ya impresos (estado local, persistente)
+
+async function loadPrintedIds(){
+  const arr=await cfgGet('printedIds');
+  printedIds=new Set(arr||[]);
+}
+async function savePrintedIds(){
+  await cfgPut('printedIds',[...printedIds]);
+}
+
+function openLabels(){
+  labelTab='all';
+  labelSel=new Set();
+  showPage('labels');
+}
+
+function labelList(){
+  return labelTab==='pending' ? items.filter(i=>!printedIds.has(i.id)) : items.slice();
+}
+
+function setLabelTab(t){
+  labelTab=t;
+  document.getElementById('ltab-all').classList.toggle('active',t==='all');
+  document.getElementById('ltab-pending').classList.toggle('active',t==='pending');
+  labelSel=new Set();
+  renderLabels();
+}
+
+function toggleLabel(id){
+  if(labelSel.has(id))labelSel.delete(id);else labelSel.add(id);
+  renderLabels();
+}
+
+function labelSelectAll(on){
+  if(on)labelList().forEach(i=>labelSel.add(i.id));
+  else labelSel=new Set();
+  renderLabels();
+}
+
+function renderLabels(){
+  const pend=items.filter(i=>!printedIds.has(i.id)).length;
+  document.getElementById('pending-count').textContent=pend;
+  const list=labelList();
+  document.getElementById('labels-sub').textContent=labelTab==='pending'?pend+' sin imprimir':items.length+' referencias';
+  document.getElementById('label-sel-count').textContent=labelSel.size;
+  document.getElementById('print-count').textContent=labelSel.size;
+
+  if(!list.length){
+    document.getElementById('labels-list').innerHTML='<div class="empty"><p>'+(labelTab==='pending'?'No hay etiquetas pendientes. Todas se han impreso al menos una vez.':'No hay material en el inventario.')+'</p></div>';
+    return;
+  }
+  document.getElementById('labels-list').innerHTML=list.map(i=>{
+    const sel=labelSel.has(i.id);
+    const printed=printedIds.has(i.id);
+    return `<div class="label-row ${sel?'sel':''}" onclick="toggleLabel('${i.id}')">
+      <div class="lcheck">${sel?'<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>':''}</div>
+      <div class="linfo"><strong>${esc(i.name)}</strong><span>${i.ref?esc(i.ref)+' · ':''}${i.loc}</span></div>
+      ${printed?'<span class="lprinted">impresa</span>':''}
+    </div>`;
+  }).join('');
+}
+
+let startPos=1; // posición inicial elegida (1-24)
+
+function printLabels(){
+  if(!labelSel.size){toast('Selecciona al menos una etiqueta');return;}
+  startPos=1;
+  renderStartGrid();
+  openModal('modal-start-pos');
+}
+
+function renderStartGrid(){
+  const grid=document.getElementById('start-grid');
+  let html='';
+  for(let n=1;n<=24;n++){
+    const cls = n<startPos ? 'before' : (n===startPos ? 'start' : 'after');
+    html+=`<div class="start-cell ${cls}" onclick="setStartPos(${n})">${n}</div>`;
+  }
+  grid.innerHTML=html;
+  document.getElementById('start-pos-num').textContent=startPos;
+}
+
+function setStartPos(n){startPos=n;renderStartGrid();}
+
+async function doPrintLabels(){
+  const sel=items.filter(i=>labelSel.has(i.id));
+  if(!sel.length){closeModal('modal-start-pos');return;}
+  const sheet=document.getElementById('labels-sheet');
+  sheet.innerHTML='';
+
+  // Huecos en blanco antes de la posición inicial
+  for(let k=1;k<startPos;k++){
+    const empty=document.createElement('div');
+    empty.className='print-label empty-label';
+    sheet.appendChild(empty);
+  }
+
+  // Etiquetas reales con su QR
+  for(const i of sel){
+    const label=document.createElement('div');
+    label.className='print-label';
+    const qrBox=document.createElement('div');
+    qrBox.className='pl-qr';
+    new QRCode(qrBox,{text:'ALMACEN:'+i.id,width:120,height:120,colorDark:'#000000',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel.M});
+    const txt=document.createElement('div');
+    txt.className='pl-text';
+    txt.innerHTML=`<div class="pl-name">${esc(i.name)}</div>${i.ref?`<div class="pl-ref">Ref: ${esc(i.ref)}</div>`:''}<div class="pl-loc">${esc(i.loc)}</div>`;
+    label.appendChild(qrBox);
+    label.appendChild(txt);
+    sheet.appendChild(label);
+  }
+
+  closeModal('modal-start-pos');
+  toast('Preparando '+sel.length+' etiqueta(s)...');
+  setTimeout(async ()=>{
+    window.print();
+    sel.forEach(i=>printedIds.add(i.id));
+    await savePrintedIds();
+    labelSel=new Set();
+    renderLabels();
+  },400);
 }
 
 function showQR(){if(!currentItem)return;document.getElementById('qr-item-name').textContent=currentItem.name+' · '+currentItem.loc;const box=document.getElementById('qr-canvas');box.innerHTML='';new QRCode(box,{text:'ALMACEN:'+currentItem.id,width:200,height:200,colorDark:'#1a1916',colorLight:'#ffffff'});openModal('modal-qr');}
