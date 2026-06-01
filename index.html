@@ -72,6 +72,15 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .item-meta{display:flex;flex-wrap:wrap;gap:5px;}
 .badge{display:inline-flex;align-items:center;font-size:11px;font-weight:500;padding:2px 7px;border-radius:99px;font-family:'DM Mono',monospace;}
 .badge-loc{background:var(--blue-bg);color:var(--blue-text);}
+.badge-cat2{background:var(--surface2);color:var(--text2);border:1px solid var(--border);}
+.loc-box{display:flex;align-items:center;gap:12px;background:var(--blue-bg);color:var(--blue-text);border-radius:12px;padding:14px 16px;margin-bottom:14px;}
+.loc-box svg{flex-shrink:0;}
+.loc-box .loc-label{font-size:11px;text-transform:uppercase;letter-spacing:0.5px;opacity:0.7;font-weight:600;}
+.loc-box .loc-value{font-size:17px;font-weight:700;font-family:'DM Mono',monospace;margin-top:2px;}
+.cats-chips{display:flex;flex-wrap:wrap;gap:7px;}
+.cat-chip{padding:7px 13px;border-radius:20px;border:1.5px solid var(--border2);background:var(--surface);font-size:13px;font-weight:600;color:var(--text2);cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;}
+.cat-chip.on{background:var(--accent);color:var(--accent-text);border-color:var(--accent);}
+.cat-chip.disabled{opacity:0.4;pointer-events:none;}
 .badge-cat{background:var(--surface2);color:var(--text2);}
 .badge-ok{background:var(--green-bg);color:var(--green-text);}
 .badge-low{background:var(--amber-bg);color:var(--amber-text);}
@@ -388,8 +397,9 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div class="fg"><label class="fl">Foto</label><div id="photo-zone"></div>
       <input type="file" id="photo-file" accept="image/*" capture="environment" style="display:none;" onchange="handlePhoto(event)"></div>
     <div class="fg"><label class="fl">Nombre *</label><input type="text" class="fi" id="f-name" placeholder="Ej: Relé térmico Schneider LRD10"></div>
-    <div class="fg"><label class="fl">Categoría *</label><select class="fi" id="f-cat" onchange="checkNewCat()"></select></div>
+    <div class="fg"><label class="fl">Categoría *</label><select class="fi" id="f-cat" onchange="checkNewCat();renderCatChips();"></select></div>
     <div class="fg" id="newcat-zone" style="display:none;"><label class="fl">Nueva categoría</label><input type="text" class="fi" id="f-newcat" placeholder="Nombre de la nueva categoría"></div>
+    <div class="fg"><label class="fl">Familias adicionales (opcional)</label><div class="msub" style="margin:0 0 8px;">Toca para añadir el material a más familias. Aparecerá al filtrar por cualquiera de ellas.</div><div id="f-cats-chips" class="cats-chips"></div></div>
     <div class="fr">
       <div class="fg"><label class="fl">Estantería *</label><select class="fi" id="f-shelf" onchange="updateBaldaOptions()"></select></div>
       <div class="fg"><label class="fl">Balda *</label><select class="fi" id="f-balda"></select></div>
@@ -479,6 +489,10 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div class="fg"><label>Nombre visible</label><input type="text" class="fi" id="es-name" placeholder="Ej: Estantería pasillo A"></div>
     <div class="fg"><label>Código (se usa en las ubicaciones)</label><input type="text" class="fi" id="es-code" placeholder="Ej: 01"></div>
     <div class="fg"><label>Número de baldas</label><input type="number" class="fi" id="es-baldas" min="1" max="20"></div>
+    <div class="fr">
+      <div class="fg"><label>Ancho (cuadritos)</label><input type="number" class="fi" id="es-w" min="2" max="40"></div>
+      <div class="fg"><label>Alto (cuadritos)</label><input type="number" class="fi" id="es-h" min="2" max="40"></div>
+    </div>
     <div id="es-warn" style="display:none;font-size:12px;color:var(--text2);background:var(--surface2);border-radius:10px;padding:10px 12px;margin-bottom:12px;line-height:1.4;"></div>
     <div class="fr">
       <button class="btn" onclick="closeModal('modal-edit-shelf')">Cancelar</button>
@@ -493,6 +507,10 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <h2>Editar etiqueta</h2>
     <div class="msub">Texto del pasillo o etiqueta.</div>
     <div class="fg"><label>Texto</label><input type="text" class="fi" id="ea-label" placeholder="Ej: Pasillo central" onkeydown="if(event.key==='Enter')saveEditAisle()"></div>
+    <div class="fr">
+      <div class="fg"><label>Ancho (cuadritos)</label><input type="number" class="fi" id="ea-w" min="2" max="40"></div>
+      <div class="fg"><label>Alto (cuadritos)</label><input type="number" class="fi" id="ea-h" min="1" max="40"></div>
+    </div>
     <div class="fr">
       <button class="btn" onclick="closeModal('modal-edit-aisle')">Cancelar</button>
       <button class="btn btn-primary" onclick="saveEditAisle()">Guardar</button>
@@ -554,7 +572,11 @@ function initSupabase(){
 // Sube un item a la nube (insert o update)
 async function cloudPut(item){
   if(!sb)return;
-  try{const{error}=await sb.from('items').upsert(item,{onConflict:'id'});if(error)throw error;cloudOK=true;}
+  // Mapear el campo local 'cats' a la columna 'categories' de la tabla
+  const cloudItem={...item};
+  cloudItem.categories=item.cats||[];
+  delete cloudItem.cats;
+  try{const{error}=await sb.from('items').upsert(cloudItem,{onConflict:'id'});if(error)throw error;cloudOK=true;}
   catch(e){cloudOK=false;console.warn('cloudPut error',e);}
 }
 async function cloudDelete(id){
@@ -612,8 +634,13 @@ async function syncFromCloud(){
   const cloudItems=await cloudGetAll();
   if(cloudItems===null){setCloudStatus(false);return;}
   setCloudStatus(true);
-  // Reemplazar items locales con los de la nube
-  items=cloudItems;
+  // Reemplazar items locales con los de la nube; mapear columna 'categories' a 'cats'
+  items=cloudItems.map(it=>{
+    const m={...it};
+    m.cats = Array.isArray(it.categories) ? it.categories : [];
+    delete m.categories;
+    return m;
+  });
   await dbClear();
   for(const it of items)await dbPut(it);
   // Config desde la nube
@@ -696,8 +723,9 @@ function renderAlerts(){
 }
 
 function renderCats(){
-  const cats=[...new Set(items.map(i=>i.cat))].filter(Boolean).sort();
-  document.getElementById('cats').innerHTML=`<span class="cat-pill ${currentCat===''?'active':''}" onclick="setCat('')">Todos</span>`+cats.map(c=>`<span class="cat-pill ${currentCat===c?'active':''}" onclick="setCat('${esc(c)}')">${esc(c)} (${items.filter(i=>i.cat===c).length})</span>`).join('');
+  const inCat=(i,c)=>i.cat===c||(i.cats||[]).includes(c);
+  const cats=[...new Set(items.flatMap(i=>[i.cat,...(i.cats||[])]))].filter(Boolean).sort();
+  document.getElementById('cats').innerHTML=`<span class="cat-pill ${currentCat===''?'active':''}" onclick="setCat('')">Todos</span>`+cats.map(c=>`<span class="cat-pill ${currentCat===c?'active':''}" onclick="setCat('${esc(c)}')">${esc(c)} (${items.filter(i=>inCat(i,c)).length})</span>`).join('');
 }
 function setCat(c){currentCat=c;renderCats();renderItems();}
 function renderCatManage(){
@@ -730,7 +758,7 @@ let expandedShelf=null; // id de la estantería desplegada
 let cameFromShelf=false; // marca si se llega a buscar desde el mapa
 
 function setView(v){currentView=v;document.getElementById('view-gallery').classList.toggle('active',v==='gallery');document.getElementById('view-list').classList.toggle('active',v==='list');renderItems();}
-function getFiltered(){const q=(document.getElementById('search-input')||{}).value||'';const ql=q.toLowerCase();return items.filter(i=>{const mc=!currentCat||i.cat===currentCat;const mq=!ql||[i.name,i.ref,i.brand,i.notes,i.machine,i.loc].some(v=>(v||'').toLowerCase().includes(ql));return mc&&mq;});}
+function getFiltered(){const q=(document.getElementById('search-input')||{}).value||'';const ql=q.toLowerCase();return items.filter(i=>{const mc=!currentCat||i.cat===currentCat||(i.cats||[]).includes(currentCat);const mq=!ql||[i.name,i.ref,i.brand,i.notes,i.machine,i.loc].some(v=>(v||'').toLowerCase().includes(ql));return mc&&mq;});}
 
 function toggleShelfGroup(sid){
   expandedShelf = (expandedShelf===sid) ? null : sid;
@@ -798,14 +826,54 @@ function renderItems(){
   }
 }
 
+// Separa una ubicación en {shelfId, balda} buscando la estantería cuyo código encaja.
+// Soporta códigos con guion (ej: "A-2-3" → estantería "A-2", balda "3").
+function splitLoc(loc){
+  if(!loc)return {shelfId:'',balda:''};
+  // Buscar la estantería cuyo id es prefijo de loc seguido de '-'
+  const sh=shelves.find(s=>loc.startsWith(s.id+'-'));
+  if(sh)return {shelfId:sh.id, balda:loc.slice(sh.id.length+1)};
+  // Fallback: separar por el último guion
+  const idx=loc.lastIndexOf('-');
+  if(idx<0)return {shelfId:loc,balda:''};
+  return {shelfId:loc.slice(0,idx), balda:loc.slice(idx+1)};
+}
+// Texto bonito: "A-2 · balda 3 (Estantería pasillo)"
+function locFull(loc){
+  const {shelfId,balda}=splitLoc(loc);
+  const sh=shelves.find(s=>s.id===shelfId);
+  let t=loc||'?';
+  if(sh&&sh.name&&sh.name!==shelfId)t+=' · '+sh.name;
+  if(balda)t+=' · balda '+balda;
+  return t;
+}
+
+let selectedExtraCats=new Set();
+function renderCatChips(){
+  const mainCat=document.getElementById('f-cat').value;
+  const cont=document.getElementById('f-cats-chips');
+  if(!categories.length){cont.innerHTML='<span style="font-size:13px;color:var(--text3);">No hay otras familias todavía</span>';return;}
+  cont.innerHTML=categories.map(c=>{
+    const isMain = c===mainCat;
+    const on = selectedExtraCats.has(c);
+    return `<div class="cat-chip ${on?'on':''} ${isMain?'disabled':''}" onclick="toggleExtraCat('${esc(c).replace(/'/g,"\\'")}')">${esc(c)}${isMain?' (principal)':''}</div>`;
+  }).join('');
+}
+function toggleExtraCat(c){
+  if(selectedExtraCats.has(c))selectedExtraCats.delete(c);else selectedExtraCats.add(c);
+  renderCatChips();
+}
+
 function openDetail(id){
   currentItem=items.find(i=>i.id===id);if(!currentItem)return;const i=currentItem;
   document.getElementById('detail-photo').innerHTML=i.photo?`<img src="${i.photo}">`:`<div class="ph"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.5"/><path d="M21 15l-5-5L5 21" stroke-width="1.5"/></svg></div>`;
   document.getElementById('detail-name').textContent=i.name;
-  document.getElementById('detail-cat').innerHTML=`<span class="badge badge-cat">${esc(i.cat)}</span> <span class="badge badge-loc">${i.loc}</span>`;
+  document.getElementById('detail-cat').innerHTML=`<span class="badge badge-cat">${esc(i.cat)}</span>${(i.cats||[]).map(c=>`<span class="badge badge-cat2">${esc(c)}</span>`).join('')}`;
   document.getElementById('detail-stock').textContent=i.stock;
   adjustValue=i.stock;document.getElementById('adjust-val').textContent=adjustValue;
   let info='';
+  // Ubicación destacada al principio
+  info+=`<div class="loc-box"><svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" stroke-width="1.8"/><circle cx="12" cy="10" r="3" stroke-width="1.8"/></svg><div><div class="loc-label">Ubicación</div><div class="loc-value">${esc(locFull(i.loc))}</div></div></div>`;
   if(i.ref)info+=`<div class="detail-row"><span class="k">Referencia</span><span class="v">${esc(i.ref)}</span></div>`;
   if(i.brand)info+=`<div class="detail-row"><span class="k">Marca</span><span class="v">${esc(i.brand)}</span></div>`;
   if(i.machine)info+=`<div class="detail-row"><span class="k">Equipo/máquina</span><span class="v">${esc(i.machine)}</span></div>`;
@@ -835,6 +903,7 @@ function openAddForm(){
   ['f-name','f-ref','f-brand','f-machine','f-notes','f-newcat'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('f-stock').value='';document.getElementById('f-min').value='2';
   document.getElementById('f-cat').value='';
+  selectedExtraCats=new Set();renderCatChips();
   if(shelves.length)document.getElementById('f-shelf').value=shelves[0].id;
   updateBaldaOptions();
   document.getElementById('newcat-zone').style.display='none';
@@ -847,7 +916,8 @@ function editCurrentItem(){
   document.getElementById('f-ref').value=currentItem.ref||'';document.getElementById('f-brand').value=currentItem.brand||'';
   document.getElementById('f-machine').value=currentItem.machine||'';document.getElementById('f-notes').value=currentItem.notes||'';
   document.getElementById('f-stock').value=currentItem.stock;document.getElementById('f-min').value=currentItem.min;
-  const p=currentItem.loc.split('-');document.getElementById('f-shelf').value=p[0];updateBaldaOptions();document.getElementById('f-balda').value=p[1];
+  const sp=splitLoc(currentItem.loc);document.getElementById('f-shelf').value=sp.shelfId;updateBaldaOptions();document.getElementById('f-balda').value=sp.balda;
+  selectedExtraCats=new Set(currentItem.cats||[]);renderCatChips();
   document.getElementById('newcat-zone').style.display='none';renderPhotoZone();closeModal('modal-detail');openModal('modal-form');
 }
 function renderPhotoZone(){const z=document.getElementById('photo-zone');z.innerHTML=pendingPhoto?`<div class="photo-preview"><img src="${pendingPhoto}"><button class="remove" onclick="removePhoto()">×</button></div>`:`<div class="photo-input" onclick="document.getElementById('photo-file').click()"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 9a2 2 0 012-2h.93a2 2 0 001.66-.9l.82-1.2A2 2 0 0110.07 4h3.86a2 2 0 011.66.9l.82 1.2a2 2 0 001.66.9H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z" stroke-width="1.7"/><circle cx="12" cy="13" r="3" stroke-width="1.7"/></svg><p>Tocar para hacer foto o elegir imagen</p></div>`;}
@@ -860,7 +930,9 @@ async function saveItem(){
   const shelf=document.getElementById('f-shelf').value,balda=document.getElementById('f-balda').value;
   if(!name||!cat){toast('⚠ Nombre y categoría obligatorios');return;}
   if(cat&&!categories.includes(cat)){categories.push(cat);await cfgPut('categories',categories);await cloudCfgPut('categories',categories);}
-  const item={id:editingId||('I'+Date.now()+Math.floor(Math.random()*1000)),name,cat,loc:shelf+'-'+balda,stock:parseInt(document.getElementById('f-stock').value)||0,min:parseInt(document.getElementById('f-min').value)||2,ref:document.getElementById('f-ref').value.trim(),brand:document.getElementById('f-brand').value.trim(),machine:document.getElementById('f-machine').value.trim(),notes:document.getElementById('f-notes').value.trim(),photo:pendingPhoto};
+  // Familias adicionales (sin incluir la principal ni duplicados)
+  const extraCats=[...selectedExtraCats].filter(c=>c&&c!==cat);
+  const item={id:editingId||('I'+Date.now()+Math.floor(Math.random()*1000)),name,cat,cats:extraCats,loc:shelf+'-'+balda,stock:parseInt(document.getElementById('f-stock').value)||0,min:parseInt(document.getElementById('f-min').value)||2,ref:document.getElementById('f-ref').value.trim(),brand:document.getElementById('f-brand').value.trim(),machine:document.getElementById('f-machine').value.trim(),notes:document.getElementById('f-notes').value.trim(),photo:pendingPhoto};
   await dbPut(item);await cloudPut(item);items=await dbGetAll();closeModal('modal-form');renderAll();toast(editingId?'✓ Actualizado':'✓ Añadido al almacén');
 }
 
@@ -947,6 +1019,9 @@ function fitMapText(canvas){
 }
 
 // Arrastrar y redimensionar nodos
+const GRID=24; // tamaño del cuadrito de la rejilla del mapa
+function snap(v){return Math.round(v/GRID)*GRID;}
+
 function enableDrag(canvas){
   let active=null, mode=null, startX=0, startY=0, orig={};
   function getNode(type,idx){return (type==='shelf'?mapDraftShelves:mapDraftAisles)[idx];}
@@ -966,21 +1041,21 @@ function enableDrag(canvas){
       const dx=e.clientX-startX, dy=e.clientY-startY;
       const node=getNode(active.type,active.idx);
       if(mode==='move'){
-        node.x=Math.max(0,Math.round(orig.x+dx));
-        node.y=Math.max(0,Math.round(orig.y+dy));
+        // Mover ajustando a la rejilla de cuadritos
+        node.x=Math.max(0,snap(orig.x+dx));
+        node.y=Math.max(0,snap(orig.y+dy));
         el.style.left=node.x+'px'; el.style.top=node.y+'px';
       }else{
-        node.w=Math.max(40,Math.round(orig.w+dx));
-        node.h=Math.max(36,Math.round(orig.h+dy));
+        // Redimensionar en múltiplos de cuadrito
+        node.w=Math.max(GRID*2,snap(orig.w+dx));
+        node.h=Math.max(GRID*2,snap(orig.h+dy));
         el.style.width=node.w+'px'; el.style.height=node.h+'px';
-        // Reajustar el texto al nuevo tamaño en tiempo real
         const t=el.querySelector('.nname')||el.querySelector('span');
         if(t){let size=16;t.style.fontSize=size+'px';const c=el.querySelector('.ncount');const rH=(c?c.offsetHeight+2:0)+8;while(size>7&&(t.scrollHeight>el.clientHeight-rH||t.scrollWidth>el.clientWidth-8)){size-=0.5;t.style.fontSize=size+'px';}}
       }
     });
     const end=e=>{
       if(active&&active.el===el){
-        // Si fue un toque sin apenas movimiento sobre una estantería → editar
         const moved=Math.abs(e.clientX-startX)+Math.abs(e.clientY-startY);
         if(mode==='move'&&moved<5&&el.dataset.type==='shelf'){editMapShelf(+el.dataset.idx);}
         if(mode==='move'&&moved<5&&el.dataset.type==='aisle'){editMapAisle(+el.dataset.idx);}
@@ -1024,11 +1099,11 @@ async function saveMapLayout(){
 function addMapShelf(){
   let max=0;mapDraftShelves.forEach(s=>{const n=parseInt(s.id);if(!isNaN(n)&&n>max)max=n;});
   const id=String(max+1).padStart(2,'0');
-  mapDraftShelves.push({id,name:'Est. '+id,baldas:5,x:20,y:20,w:80,h:80});
+  mapDraftShelves.push({id,name:'Est. '+id,baldas:5,x:GRID,y:GRID,w:GRID*3,h:GRID*3});
   renderMap();
 }
 function addMapAisle(){
-  mapDraftAisles.push({label:'Pasillo',x:20,y:20,w:160,h:40});
+  mapDraftAisles.push({label:'Pasillo',x:GRID,y:GRID,w:GRID*6,h:GRID*2});
   renderMap();
 }
 function delMapNode(type,idx){
@@ -1049,6 +1124,8 @@ function editMapShelf(idx){
   document.getElementById('es-name').value=s.name||'';
   document.getElementById('es-code').value=s.id||'';
   document.getElementById('es-baldas').value=s.baldas||5;
+  document.getElementById('es-w').value=Math.round((s.w||80)/GRID);
+  document.getElementById('es-h').value=Math.round((s.h||80)/GRID);
   // Avisar de cuántos repuestos hay en esta estantería
   const n=items.filter(i=>i.loc&&i.loc.startsWith(s.id+'-')).length;
   const warn=document.getElementById('es-warn');
@@ -1076,6 +1153,11 @@ async function saveEditShelf(){
 
   s.name=newName;
   if(!isNaN(newBaldas)&&newBaldas>=1&&newBaldas<=20)s.baldas=newBaldas;
+  // Medidas en cuadritos → píxeles
+  const w=parseInt(document.getElementById('es-w').value);
+  const h=parseInt(document.getElementById('es-h').value);
+  if(!isNaN(w)&&w>=2)s.w=w*GRID;
+  if(!isNaN(h)&&h>=2)s.h=h*GRID;
 
   // Si cambia el código, actualizar los repuestos y guardarlos
   let movedItems=[];
@@ -1110,6 +1192,8 @@ function editMapAisle(idx){
   editAisleIdx=idx;
   const a=mapDraftAisles[idx];
   document.getElementById('ea-label').value=a.label||'';
+  document.getElementById('ea-w').value=Math.round((a.w||160)/GRID);
+  document.getElementById('ea-h').value=Math.round((a.h||40)/GRID);
   openModal('modal-edit-aisle');
   setTimeout(()=>document.getElementById('ea-label').focus(),100);
 }
@@ -1118,6 +1202,10 @@ function saveEditAisle(){
   const a=mapDraftAisles[editAisleIdx];
   const label=document.getElementById('ea-label').value.trim();
   if(label)a.label=label;
+  const w=parseInt(document.getElementById('ea-w').value);
+  const h=parseInt(document.getElementById('ea-h').value);
+  if(!isNaN(w)&&w>=2)a.w=w*GRID;
+  if(!isNaN(h)&&h>=1)a.h=h*GRID;
   closeModal('modal-edit-aisle');
   editAisleIdx=null;
   renderMap();
