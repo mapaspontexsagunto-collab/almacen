@@ -12,6 +12,19 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
+/* ===== LOGIN ===== */
+#login-screen{position:fixed;inset:0;background:#1a1916;display:flex;align-items:center;justify-content:center;z-index:10000;padding:24px;}
+.login-box{background:#fff;border-radius:20px;padding:32px 26px;width:100%;max-width:360px;box-shadow:0 20px 60px rgba(0,0,0,0.4);text-align:center;}
+.login-logo{font-size:44px;margin-bottom:8px;}
+.login-box h1{font-size:22px;margin-bottom:6px;color:#1a1916;}
+.login-sub{font-size:13px;color:#6b6760;margin-bottom:22px;}
+.login-fg{text-align:left;margin-bottom:14px;}
+.login-fg label{display:block;font-size:12px;font-weight:600;color:#6b6760;margin-bottom:5px;}
+.login-fg input{width:100%;box-sizing:border-box;padding:13px 14px;border:1.5px solid #d8d5cf;border-radius:10px;font-size:16px;}
+.login-fg input:focus{outline:none;border-color:#1a1916;}
+.login-error{color:#b91c1c;font-size:13px;min-height:18px;margin-bottom:8px;font-weight:600;}
+.login-btn{width:100%;padding:14px;background:#1a1916;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;}
+.login-btn:active{opacity:0.85;}
 :root{
   --bg:#f5f4f0;--surface:#fff;--surface2:#eeecea;--border:#d8d5cf;--border2:#c8c4bc;
   --text:#1a1916;--text2:#6b6760;--text3:#9b9890;--accent:#1a1916;--accent-text:#f5f4f0;
@@ -122,6 +135,12 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .modal-photo{width:100%;aspect-ratio:16/10;background:var(--surface2);border-radius:var(--radius);overflow:hidden;display:flex;align-items:center;justify-content:center;margin-bottom:16px;}
 .modal-photo img{width:100%;height:100%;object-fit:contain;}
 .modal-photo .ph svg{width:48px;height:48px;color:var(--text3);}
+.modal-photo{position:relative;}
+.zoom-hint{position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,0.6);color:#fff;font-size:11px;padding:3px 8px;border-radius:6px;pointer-events:none;}
+#photo-viewer{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:9999;align-items:center;justify-content:center;cursor:zoom-out;overflow:auto;}
+#photo-viewer.open{display:flex;}
+#photo-viewer img{max-width:100%;max-height:100%;object-fit:contain;touch-action:pinch-zoom;}
+#photo-viewer .pv-close{position:fixed;top:16px;right:20px;color:#fff;font-size:40px;line-height:1;cursor:pointer;font-weight:300;z-index:10000;}
 .detail-row{display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--border);font-size:14px;}
 .detail-row .k{color:var(--text2);}
 .detail-row .v{font-weight:600;text-align:right;}
@@ -156,6 +175,9 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .seg button{flex:1;border:none;background:none;padding:9px;border-radius:6px;font-size:13px;font-weight:600;color:var(--text2);cursor:pointer;}
 .seg button.active{background:var(--surface);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,0.08);}
 .shelf-edit-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);}
+.order-ctrl{display:flex;flex-direction:column;gap:2px;flex-shrink:0;}
+.order-ctrl button{width:26px;height:20px;border:1px solid var(--border2);background:var(--surface);border-radius:5px;cursor:pointer;font-size:9px;line-height:1;color:var(--text2);padding:0;}
+.order-ctrl button:disabled{opacity:0.3;cursor:default;}
 .shelf-edit-row input{flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);}
 .shelf-edit-row .baldas-ctrl{display:flex;align-items:center;gap:6px;}
 .shelf-edit-row .baldas-ctrl button{width:34px;height:34px;border:1px solid var(--border);background:var(--surface2);border-radius:6px;font-size:18px;cursor:pointer;}
@@ -228,7 +250,18 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 </style>
 </head>
 <body>
-<div class="app">
+<div id="login-screen">
+  <div class="login-box">
+    <div class="login-logo">⚡</div>
+    <h1>Almacén Eléctrico</h1>
+    <p class="login-sub">Introduce tus credenciales para acceder</p>
+    <div class="login-fg"><label>Usuario</label><input type="text" id="login-user" autocomplete="username" placeholder="Usuario"></div>
+    <div class="login-fg"><label>Contraseña</label><input type="password" id="login-pass" autocomplete="current-password" placeholder="Contraseña" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    <div id="login-error" class="login-error"></div>
+    <button class="login-btn" onclick="doLogin()">Entrar</button>
+  </div>
+</div>
+<div class="app" id="app-root" style="display:none;">
   <div class="topbar">
     <div class="logo">⚡ Almacén</div>
     <div class="actions">
@@ -290,8 +323,9 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div class="card"><div class="card-h">Estado de la nube</div>
       <div style="padding:16px;">
         <p id="cloud-status" style="font-size:14px;font-weight:600;margin-bottom:12px;">○ Comprobando conexión...</p>
-        <p style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.5;">Los datos se sincronizan automáticamente entre todos los dispositivos. Pulsa para recargar los últimos cambios de otros dispositivos.</p>
-        <button class="btn btn-block btn-primary" onclick="manualSync()">↻ Sincronizar ahora</button>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.5;"><strong>↓ Descargar:</strong> trae los cambios hechos en otros dispositivos (sobrescribe lo de este dispositivo).<br><strong>↑ Subir:</strong> envía los datos de este dispositivo a la nube (úsalo si has corregido algo aquí).</p>
+        <button class="btn btn-block btn-primary" style="margin-bottom:8px;" onclick="manualSync()">↓ Descargar de la nube</button>
+        <button class="btn btn-block" onclick="pushToCloud()">↑ Subir este dispositivo a la nube</button>
       </div>
     </div>
     <div class="card"><div class="card-h">Copia de seguridad</div>
@@ -322,6 +356,12 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
       <div style="padding:16px;">
         <button class="btn btn-block" onclick="loadDemo()" style="margin-bottom:10px;">Cargar datos de ejemplo</button>
         <button class="btn btn-block btn-danger" onclick="askWipe()">Borrar todo el inventario</button>
+      </div>
+    </div>
+    <div class="card"><div class="card-h">Sesión</div>
+      <div style="padding:16px;">
+        <p style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.5;">Cierra la sesión en este dispositivo. La próxima vez pedirá usuario y contraseña.</p>
+        <button class="btn btn-block" onclick="logout()">Cerrar sesión</button>
       </div>
     </div>
     <p style="text-align:center;font-size:11px;color:var(--text3);margin-top:20px;">Almacén Eléctrico · funciona sin internet</p>
@@ -358,6 +398,12 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <button class="navbtn" id="nav-mapa" onclick="showPage('mapa')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 3v15M15 6v15" stroke-width="1.8"/></svg><span>Mapa</span></button>
     <button class="navbtn" id="nav-ajustes" onclick="showPage('ajustes')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" stroke-width="1.8"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z" stroke-width="1.8"/></svg><span>Ajustes</span></button>
   </div>
+</div>
+
+<!-- Visor de imagen a pantalla completa -->
+<div id="photo-viewer" onclick="closePhotoViewer()">
+  <span class="pv-close">×</span>
+  <img id="pv-img" src="" alt="">
 </div>
 
 <!-- Contenedor de impresión de etiquetas (oculto salvo al imprimir) -->
@@ -656,9 +702,22 @@ async function syncFromCloud(){
 
 async function manualSync(){
   if(!sb){toast('Sin conexión a la nube');return;}
-  toast('⏳ Sincronizando...');
+  toast('⏳ Descargando...');
   await syncFromCloud();
-  toast(cloudOK?'✓ Sincronizado':'No se pudo sincronizar');
+  toast(cloudOK?'✓ Descargado de la nube':'No se pudo conectar');
+}
+
+// Fuerza la subida de TODOS los datos locales a la nube (local gana).
+// Útil tras corregir ubicaciones para que la nube no machaque los cambios.
+async function pushToCloud(){
+  if(!sb){toast('Sin conexión a la nube');return;}
+  toast('⏳ Subiendo '+items.length+' repuestos...');
+  let ok=0;
+  for(const it of items){await cloudPut(it);ok++;}
+  await cloudCfgPut('categories',categories);
+  await cloudCfgPut('shelves',shelves);
+  await cloudCfgPut('aisles',aisles);
+  toast(cloudOK?('✓ Subidos '+ok+' repuestos a la nube'):'Error al subir, revisa la conexión');
 }
 function renderAll(){updateStats();renderCats();renderItems();renderMap();renderCatManage();renderShelfSummary();}
 
@@ -864,9 +923,19 @@ function toggleExtraCat(c){
   renderCatChips();
 }
 
+function openPhotoViewer(id){
+  const it=items.find(i=>i.id===id);
+  if(!it||!it.photo)return;
+  document.getElementById('pv-img').src=it.photo;
+  document.getElementById('photo-viewer').classList.add('open');
+}
+function closePhotoViewer(){
+  document.getElementById('photo-viewer').classList.remove('open');
+}
+
 function openDetail(id){
   currentItem=items.find(i=>i.id===id);if(!currentItem)return;const i=currentItem;
-  document.getElementById('detail-photo').innerHTML=i.photo?`<img src="${i.photo}">`:`<div class="ph"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.5"/><path d="M21 15l-5-5L5 21" stroke-width="1.5"/></svg></div>`;
+  document.getElementById('detail-photo').innerHTML=i.photo?`<img src="${i.photo}" onclick="openPhotoViewer('${i.id}')" style="cursor:zoom-in;"><div class="zoom-hint">Toca para ampliar</div>`:`<div class="ph"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.5"/><path d="M21 15l-5-5L5 21" stroke-width="1.5"/></svg></div>`;
   document.getElementById('detail-name').textContent=i.name;
   document.getElementById('detail-cat').innerHTML=`<span class="badge badge-cat">${esc(i.cat)}</span>${(i.cats||[]).map(c=>`<span class="badge badge-cat2">${esc(c)}</span>`).join('')}`;
   document.getElementById('detail-stock').textContent=i.stock;
@@ -1165,7 +1234,8 @@ async function saveEditShelf(){
     s.id=newCode;
     movedItems=items.filter(i=>i.loc&&i.loc.startsWith(oldId+'-'));
     for(const it of movedItems){
-      const balda=it.loc.split('-').slice(1).join('-'); // parte tras el código
+      // La balda es todo lo que va tras "oldId-" (respeta códigos con guion)
+      const balda=it.loc.slice(oldId.length+1);
       it.loc=newCode+'-'+balda;
       await dbPut(it);await cloudPut(it);
     }
@@ -1222,6 +1292,10 @@ function renderShelfEditor(){
   const c=document.getElementById('shelf-editor');
   c.innerHTML=shelfDraft.map((s,idx)=>`
     <div class="shelf-edit-row">
+      <div class="order-ctrl">
+        <button onclick="moveShelf(${idx},-1)" ${idx===0?'disabled':''} title="Subir">▲</button>
+        <button onclick="moveShelf(${idx},1)" ${idx===shelfDraft.length-1?'disabled':''} title="Bajar">▼</button>
+      </div>
       <input type="text" value="${esc(s.name)}" onchange="shelfDraft[${idx}].name=this.value" placeholder="Nombre">
       <div class="baldas-ctrl">
         <button onclick="changeBaldas(${idx},-1)">−</button>
@@ -1230,6 +1304,12 @@ function renderShelfEditor(){
       </div>
       <button class="del-shelf" onclick="removeShelf(${idx})"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6" stroke-width="1.8" stroke-linecap="round"/></svg></button>
     </div>`).join('');
+}
+function moveShelf(idx,dir){
+  const j=idx+dir;
+  if(j<0||j>=shelfDraft.length)return;
+  const tmp=shelfDraft[idx];shelfDraft[idx]=shelfDraft[j];shelfDraft[j]=tmp;
+  renderShelfEditor();
 }
 function changeBaldas(idx,d){shelfDraft[idx].baldas=Math.max(1,Math.min(20,shelfDraft[idx].baldas+d));renderShelfEditor();}
 function addShelf(){
@@ -1628,7 +1708,43 @@ function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}
 document.querySelectorAll('.modal-bg').forEach(m=>{m.addEventListener('click',e=>{if(e.target===m){if(m.id==='modal-scan')closeScanner();else m.classList.remove('open');}});});
-init();
+// ===== LOGIN / SESIÓN =====
+const AUTH_USER='manteni';
+const AUTH_PASS='Electrico';
+const AUTH_KEY='almacen_sesion_ok';
+let appStarted=false;
+
+function doLogin(){
+  const u=document.getElementById('login-user').value.trim();
+  const p=document.getElementById('login-pass').value;
+  if(u===AUTH_USER && p===AUTH_PASS){
+    try{localStorage.setItem(AUTH_KEY,'1');}catch(e){}
+    enterApp();
+  }else{
+    document.getElementById('login-error').textContent='Usuario o contraseña incorrectos';
+    document.getElementById('login-pass').value='';
+  }
+}
+
+function enterApp(){
+  document.getElementById('login-screen').style.display='none';
+  document.getElementById('app-root').style.display='';
+  if(!appStarted){appStarted=true;init();}
+}
+
+function checkSession(){
+  let ok=false;
+  try{ok=localStorage.getItem(AUTH_KEY)==='1';}catch(e){ok=false;}
+  if(ok){enterApp();}
+  else{document.getElementById('login-screen').style.display='flex';setTimeout(()=>document.getElementById('login-user').focus(),100);}
+}
+
+function logout(){
+  try{localStorage.removeItem(AUTH_KEY);}catch(e){}
+  location.reload();
+}
+
+checkSession();
 </script>
 </body>
 </html>
