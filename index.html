@@ -707,17 +707,58 @@ async function manualSync(){
   toast(cloudOK?'✓ Descargado de la nube':'No se pudo conectar');
 }
 
-// Fuerza la subida de TODOS los datos locales a la nube (local gana).
-// Útil tras corregir ubicaciones para que la nube no machaque los cambios.
+// Sube un item con reintentos. Devuelve true si lo consigue.
+async function cloudPutRetry(item, intentos=3){
+  // Mapear 'cats' (local) a 'categories' (columna de la tabla)
+  const cloudItem={...item};
+  cloudItem.categories=item.cats||[];
+  delete cloudItem.cats;
+  for(let n=0;n<intentos;n++){
+    try{
+      const{error}=await sb.from('items').upsert(cloudItem,{onConflict:'id'});
+      if(!error){return true;}
+    }catch(e){/* reintentar */}
+    await new Promise(r=>setTimeout(r, 400*(n+1))); // espera creciente
+  }
+  return false;
+}
+
+// Fuerza la subida de TODOS los datos locales a la nube, EN LOTES pequeños
+// con reintentos. Evita saturar la conexión con 90 fotos de golpe.
 async function pushToCloud(){
   if(!sb){toast('Sin conexión a la nube');return;}
-  toast('⏳ Subiendo '+items.length+' repuestos...');
-  let ok=0;
-  for(const it of items){await cloudPut(it);ok++;}
-  await cloudCfgPut('categories',categories);
-  await cloudCfgPut('shelves',shelves);
-  await cloudCfgPut('aisles',aisles);
-  toast(cloudOK?('✓ Subidos '+ok+' repuestos a la nube'):'Error al subir, revisa la conexión');
+  const total=items.length;
+  let ok=0, fallos=[];
+  toast('⏳ Subiendo 0/'+total+'...');
+  // Subir de uno en uno, con reintentos y pausa entre cada uno
+  for(let k=0;k<total;k++){
+    const exito=await cloudPutRetry(items[k]);
+    if(exito){ok++;}else{fallos.push(items[k]);}
+    if(k%5===0 || k===total-1){toast('⏳ Subiendo '+(k+1)+'/'+total+'...');}
+    await new Promise(r=>setTimeout(r, 120)); // respiro entre subidas
+  }
+  // Reintento final de los que fallaron
+  if(fallos.length){
+    toast('⏳ Reintentando '+fallos.length+' que fallaron...');
+    const pendientes=[...fallos];fallos=[];
+    for(const it of pendientes){
+      const exito=await cloudPutRetry(it,4);
+      if(exito){ok++;}else{fallos.push(it);}
+      await new Promise(r=>setTimeout(r, 200));
+    }
+  }
+  // Config
+  try{
+    await cloudCfgPut('categories',categories);
+    await cloudCfgPut('shelves',shelves);
+    await cloudCfgPut('aisles',aisles);
+  }catch(e){}
+  if(fallos.length===0){
+    cloudOK=true;setCloudStatus(true);
+    toast('✓ Subidos los '+ok+' repuestos a la nube');
+  }else{
+    toast('Subidos '+ok+'/'+total+'. Fallaron '+fallos.length+', vuelve a pulsar Subir.');
+  }
 }
 function renderAll(){updateStats();renderCats();renderItems();renderMap();renderCatManage();renderShelfSummary();}
 
@@ -1499,7 +1540,7 @@ async function runAISearch(dataUrl){
   openModal('modal-ai');
 
   // Preparar inventario resumido como contexto
-  const inv=items.map(i=>({nombre:i.name,categoria:i.cat,ubicacion:i.loc,ref:i.ref,marca:i.brand,stock:i.stock}));
+  const inv=items.map(i=>({id:i.id,nombre:i.name,categoria:i.cat,ubicacion:i.loc,ref:i.ref,marca:i.brand,stock:i.stock}));
   const cats=[...new Set(items.map(i=>i.cat))].filter(Boolean);
   const b64=dataUrl.split(',')[1];
 
@@ -1514,7 +1555,7 @@ Devuelve SOLO un objeto JSON (sin texto adicional, sin markdown) con esta estruc
 {
   "identificacion": "nombre del tipo de componente que ves en la foto",
   "descripcion": "breve descripción de qué es y para qué sirve (1-2 frases)",
-  "coincidencias": [ {"nombre":"...","ubicacion":"...","motivo":"por qué coincide"} ],
+  "coincidencias": [ {"id":"copia EXACTAMENTE el campo id del artículo del inventario que coincide","nombre":"...","ubicacion":"...","motivo":"por qué coincide"} ],
   "ubicaciones_sugeridas": [ {"ubicacion":"XX-Y","motivo":"por qué podría estar aquí aunque no esté registrado"} ]
 }
 
@@ -1547,10 +1588,14 @@ function renderAIResult(r){
   if(r.coincidencias&&r.coincidencias.length){
     html+='<div class="fl" style="margin-bottom:8px;">En tu inventario</div>';
     r.coincidencias.forEach(c=>{
-      const it=items.find(i=>i.name===c.nombre||i.loc===c.ubicacion);
+      // Identificar el repuesto por id (único y fiable). Respaldo: nombre exacto.
+      // NUNCA por ubicación, porque varios repuestos comparten balda.
+      let it=null;
+      if(c.id)it=items.find(i=>i.id===c.id);
+      if(!it&&c.nombre)it=items.find(i=>i.name===c.nombre);
       html+=`<div class="detail-row" style="padding:12px 4px;cursor:${it?'pointer':'default'};" ${it?`onclick="closeModal('modal-ai');openDetail('${it.id}')"`:''}>
-        <div style="flex:1;"><strong>${esc(c.nombre||'')}</strong><br><span style="font-size:12px;color:var(--text2);">${esc(c.motivo||'')}</span></div>
-        <span class="badge badge-loc">${esc(c.ubicacion||'?')}</span>
+        <div style="flex:1;"><strong>${esc(it?it.name:(c.nombre||''))}</strong><br><span style="font-size:12px;color:var(--text2);">${esc(c.motivo||'')}</span></div>
+        <span class="badge badge-loc">${esc(it?it.loc:(c.ubicacion||'?'))}</span>
       </div>`;
     });
   }else{
