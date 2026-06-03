@@ -25,7 +25,7 @@ exports.handler = async (event) => {
   if (!image || !prompt) return resp(400, { error: 'Faltan datos (image/prompt)' });
 
   // Gemini 2.0 Flash: rápido, gratuito y soporta imágenes.
-  const MODEL = 'gemini-2.0-flash';
+  const MODEL = 'gemini-2.5-flash-lite';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${API_KEY}`;
 
   const payload = {
@@ -37,7 +37,8 @@ exports.handler = async (event) => {
     }],
     generationConfig: {
       temperature: 0.2,
-      maxOutputTokens: 1000
+      maxOutputTokens: 1024,
+      thinkingConfig: { thinkingBudget: 0 }
     }
   };
 
