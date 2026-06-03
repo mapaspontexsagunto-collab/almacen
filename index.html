@@ -1762,32 +1762,25 @@ function handleAIPhoto(e){
 
 async function runAISearch(dataUrl){
   document.getElementById('ai-photo-preview').innerHTML=`<img src="${dataUrl}" style="width:100%;max-height:220px;object-fit:contain;border-radius:var(--radius);background:var(--surface2);">`;
-  document.getElementById('ai-result').innerHTML='<div class="empty"><p>⏳ Analizando la imagen...</p></div>';
+  document.getElementById('ai-result').innerHTML='<div class="empty"><p>\u23f3 Analizando la imagen...</p></div>';
   openModal('modal-ai');
 
-  // Preparar inventario resumido como contexto
-  const inv=items.map(i=>({id:i.id,nombre:i.name,categoria:i.cat,ubicacion:i.loc,ref:i.ref,marca:i.brand,stock:i.stock}));
-  const cats=[...new Set(items.map(i=>i.cat))].filter(Boolean);
   const b64=dataUrl.split(',')[1];
+  const cats=[...new Set(items.map(i=>i.cat))].filter(Boolean);
+  const expertoEn = (WH && WH.key==='mecanico') ? 'material mec\u00e1nico industrial' : 'material el\u00e9ctrico industrial';
+  const prompt=`Eres un experto en ${expertoEn}. Identifica el componente de la foto.
 
-  const expertoEn = (WH && WH.key==='mecanico') ? 'material mecánico industrial' : 'material eléctrico industrial';
-  const prompt=`Eres un experto en ${expertoEn}. Analiza la foto del componente.
+Categor\u00edas existentes en el almac\u00e9n: ${cats.join(', ')||'ninguna'}
 
-Tengo este inventario de almacén (JSON):
-${JSON.stringify(inv)}
-
-Categorías existentes: ${cats.join(', ')||'ninguna'}
-
-Devuelve SOLO un objeto JSON (sin texto adicional, sin markdown) con esta estructura exacta:
+Devuelve SOLO un objeto JSON (sin texto adicional, sin markdown):
 {
-  "identificacion": "nombre del tipo de componente que ves en la foto",
-  "descripcion": "breve descripción de qué es y para qué sirve (1-2 frases)",
-  "coincidencias": [ {"id":"copia EXACTAMENTE el campo id del artículo del inventario que coincide","nombre":"...","ubicacion":"...","motivo":"por qué coincide"} ],
-  "ubicaciones_sugeridas": [ {"ubicacion":"XX-Y","motivo":"por qué podría estar aquí aunque no esté registrado"} ]
-}
-
-En "coincidencias" pon los artículos del inventario que coincidan o se parezcan al de la foto (puede estar vacío si no hay).
-En "ubicaciones_sugeridas" propón ubicaciones del almacén donde podría encontrarse un componente similar, basándote en dónde están guardados componentes de la misma categoría (útil cuando no está registrado). Máximo 3.`;
+  "identificacion": "nombre del tipo de componente que ves",
+  "descripcion": "breve descripci\u00f3n de qu\u00e9 es y para qu\u00e9 sirve (1-2 frases)",
+  "tipo": "palabras clave del tipo, p.ej. 'final de carrera', 'variador', 'sensor inductivo'",
+  "marca": "marca/fabricante si se ve; si no, vac\u00edo",
+  "referencia": "referencia o c\u00f3digo del fabricante si se ve; si no, vac\u00edo",
+  "categoria": "la categor\u00eda m\u00e1s adecuada de la lista de existentes; si ninguna encaja, prop\u00f3n una"
+}`;
 
   try{
     const response=await fetch('/.netlify/functions/buscar',{
@@ -1797,15 +1790,54 @@ En "ubicaciones_sugeridas" propón ubicaciones del almacén donde podría encont
     });
     if(!response.ok)throw new Error('Error del servidor: '+response.status);
     const data=await response.json();
-    let text=(data.text||'').trim();
-    text=text.replace(/```json|```/g,'').trim();
+    let text=(data.text||'').trim().replace(/```json|```/g,'').trim();
     let r;
-    try{r=JSON.parse(text);}catch(e){throw new Error('Respuesta no válida');}
-    renderAIResult(r);
+    try{r=JSON.parse(text);}catch(e){throw new Error('Respuesta no v\u00e1lida');}
+    renderAIResult(buildAIMatches(r));   // la app busca las coincidencias en el inventario local
   }catch(err){
     console.error(err);
-    document.getElementById('ai-result').innerHTML='<div class="empty"><p>No se pudo analizar la imagen. Si estás probando dentro de Claude esto es normal: la búsqueda por IA solo funciona en la versión publicada en Netlify. Comprueba también la conexión a internet.</p></div>';
+    document.getElementById('ai-result').innerHTML='<div class="empty"><p>No se pudo analizar la imagen. Si est\u00e1s probando dentro de Claude esto es normal: la b\u00fasqueda por IA solo funciona en la versi\u00f3n publicada en Netlify. Comprueba tambi\u00e9n la conexi\u00f3n a internet.</p></div>';
   }
+}
+
+// Normaliza texto para comparar (min\u00fasculas, sin acentos ni signos)
+function aiNorm(s){return (s||'').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');}
+
+// La IA solo identifica la pieza; aqu\u00ed buscamos las coincidencias en el inventario LOCAL.
+// As\u00ed funciona con cualquier tama\u00f1o de inventario (no se env\u00edan los art\u00edculos a la IA).
+function buildAIMatches(r){
+  const aiRef=aiNorm(r.referencia);
+  const aiBrand=aiNorm(r.marca);
+  const aiCat=(r.categoria||'').trim();
+  const aiCatN=aiNorm(aiCat);
+  const kw=((r.tipo||'')+' '+(r.identificacion||'')).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').split(/[^a-z0-9]+/).filter(w=>w.length>=4);
+
+  const scored=[];
+  for(const it of items){
+    let score=0; const motivos=[];
+    const refN=aiNorm(it.ref);
+    if(aiRef && refN){
+      if(refN===aiRef){score+=100;motivos.push('Misma referencia');}
+      else if(refN.includes(aiRef)||aiRef.includes(refN)){score+=70;motivos.push('Referencia parecida');}
+    }
+    if(aiBrand && aiNorm(it.brand)===aiBrand){score+=25;motivos.push('Misma marca');}
+    if(aiCatN && aiNorm(it.cat)===aiCatN){score+=15;motivos.push('Misma categor\u00eda');}
+    const nameN=(it.name||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    const kwHits=kw.filter(w=>nameN.includes(w)).length;
+    if(kwHits){score+=kwHits*12;motivos.push('Nombre parecido');}
+    if(score>0)scored.push({it,score,motivo:[...new Set(motivos)].join(', ')});
+  }
+  scored.sort((a,b)=>b.score-a.score);
+  const coincidencias=scored.slice(0,8).map(s=>({id:s.it.id,nombre:s.it.name,ubicacion:s.it.loc,motivo:s.motivo}));
+
+  let ubic=[];
+  if(aiCat){
+    const counts={};
+    items.filter(i=>aiNorm(i.cat)===aiCatN).forEach(i=>{if(i.loc)counts[i.loc]=(counts[i.loc]||0)+1;});
+    ubic=Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,3)
+      .map(([loc,n])=>({ubicacion:loc,motivo:`Aqu\u00ed hay ${n} art\u00edculo${n>1?'s':''} de la categor\u00eda "${aiCat}"`}));
+  }
+  return {identificacion:r.identificacion||'Componente', descripcion:r.descripcion||'', coincidencias, ubicaciones_sugeridas:ubic};
 }
 
 function renderAIResult(r){
@@ -1842,6 +1874,9 @@ function renderAIResult(r){
   document.getElementById('ai-result').innerHTML=html;
 }
 
+// Obtiene el ancho/alto reales de una foto (para mantener la proporción en el Excel)
+function imgDims(dataUrl){return new Promise(res=>{const im=new Image();im.onload=()=>res({w:im.naturalWidth,h:im.naturalHeight});im.onerror=()=>res(null);im.src=dataUrl;});}
+
 function exportExcel(){
   // Preguntar primero qué exportar
   openModal('modal-excel-scope');
@@ -1868,7 +1903,7 @@ async function doExportExcel(scope){
 
     // Anchos de columna
     ws.columns = [
-      {key:'foto',  width:18},
+      {key:'foto',  width:21},
       {key:'nombre',width:32},
       {key:'cat',   width:18},
       {key:'loc',   width:12},
@@ -1891,7 +1926,7 @@ async function doExportExcel(scope){
     });
 
     // Filas de datos
-    const ROW_H = 72; // altura en puntos ≈ 96px
+    const ROW_H = 82; // altura en puntos ≈ 109px (para que la foto se vea bien)
     for(let idx=0; idx<all.length; idx++){
       const i = all[idx];
       const rowNum = idx + 2; // fila 1 = cabecera
@@ -1928,11 +1963,19 @@ async function doExportExcel(scope){
           const ext = mimeMatch ? (mimeMatch[1]==='jpg'?'jpeg':mimeMatch[1]) : 'jpeg';
           const b64 = parts[1];
           const imgId = wb.addImage({base64: b64, extension: ext});
-          // Anclar la imagen DENTRO de su celda (esquina sup-izq a inf-der, con un pequeño margen).
-          // Así cada foto se queda en su fila y no se desplaza a la de abajo.
+          // Tamaño fijo en píxeles dentro de la celda, respetando la proporción de la foto.
+          const dims = await imgDims(i.photo);
+          const BOX = 100;
+          let pw = BOX, ph = BOX;
+          if(dims && dims.w && dims.h){
+            const r = Math.min(BOX/dims.w, BOX/dims.h);
+            pw = Math.round(dims.w * r);
+            ph = Math.round(dims.h * r);
+          }
           ws.addImage(imgId, {
-            tl: {col: 0.06, row: (rowNum - 1) + 0.06},
-            br: {col: 0.94, row: rowNum - 0.06},
+            tl: {col: 0.08, row: (rowNum - 1) + 0.06},
+            ext: {width: pw, height: ph},
+            editAs: 'oneCell',
           });
         }catch(e){
           console.warn('No se pudo incrustar imagen para',i.name,e);
