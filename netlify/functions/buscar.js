@@ -1,14 +1,9 @@
-// Función intermediaria segura: recibe la imagen desde la app, llama a Groq
-// (Llama con visión) con la clave secreta de Netlify y devuelve { text }.
+// Función intermediaria: recibe imagen+prompt desde la app, llama a Google Gemini
+// con la clave secreta guardada en Netlify y devuelve { text }.
 // La clave NUNCA llega al navegador.
 //
-// Groq es gratuito y sin tarjeta. La clave empieza por "gsk_".
-// Se guarda en Netlify como variable GEMINI_API_KEY (se reutiliza el nombre).
-//
-// MEJORAS de esta versión:
-//  - Reintenta una vez ante errores transitorios de saturación (5xx) o de red.
-//  - REENVÍA el código de error real (p.ej. 429 = límite de Groq alcanzado),
-//    para que la app muestre un mensaje claro en lugar de un 502 genérico.
+// Gemini free tier: 1.500 peticiones/día, 1 millón de tokens/minuto.
+// Clave gratis en aistudio.google.com (empieza por AIza o Aq., ambas válidas).
 
 exports.handler = async (event) => {
   const resp = (statusCode, obj) => ({
@@ -29,28 +24,24 @@ exports.handler = async (event) => {
   const { image, prompt } = body;
   if (!image || !prompt) return resp(400, { error: 'Faltan datos (image/prompt)' });
 
-  // Modelo de Groq con visión (ve imágenes). Rápido y gratuito.
-  const MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
-  const url = 'https://api.groq.com/openai/v1/chat/completions';
+  // Gemini 2.0 Flash: rápido, gratuito y soporta imágenes.
+  const MODEL = 'gemini-2.0-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${API_KEY}`;
 
-  // Groq usa el formato compatible con OpenAI: la imagen va como data URL.
   const payload = {
-    model: MODEL,
-    temperature: 0.2,
-    max_tokens: 1000,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: prompt },
-          { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + image } }
-        ]
-      }
-    ]
+    contents: [{
+      parts: [
+        { text: prompt },
+        { inline_data: { mime_type: 'image/jpeg', data: image } }
+      ]
+    }],
+    generationConfig: {
+      temperature: 0.2,
+      maxOutputTokens: 1000
+    }
   };
 
-  // Hasta 2 intentos. El 2.º solo si fue un error transitorio (5xx o red);
-  // el 429 (límite) NO se reintenta aquí porque no se libera en 1-2 segundos.
+  // Hasta 2 intentos ante errores transitorios de red o saturación (5xx).
   let last = { status: 0, msg: 'desconocido' };
 
   for (let intento = 1; intento <= 2; intento++) {
@@ -58,43 +49,39 @@ exports.handler = async (event) => {
     try {
       res = await fetch(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + API_KEY
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       data = await res.json();
     } catch (err) {
-      console.log('FALLO de red al llamar a Groq:', String(err));
+      console.log('FALLO de red al llamar a Gemini:', String(err));
       last = { status: 503, msg: String(err) };
       if (intento < 2) { await new Promise(r => setTimeout(r, 1500)); continue; }
       break;
     }
 
-    console.log('GROQ status:', res.status);
+    console.log('GEMINI status:', res.status);
 
     if (res.ok) {
-      const text =
-        (data.choices &&
-          data.choices[0] &&
-          data.choices[0].message &&
-          data.choices[0].message.content) || '';
-      if (!text) return resp(502, { error: 'La IA no devolvió texto', detail: data });
-      console.log('GROQ texto extraído (primeros 200):', text.slice(0, 200));
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      if (!text) {
+        const reason = data?.candidates?.[0]?.finishReason || 'respuesta vacía';
+        console.log('GEMINI sin texto:', reason);
+        return resp(502, { error: 'Gemini no devolvió texto', detail: reason });
+      }
+      console.log('GEMINI respuesta (primeros 200):', text.slice(0, 200));
       return resp(200, { text });
     }
 
-    const msg = (data && data.error && data.error.message) ? data.error.message : 'desconocido';
-    console.log('GROQ ERROR ' + res.status + ':', msg);
+    const msg = data?.error?.message || 'desconocido';
+    console.log('GEMINI ERROR ' + res.status + ':', msg);
     last = { status: res.status, msg };
 
-    // Reintentar solo si es saturación transitoria (5xx).
+    // Reintentar solo ante saturación transitoria (5xx), no ante límite (429).
     if (res.status >= 500 && intento < 2) { await new Promise(r => setTimeout(r, 1500)); continue; }
     break;
   }
 
-  // Reenviar el código real: 429 = límite alcanzado, 5xx = saturación.
   const out = (last.status === 429 || last.status >= 500) ? last.status : 502;
-  return resp(out, { error: 'Groq devolvió un error', status: last.status, message: last.msg });
+  return resp(out, { error: 'Gemini devolvió un error', status: last.status, message: last.msg });
 };
