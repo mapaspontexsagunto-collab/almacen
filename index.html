@@ -1144,6 +1144,46 @@ function handlePhoto(e){const file=e.target.files[0];if(!file)return;const reade
 const AI_FILL_HINT='Opcional: haz una foto de la etiqueta/referencia y la IA rellena los datos (tú los revisas). Esta foto no se guarda.';
 function resetAiFillStatus(){const s=document.getElementById('ai-fill-status');if(s)s.textContent=AI_FILL_HINT;}
 
+// Mensaje de error claro para el usuario según lo que devolvió el servidor de IA
+function aiErrorMsg(err){
+  const s=err&&err.status;
+  if(err&&err.kind==='red') return 'Sin conexión con el servidor. Comprueba tu internet e inténtalo de nuevo.';
+  if(s===502||s===503||s===504||s===500) return 'El servidor de IA está saturado o ha dado un error ('+s+'). Espera unos segundos e inténtalo otra vez.';
+  if(s===429||s===529) return 'La IA está recibiendo muchas peticiones ahora mismo ('+s+'). Espera unos segundos y reintenta.';
+  if(s===401||s===403) return 'La IA rechazó la petición ('+s+'). Puede ser un problema con la clave o el saldo de la API.';
+  return 'No se pudo analizar la imagen. Si lo pruebas dentro de Claude es normal: la IA solo funciona en la versión publicada en Netlify y con conexión.';
+}
+
+// Llama a la función de IA de Netlify con reintento automático.
+// Reintenta ante errores típicos de saturación o límite (429/500/502/503/504/529).
+// Devuelve {data} si va bien, o lanza un error con {status} para mostrar un mensaje claro.
+async function aiBuscar(b64, prompt){
+  const reintentables=[429,500,502,503,504,529];
+  let ultimoEstado=0;
+  for(let intento=1; intento<=3; intento++){
+    let resp;
+    try{
+      resp=await fetch('/.netlify/functions/buscar',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({image:b64, prompt})
+      });
+    }catch(e){
+      // Error de red: reintentar
+      if(intento<3){await new Promise(r=>setTimeout(r,intento*1500));continue;}
+      const err=new Error('red');err.kind='red';throw err;
+    }
+    if(resp.ok) return await resp.json();
+    ultimoEstado=resp.status;
+    if(reintentables.includes(resp.status) && intento<3){
+      await new Promise(r=>setTimeout(r,intento*1800)); // pausa creciente
+      continue;
+    }
+    const err=new Error('HTTP '+resp.status);err.status=resp.status;throw err;
+  }
+  const err=new Error('HTTP '+ultimoEstado);err.status=ultimoEstado;throw err;
+}
+
 async function aiFillFromPhoto(e){
   const file=e.target.files[0];if(!file)return;
   e.target.value=''; // permitir repetir la misma foto
@@ -1178,20 +1218,14 @@ Devuelve SOLO un objeto JSON (sin texto adicional, sin markdown) con esta estruc
 Rellena solo lo que puedas deducir de la foto. Si un dato no se ve, deja la cadena vacía. No inventes referencias.`;
 
   try{
-    const response=await fetch('/.netlify/functions/buscar',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({image:b64, prompt})
-    });
-    if(!response.ok)throw new Error('Error del servidor: '+response.status);
-    const data=await response.json();
+    const data=await aiBuscar(b64, prompt);
     let text=(data.text||'').trim().replace(/```json|```/g,'').trim();
     let r;try{r=JSON.parse(text);}catch(err){throw new Error('Respuesta no válida');}
     applyAiFill(r);
     status.textContent='✓ Datos rellenados por la IA. Revísalos y corrige lo que haga falta antes de guardar.';
   }catch(err){
     console.error(err);
-    status.textContent='No se pudo analizar la foto. La IA solo funciona en la versión publicada en Netlify y con conexión a internet.';
+    status.textContent = aiErrorMsg(err);
   }finally{
     btn.disabled=false;btn.style.opacity='';
   }
@@ -1783,20 +1817,14 @@ Devuelve SOLO un objeto JSON (sin texto adicional, sin markdown):
 }`;
 
   try{
-    const response=await fetch('/.netlify/functions/buscar',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({image:b64, prompt:prompt})
-    });
-    if(!response.ok)throw new Error('Error del servidor: '+response.status);
-    const data=await response.json();
+    const data=await aiBuscar(b64, prompt);
     let text=(data.text||'').trim().replace(/```json|```/g,'').trim();
     let r;
-    try{r=JSON.parse(text);}catch(e){throw new Error('Respuesta no v\u00e1lida');}
+    try{r=JSON.parse(text);}catch(e){throw new Error('Respuesta no válida');}
     renderAIResult(buildAIMatches(r));   // la app busca las coincidencias en el inventario local
   }catch(err){
     console.error(err);
-    document.getElementById('ai-result').innerHTML='<div class="empty"><p>No se pudo analizar la imagen. Si est\u00e1s probando dentro de Claude esto es normal: la b\u00fasqueda por IA solo funciona en la versi\u00f3n publicada en Netlify. Comprueba tambi\u00e9n la conexi\u00f3n a internet.</p></div>';
+    document.getElementById('ai-result').innerHTML='<div class="empty"><p>'+esc(aiErrorMsg(err))+'</p></div>';
   }
 }
 
