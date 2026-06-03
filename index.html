@@ -1158,7 +1158,9 @@ function aiErrorMsg(err){
 // Reintenta ante errores típicos de saturación o límite (429/500/502/503/504/529).
 // Devuelve {data} si va bien, o lanza un error con {status} para mostrar un mensaje claro.
 async function aiBuscar(b64, prompt){
-  const reintentables=[429,500,502,503,504,529];
+  // OJO: NO se reintenta el 429 (límite). Reintentar un límite solo gasta más cupo
+  // y provoca más 429. Solo reintentamos errores de servidor transitorios.
+  const reintentables=[500,502,503,504];
   let ultimoEstado=0;
   for(let intento=1; intento<=3; intento++){
     let resp;
@@ -1192,7 +1194,7 @@ async function aiFillFromPhoto(e){
   // Reducir la imagen antes de enviarla
   const dataUrl=await new Promise((res,rej)=>{
     const reader=new FileReader();
-    reader.onload=ev=>{const img=new Image();img.onload=()=>{const max=900;let w=img.width,h=img.height;if(w>max||h>max){if(w>h){h=h*max/w;w=max;}else{w=w*max/h;h=max;}}const cv=document.createElement('canvas');cv.width=w;cv.height=h;cv.getContext('2d').drawImage(img,0,0,w,h);res(cv.toDataURL('image/jpeg',0.8));};img.onerror=rej;img.src=ev.target.result;};
+    reader.onload=ev=>{const img=new Image();img.onload=()=>{const max=600;let w=img.width,h=img.height;if(w>max||h>max){if(w>h){h=h*max/w;w=max;}else{w=w*max/h;h=max;}}const cv=document.createElement('canvas');cv.width=w;cv.height=h;cv.getContext('2d').drawImage(img,0,0,w,h);res(cv.toDataURL('image/jpeg',0.8));};img.onerror=rej;img.src=ev.target.result;};
     reader.onerror=rej;reader.readAsDataURL(file);
   });
   const b64=dataUrl.split(',')[1];
@@ -1782,7 +1784,7 @@ function handleAIPhoto(e){
   reader.onload=ev=>{
     const img=new Image();
     img.onload=()=>{
-      const max=700;let w=img.width,h=img.height;
+      const max=600;let w=img.width,h=img.height;
       if(w>max||h>max){if(w>h){h=h*max/w;w=max;}else{w=w*max/h;h=max;}}
       const cv=document.createElement('canvas');cv.width=w;cv.height=h;
       cv.getContext('2d').drawImage(img,0,0,w,h);
