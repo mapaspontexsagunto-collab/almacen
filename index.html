@@ -25,6 +25,16 @@
 .login-error{color:#b91c1c;font-size:13px;min-height:18px;margin-bottom:8px;font-weight:600;}
 .login-btn{width:100%;padding:14px;background:#1a1916;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer;}
 .login-btn:active{opacity:0.85;}
+#warehouse-screen{position:fixed;inset:0;background:#1a1916;display:none;align-items:center;justify-content:center;z-index:10001;padding:24px;}
+.wh-box{background:#fff;border-radius:20px;padding:30px 24px;width:100%;max-width:380px;box-shadow:0 20px 60px rgba(0,0,0,0.4);text-align:center;}
+.wh-box h1{font-size:21px;margin-bottom:6px;color:#1a1916;}
+.wh-box .login-sub{margin-bottom:22px;}
+.wh-btn{display:flex;align-items:center;gap:14px;width:100%;box-sizing:border-box;padding:18px;margin-bottom:14px;border:1.5px solid #d8d5cf;border-radius:14px;background:#fff;cursor:pointer;text-align:left;transition:border-color .12s,background .12s;}
+.wh-btn:active{background:#f5f4f0;}
+.wh-btn .wh-ic{font-size:34px;line-height:1;flex-shrink:0;}
+.wh-btn .wh-tx{font-size:17px;font-weight:700;color:#1a1916;}
+.wh-btn .wh-tx small{display:block;font-size:12px;font-weight:500;color:#6b6760;margin-top:2px;}
+.login-back{background:none;border:none;color:#6b6760;font-size:13px;font-weight:600;cursor:pointer;margin-top:6px;padding:6px;}
 :root{
   --bg:#f5f4f0;--surface:#fff;--surface2:#eeecea;--border:#d8d5cf;--border2:#c8c4bc;
   --text:#1a1916;--text2:#6b6760;--text3:#9b9890;--accent:#1a1916;--accent-text:#f5f4f0;
@@ -277,20 +287,33 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 </style>
 </head>
 <body>
+<div id="warehouse-screen">
+  <div class="wh-box">
+    <h1>Elige el almacén</h1>
+    <p class="login-sub">¿A qué almacén quieres acceder?</p>
+    <button class="wh-btn" onclick="selectWarehouse('electrico')">
+      <span class="wh-ic">⚡</span><span class="wh-tx">Almacén Eléctrico<small>Material eléctrico</small></span>
+    </button>
+    <button class="wh-btn" onclick="selectWarehouse('mecanico')">
+      <span class="wh-ic">🔧</span><span class="wh-tx">Almacén Mecánico<small>Material mecánico</small></span>
+    </button>
+  </div>
+</div>
 <div id="login-screen">
   <div class="login-box">
-    <div class="login-logo">⚡</div>
-    <h1>Almacén Eléctrico</h1>
+    <div class="login-logo" id="login-logo-icon">⚡</div>
+    <h1 id="login-title">Almacén Eléctrico</h1>
     <p class="login-sub">Introduce tus credenciales para acceder</p>
     <div class="login-fg"><label>Usuario</label><input type="text" id="login-user" autocomplete="username" placeholder="Usuario"></div>
     <div class="login-fg"><label>Contraseña</label><input type="password" id="login-pass" autocomplete="current-password" placeholder="Contraseña" onkeydown="if(event.key==='Enter')doLogin()"></div>
     <div id="login-error" class="login-error"></div>
     <button class="login-btn" onclick="doLogin()">Entrar</button>
+    <button class="login-back" onclick="backToWarehouse()">← Cambiar de almacén</button>
   </div>
 </div>
 <div class="app" id="app-root" style="display:none;">
   <div class="topbar">
-    <div class="logo">⚡ Almacén Eléctrico</div>
+    <div class="logo" id="topbar-logo">⚡ Almacén Eléctrico</div>
     <div class="actions">
       <button class="sync-badge" id="sync-badge" onclick="manualSync()" title="Estado de sincronización (toca para sincronizar)">
         <span class="sync-dot" id="sync-dot"></span><span id="sync-text">…</span>
@@ -504,6 +527,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
       <div class="fg"><label class="fl">Stock</label><input type="number" class="fi" id="f-stock" placeholder="0" min="0"></div>
       <div class="fg"><label class="fl">Stock mínimo</label><input type="number" class="fi" id="f-min" placeholder="2" min="0"></div>
     </div>
+    <div class="msub" style="margin:-6px 0 6px;">Pon el mínimo en <strong>0</strong> si ya no quieres tener este artículo en almacén: no aparecerá como stock bajo ni sin stock.</div>
     <div class="fr">
       <div class="fg"><label class="fl">Referencia</label><input type="text" class="fi" id="f-ref" placeholder="Ej: LRD10"></div>
       <div class="fg"><label class="fl">Marca</label><input type="text" class="fi" id="f-brand" placeholder="Ej: Schneider"></div>
@@ -660,7 +684,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 
 <script>
 let db;
-const DB_NAME='almacen_db',STORE='items',CFG='config';
+let DB_NAME='almacen_db';const STORE='items',CFG='config';
 function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB_NAME,1);r.onupgradeneeded=e=>{const d=e.target.result;if(!d.objectStoreNames.contains(STORE))d.createObjectStore(STORE,{keyPath:'id'});if(!d.objectStoreNames.contains(CFG))d.createObjectStore(CFG,{keyPath:'key'});};r.onsuccess=e=>{db=e.target.result;res();};r.onerror=e=>rej(e);});}
 function dbGetAll(){return new Promise(res=>{const t=db.transaction(STORE,'readonly').objectStore(STORE).getAll();t.onsuccess=()=>res(t.result||[]);});}
 function dbPut(item){return new Promise(res=>{const t=db.transaction(STORE,'readwrite').objectStore(STORE).put(item);t.onsuccess=()=>res();});}
@@ -689,28 +713,28 @@ async function cloudPut(item){
   const cloudItem={...item};
   cloudItem.categories=item.cats||[];
   delete cloudItem.cats;
-  try{const{error}=await sb.from('items').upsert(cloudItem,{onConflict:'id'});if(error)throw error;cloudOK=true;}
+  try{const{error}=await sb.from(WH.tblItems).upsert(cloudItem,{onConflict:'id'});if(error)throw error;cloudOK=true;}
   catch(e){cloudOK=false;console.warn('cloudPut error',e);}
 }
 async function cloudDelete(id){
   if(!sb)return;
-  try{const{error}=await sb.from('items').delete().eq('id',id);if(error)throw error;cloudOK=true;}
+  try{const{error}=await sb.from(WH.tblItems).delete().eq('id',id);if(error)throw error;cloudOK=true;}
   catch(e){cloudOK=false;console.warn('cloudDelete error',e);}
 }
 async function cloudGetAll(){
   if(!sb)return null;
-  try{const{data,error}=await sb.from('items').select('*');if(error)throw error;cloudOK=true;return data||[];}
+  try{const{data,error}=await sb.from(WH.tblItems).select('*');if(error)throw error;cloudOK=true;return data||[];}
   catch(e){cloudOK=false;console.warn('cloudGetAll error',e);return null;}
 }
 // Config (categorías y estanterías) en tabla aparte 'config'
 async function cloudCfgPut(key,value){
   if(!sb)return;
-  try{const{error}=await sb.from('config').upsert({key,value},{onConflict:'key'});if(error)throw error;}
+  try{const{error}=await sb.from(WH.tblCfg).upsert({key,value},{onConflict:'key'});if(error)throw error;}
   catch(e){console.warn('cloudCfgPut error',e);}
 }
 async function cloudCfgGet(key){
   if(!sb)return null;
-  try{const{data,error}=await sb.from('config').select('value').eq('key',key).maybeSingle();if(error)throw error;return data?data.value:null;}
+  try{const{data,error}=await sb.from(WH.tblCfg).select('value').eq('key',key).maybeSingle();if(error)throw error;return data?data.value:null;}
   catch(e){console.warn('cloudCfgGet error',e);return null;}
 }
 function setCloudStatus(ok){
@@ -795,7 +819,7 @@ async function cloudPutRetry(item, intentos=3){
   delete cloudItem.cats;
   for(let n=0;n<intentos;n++){
     try{
-      const{error}=await sb.from('items').upsert(cloudItem,{onConflict:'id'});
+      const{error}=await sb.from(WH.tblItems).upsert(cloudItem,{onConflict:'id'});
       if(!error){return true;}
     }catch(e){/* reintentar */}
     await new Promise(r=>setTimeout(r, 400*(n+1))); // espera creciente
@@ -866,8 +890,8 @@ let alertFilter=''; // '', 'low' o 'out'
 function updateStats(){
   document.getElementById('s-total').textContent=items.length;
   document.getElementById('s-locs').textContent=new Set(items.map(i=>i.loc)).size;
-  document.getElementById('s-low').textContent=items.filter(i=>i.stock>0&&i.stock<=i.min).length;
-  document.getElementById('s-out').textContent=items.filter(i=>i.stock===0).length;
+  document.getElementById('s-low').textContent=items.filter(isLow).length;
+  document.getElementById('s-out').textContent=items.filter(isOut).length;
   renderAlerts();
 }
 
@@ -884,13 +908,13 @@ function renderAlerts(){
 
   let list, titulo;
   if(alertFilter==='low'){
-    list=items.filter(i=>i.stock>0&&i.stock<=i.min);
+    list=items.filter(isLow);
     titulo='Material con stock bajo';
   }else if(alertFilter==='out'){
-    list=items.filter(i=>i.stock===0);
+    list=items.filter(isOut);
     titulo='Material sin stock';
   }else{
-    list=items.filter(i=>i.stock<=i.min);
+    list=items.filter(i=>isLow(i)||isOut(i));
     titulo='Alertas de stock';
   }
   document.getElementById('alerts-title').textContent=titulo;
@@ -967,7 +991,7 @@ function renderItems(){
       const abierta = expandedShelf===s.id;
       // Color del contador según estado de stock
       let dot='';
-      if(its.length){const cls=its.some(i=>i.stock===0)?'out':its.some(i=>i.stock>0&&i.stock<=i.min)?'low':'occ';dot=`<span class="balda-dot ${cls}" style="margin-right:6px;"></span>`;}
+      if(its.length){const cls=its.some(isOut)?'out':its.some(isLow)?'low':'occ';dot=`<span class="balda-dot ${cls}" style="margin-right:6px;"></span>`;}
       html+=`<div class="shelf-group">
         <div class="shelf-group-head ${abierta?'open':''}" onclick="toggleShelfGroup('${s.id}')">
           <div style="display:flex;align-items:center;flex:1;">${dot}<strong>${esc(s.name)}</strong></div>
@@ -1136,7 +1160,8 @@ async function aiFillFromPhoto(e){
   status.textContent='⏳ Analizando la foto y rellenando los datos...';
 
   const cats=[...new Set([...categories,...items.map(i=>i.cat)])].filter(Boolean);
-  const prompt=`Eres un experto en material eléctrico industrial. Te paso la foto de la etiqueta/referencia de un artículo de almacén. Extrae sus datos para rellenar una ficha.
+  const expertoEn = (WH && WH.key==='mecanico') ? 'material mecánico industrial' : 'material eléctrico industrial';
+  const prompt=`Eres un experto en ${expertoEn}. Te paso la foto de la etiqueta/referencia de un artículo de almacén. Extrae sus datos para rellenar una ficha.
 
 Categorías ya existentes en el almacén: ${cats.join(', ')||'ninguna'}
 
@@ -1203,7 +1228,9 @@ async function saveItem(){
   if(cat&&!categories.includes(cat)){categories.push(cat);await cfgPut('categories',categories);await cloudCfgPut('categories',categories);}
   // Familias adicionales (sin incluir la principal ni duplicados)
   const extraCats=[...selectedExtraCats].filter(c=>c&&c!==cat);
-  const item={id:editingId||('I'+Date.now()+Math.floor(Math.random()*1000)),name,cat,cats:extraCats,loc:shelf+'-'+balda,stock:parseInt(document.getElementById('f-stock').value)||0,min:parseInt(document.getElementById('f-min').value)||2,ref:document.getElementById('f-ref').value.trim(),brand:document.getElementById('f-brand').value.trim(),machine:document.getElementById('f-machine').value.trim(),notes:document.getElementById('f-notes').value.trim(),photo:pendingPhoto};
+  const minRaw=document.getElementById('f-min').value.trim();
+  const minVal = minRaw==='' ? 2 : (parseInt(minRaw)||0);
+  const item={id:editingId||('I'+Date.now()+Math.floor(Math.random()*1000)),name,cat,cats:extraCats,loc:shelf+'-'+balda,stock:parseInt(document.getElementById('f-stock').value)||0,min:minVal,ref:document.getElementById('f-ref').value.trim(),brand:document.getElementById('f-brand').value.trim(),machine:document.getElementById('f-machine').value.trim(),notes:document.getElementById('f-notes').value.trim(),photo:pendingPhoto};
   await dbPut(item);await cloudPut(item);items=await dbGetAll();closeModal('modal-form');renderAll();toast(editingId?'✓ Actualizado':'✓ Añadido al almacén');
 }
 
@@ -1248,7 +1275,7 @@ function renderMap(){
     let cls='';
     if(!mapEditing){
       const its=items.filter(i=>i.loc&&i.loc.startsWith(s.id+'-'));
-      if(its.length)cls=its.some(i=>i.stock===0)?'out':its.some(i=>i.stock>0&&i.stock<=i.min)?'low':'occ';
+      if(its.length)cls=its.some(isOut)?'out':its.some(isLow)?'low':'occ';
     }
     const barColor=cls==='out'?'#dc2626':cls==='low'?'#d97706':cls==='occ'?'#2563eb':'transparent';
     const count=mapEditing?'':items.filter(i=>i.loc&&i.loc.startsWith(s.id+'-')).length;
@@ -1711,7 +1738,7 @@ function showQR(){if(!currentItem)return;document.getElementById('qr-item-name')
 function openScanner(){openModal('modal-scan');scanner=new Html5Qrcode('qr-reader');scanner.start({facingMode:'environment'},{fps:10,qrbox:220},text=>{if(text.startsWith('ALMACEN:')){const id=text.replace('ALMACEN:','');closeScanner();const found=items.find(i=>i.id===id);if(found)openDetail(id);else toast('Componente no encontrado');}},()=>{}).catch(e=>{toast('No se pudo abrir la cámara');console.error(e);});}
 function closeScanner(){if(scanner){scanner.stop().then(()=>{scanner.clear();scanner=null;}).catch(()=>{scanner=null;});}closeModal('modal-scan');}
 
-async function exportData(){const data={version:2,exported:new Date().toISOString(),categories,shelves,items:await dbGetAll()};const blob=new Blob([JSON.stringify(data)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='almacen_backup_'+new Date().toISOString().slice(0,10)+'.json';a.click();toast('✓ Copia descargada');}
+async function exportData(){const data={version:2,exported:new Date().toISOString(),categories,shelves,items:await dbGetAll()};const blob=new Blob([JSON.stringify(data)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='almacen_backup_'+(WH?WH.key+'_':'')+new Date().toISOString().slice(0,10)+'.json';a.click();toast('✓ Copia descargada');}
 function importData(e){const file=e.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=async ev=>{try{const data=JSON.parse(ev.target.result);if(!data.items)throw new Error('no valid');document.getElementById('confirm-title').textContent='Importar copia';document.getElementById('confirm-msg').textContent='Reemplazará el inventario actual con '+data.items.length+' items. ¿Continuar?';document.getElementById('confirm-ok').onclick=async()=>{await dbClear();for(const it of data.items)await dbPut(it);categories=data.categories||[];if(data.shelves&&data.shelves.length)shelves=data.shelves;await cfgPut('categories',categories);await cfgPut('shelves',shelves);items=await dbGetAll();closeModal('modal-confirm');renderAll();toast('⏳ Subiendo a la nube...');for(const it of items)await cloudPut(it);await cloudCfgPut('categories',categories);await cloudCfgPut('shelves',shelves);toast('✓ Importado y sincronizado ('+items.length+' items)');};openModal('modal-confirm');}catch(err){toast('Error: archivo no válido');}};reader.readAsText(file);}
 // ===== BÚSQUEDA POR FOTO CON IA =====
 function handleAIPhoto(e){
@@ -1743,7 +1770,8 @@ async function runAISearch(dataUrl){
   const cats=[...new Set(items.map(i=>i.cat))].filter(Boolean);
   const b64=dataUrl.split(',')[1];
 
-  const prompt=`Eres un experto en material eléctrico industrial. Analiza la foto del componente.
+  const expertoEn = (WH && WH.key==='mecanico') ? 'material mecánico industrial' : 'material eléctrico industrial';
+  const prompt=`Eres un experto en ${expertoEn}. Analiza la foto del componente.
 
 Tengo este inventario de almacén (JSON):
 ${JSON.stringify(inv)}
@@ -1822,8 +1850,8 @@ function exportExcel(){
 async function doExportExcel(scope){
   closeModal('modal-excel-scope');
   let all = await dbGetAll();
-  if(scope==='out') all = all.filter(i=>i.stock===0);
-  else if(scope==='low') all = all.filter(i=>i.stock>0 && i.stock<=i.min);
+  if(scope==='out') all = all.filter(isOut);
+  else if(scope==='low') all = all.filter(isLow);
   if(!all.length){
     toast(scope==='out'?'No hay artículos sin stock':scope==='low'?'No hay artículos con stock bajo':'No hay datos');
     return;
@@ -1834,7 +1862,7 @@ async function doExportExcel(scope){
   if(btn){btn.disabled=true;btn.style.opacity='0.6';}
   try{
     const wb = new ExcelJS.Workbook();
-    wb.creator = 'Almacén Eléctrico';
+    wb.creator = WH ? WH.name : 'Almacén';
     wb.created = new Date();
     const ws = wb.addWorksheet('Inventario');
 
@@ -1900,11 +1928,11 @@ async function doExportExcel(scope){
           const ext = mimeMatch ? (mimeMatch[1]==='jpg'?'jpeg':mimeMatch[1]) : 'jpeg';
           const b64 = parts[1];
           const imgId = wb.addImage({base64: b64, extension: ext});
-          // tl = top-left, br = bottom-right (en coordenadas de celda 0-based)
+          // Anclar la imagen DENTRO de su celda (esquina sup-izq a inf-der, con un pequeño margen).
+          // Así cada foto se queda en su fila y no se desplaza a la de abajo.
           ws.addImage(imgId, {
-            tl: {col:0, row: rowNum - 1},
-            br: {col:1, row: rowNum},
-            editAs: 'oneCell',
+            tl: {col: 0.06, row: (rowNum - 1) + 0.06},
+            br: {col: 0.94, row: rowNum - 0.06},
           });
         }catch(e){
           console.warn('No se pudo incrustar imagen para',i.name,e);
@@ -1915,15 +1943,15 @@ async function doExportExcel(scope){
     // Fijar cabecera al hacer scroll
     ws.views = [{state:'frozen', ySplit:1}];
 
-    // Autofiltro en cabecera
-    ws.autoFilter = {from:'A1', to:'J1'};
+    // Autofiltro en TODAS las filas (cabecera + datos) para poder filtrar por categoría, marca, etc.
+    ws.autoFilter = 'A1:J' + (all.length + 1);
 
     // Generar y descargar
     const buf = await wb.xlsx.writeBuffer();
     const blob = new Blob([buf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'inventario' + suf + '_' + new Date().toISOString().slice(0,10) + '.xlsx';
+    a.download = 'inventario_' + (WH?WH.key:'') + suf + '_' + new Date().toISOString().slice(0,10) + '.xlsx';
     a.click();
     toast('✓ Excel exportado con imágenes');
   }catch(err){
@@ -1958,7 +1986,10 @@ async function loadDemo(){
   await cfgPut('categories',categories);await cloudCfgPut('categories',categories);items=await dbGetAll();renderAll();toast('✓ Datos de ejemplo cargados');
 }
 
-function stockBadge(i){if(i.stock===0)return'<span class="badge badge-out">Sin stock</span>';if(i.stock<=i.min)return`<span class="badge badge-low">↓ ${i.stock}</span>`;return`<span class="badge badge-ok">${i.stock} uds.</span>`;}
+// Estado de stock. Si el mínimo es 0, el artículo NO genera alertas (descatalogado / ya no se tiene).
+function isOut(i){return (i.min||0)>0 && (i.stock||0)===0;}
+function isLow(i){return (i.min||0)>0 && i.stock>0 && i.stock<=i.min;}
+function stockBadge(i){if(isOut(i))return'<span class="badge badge-out">Sin stock</span>';if(isLow(i))return`<span class="badge badge-low">↓ ${i.stock}</span>`;return`<span class="badge badge-ok">${i.stock} uds.</span>`;}
 function esc(s){return(s||'').toString().replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
@@ -1967,16 +1998,55 @@ function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t
 // para que no se cierren por accidente mientras consultas o añades.
 // (Antes un toque en el fondo oscuro cerraba el modal.)
 // ===== LOGIN / SESIÓN =====
+// ===== ALMACENES (bases de datos separadas) =====
 const AUTH_USER='manteni';
-const AUTH_PASS='Electrico';
-const AUTH_KEY='almacen_sesion_ok';
+const WAREHOUSES={
+  electrico:{key:'electrico',name:'Almacén Eléctrico',icon:'⚡',pass:'Electrico',db:'almacen_db',    tblItems:'items',    tblCfg:'config',     sesKey:'almacen_sesion_electrico'},
+  mecanico: {key:'mecanico', name:'Almacén Mecánico', icon:'🔧',pass:'Mecanico', db:'almacen_mec_db',tblItems:'items_mec',tblCfg:'config_mec', sesKey:'almacen_sesion_mecanico'}
+};
+let WH=null;            // almacén activo
 let appStarted=false;
 
+function applyBranding(){
+  if(!WH)return;
+  document.getElementById('login-logo-icon').textContent=WH.icon;
+  document.getElementById('login-title').textContent=WH.name;
+  document.getElementById('topbar-logo').textContent=WH.icon+' '+WH.name;
+  document.title=WH.name;
+}
+
+function showWarehouseSelector(){
+  document.getElementById('warehouse-screen').style.display='flex';
+  document.getElementById('login-screen').style.display='none';
+}
+
+function selectWarehouse(key){
+  WH=WAREHOUSES[key];
+  DB_NAME=WH.db;                 // base de datos local separada
+  applyBranding();
+  document.getElementById('warehouse-screen').style.display='none';
+  let ok=false;
+  try{ok=localStorage.getItem(WH.sesKey)==='1';}catch(e){}
+  if(ok){enterApp();}
+  else{
+    document.getElementById('login-error').textContent='';
+    document.getElementById('login-pass').value='';
+    document.getElementById('login-screen').style.display='flex';
+    setTimeout(()=>document.getElementById('login-user').focus(),100);
+  }
+}
+
+function backToWarehouse(){
+  document.getElementById('login-screen').style.display='none';
+  showWarehouseSelector();
+}
+
 function doLogin(){
+  if(!WH){showWarehouseSelector();return;}
   const u=document.getElementById('login-user').value.trim();
   const p=document.getElementById('login-pass').value;
-  if(u===AUTH_USER && p===AUTH_PASS){
-    try{localStorage.setItem(AUTH_KEY,'1');}catch(e){}
+  if(u===AUTH_USER && p===WH.pass){
+    try{localStorage.setItem(WH.sesKey,'1');}catch(e){}
     enterApp();
   }else{
     document.getElementById('login-error').textContent='Usuario o contraseña incorrectos';
@@ -1985,24 +2055,20 @@ function doLogin(){
 }
 
 function enterApp(){
+  document.getElementById('warehouse-screen').style.display='none';
   document.getElementById('login-screen').style.display='none';
   document.getElementById('app-root').style.display='';
   if(!appStarted){appStarted=true;init();}
 }
 
-function checkSession(){
-  let ok=false;
-  try{ok=localStorage.getItem(AUTH_KEY)==='1';}catch(e){ok=false;}
-  if(ok){enterApp();}
-  else{document.getElementById('login-screen').style.display='flex';setTimeout(()=>document.getElementById('login-user').focus(),100);}
-}
-
 function logout(){
-  try{localStorage.removeItem(AUTH_KEY);}catch(e){}
+  try{if(WH)localStorage.removeItem(WH.sesKey);}catch(e){}
   location.reload();
 }
 
-checkSession();
+// Al abrir, siempre se elige primero el almacén
+showWarehouseSelector();
+
 </script>
 </body>
 </html>
