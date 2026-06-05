@@ -240,10 +240,11 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 @media print{
   /* Ocultar TODA la app al imprimir */
   body > *{display:none !important;}
-  #print-area{display:block !important;}
-  @page{size:A4;margin:8mm 5mm;}
+  #print-area{display:block !important;margin:0;padding:0;}
+  /* @page base sin márgenes: los márgenes los pone el labels-sheet con padding */
+  @page{size:A4;margin:0;}
   html,body{background:#fff !important;margin:0;padding:0;}
-  .labels-sheet{display:flex;flex-wrap:wrap;align-content:flex-start;}
+  .labels-sheet{display:flex;flex-wrap:wrap;align-content:flex-start;margin:0;padding:0;}
   .print-label{box-sizing:border-box;display:flex;align-items:center;
     overflow:hidden;page-break-inside:avoid;break-inside:avoid;}
   .print-label .pl-text{flex:1;min-width:0;font-family:Arial,sans-serif;color:#000;}
@@ -253,20 +254,44 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .print-label .pl-loc{font-weight:bold;line-height:1.1;}
   .print-label.empty-label{visibility:hidden;}
-  /* Tamaño grande: 70 x 37 mm (24 por hoja A4, 3 columnas x 8 filas) */
-  .labels-sheet.size-big .print-label{width:70mm;height:37mm;padding:2.5mm;gap:2.5mm;}
+
+  /*
+   * APLI 01273 — 70 × 37 mm — 3 col × 8 fil = 24 etiq/hoja
+   * Márgenes hoja: sup 13mm, izq 5mm, sep H 0mm, sep V 0mm
+   */
+  .labels-sheet.size-big{
+    padding-top:13mm;
+    padding-left:5mm;
+    padding-right:0;
+    padding-bottom:0;
+    column-gap:0mm;
+    row-gap:0mm;
+  }
+  .labels-sheet.size-big .print-label{width:70mm;height:37mm;padding:2mm 2.5mm;gap:2mm;}
   .labels-sheet.size-big .pl-qr{width:30mm;height:30mm;flex-shrink:0;}
   .labels-sheet.size-big .pl-qr img,.labels-sheet.size-big .pl-qr canvas{width:30mm !important;height:30mm !important;}
-  .labels-sheet.size-big .pl-name{font-size:9pt;margin-bottom:1mm;-webkit-line-clamp:2;}
-  .labels-sheet.size-big .pl-ref{font-size:7.5pt;}
-  .labels-sheet.size-big .pl-loc{font-size:11pt;margin-top:1mm;}
-  /* Tamaño pequeño: 48,5 x 25,4 mm (40 por hoja A4, 4 columnas x 10 filas) */
-  .labels-sheet.size-small .print-label{width:48.5mm;height:25.4mm;padding:1.5mm;gap:1.5mm;}
-  .labels-sheet.size-small .pl-qr{width:21mm;height:21mm;flex-shrink:0;}
-  .labels-sheet.size-small .pl-qr img,.labels-sheet.size-small .pl-qr canvas{width:21mm !important;height:21mm !important;}
-  .labels-sheet.size-small .pl-name{font-size:6.5pt;margin-bottom:0.4mm;-webkit-line-clamp:2;}
-  .labels-sheet.size-small .pl-ref{font-size:5.5pt;}
-  .labels-sheet.size-small .pl-loc{font-size:8pt;margin-top:0.4mm;}
+  .labels-sheet.size-big .pl-name{font-size:8.5pt;margin-bottom:0.8mm;-webkit-line-clamp:2;}
+  .labels-sheet.size-big .pl-ref{font-size:7pt;}
+  .labels-sheet.size-big .pl-loc{font-size:10.5pt;margin-top:0.8mm;}
+
+  /*
+   * APLI 03054 — 48,5 × 25,4 mm — 4 col × 10 fil = 40 etiq/hoja
+   * Márgenes hoja: sup 10.7mm, izq 8mm, sep H 0mm, sep V 0mm
+   */
+  .labels-sheet.size-small{
+    padding-top:10.7mm;
+    padding-left:8mm;
+    padding-right:0;
+    padding-bottom:0;
+    column-gap:0mm;
+    row-gap:0mm;
+  }
+  .labels-sheet.size-small .print-label{width:48.5mm;height:25.4mm;padding:1.2mm 1.5mm;gap:1.2mm;}
+  .labels-sheet.size-small .pl-qr{width:20mm;height:20mm;flex-shrink:0;}
+  .labels-sheet.size-small .pl-qr img,.labels-sheet.size-small .pl-qr canvas{width:20mm !important;height:20mm !important;}
+  .labels-sheet.size-small .pl-name{font-size:6pt;margin-bottom:0.3mm;-webkit-line-clamp:2;}
+  .labels-sheet.size-small .pl-ref{font-size:5pt;}
+  .labels-sheet.size-small .pl-loc{font-size:7.5pt;margin-top:0.3mm;}
 }
 /* Rejilla visual para elegir posición inicial */
 .start-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:8px 0 14px;}
