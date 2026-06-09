@@ -220,6 +220,8 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .map-node.aisle{background:var(--surface2);border:1px dashed var(--border2);color:var(--text2);font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:0.5px;}
 .map-node.aisle span{width:100%;overflow-wrap:break-word;word-break:break-word;line-height:1.1;}
 /* ===== ETIQUETAS QR ===== */
+.label-filters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;}
+.lf-sel{flex:1;min-width:120px;padding:9px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);font-size:13px;color:var(--text);cursor:pointer;}
 .label-tabs{display:flex;gap:8px;margin-bottom:14px;}
 .label-tab{flex:1;padding:11px;border:1px solid var(--border);background:var(--surface);border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;color:var(--text2);display:flex;align-items:center;justify-content:center;gap:6px;}
 .label-tab.active{background:var(--text);color:var(--surface);border-color:var(--text);}
@@ -240,11 +242,10 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 @media print{
   /* Ocultar TODA la app al imprimir */
   body > *{display:none !important;}
-  #print-area{display:block !important;margin:0;padding:0;}
-  /* @page base sin márgenes: los márgenes los pone el labels-sheet con padding */
-  @page{size:A4;margin:0;}
+  #print-area{display:block !important;}
+  @page{size:A4;margin:8mm 5mm;}
   html,body{background:#fff !important;margin:0;padding:0;}
-  .labels-sheet{display:flex;flex-wrap:wrap;align-content:flex-start;margin:0;padding:0;}
+  .labels-sheet{display:flex;flex-wrap:wrap;align-content:flex-start;}
   .print-label{box-sizing:border-box;display:flex;align-items:center;
     overflow:hidden;page-break-inside:avoid;break-inside:avoid;}
   .print-label .pl-text{flex:1;min-width:0;font-family:Arial,sans-serif;color:#000;}
@@ -254,44 +255,20 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .print-label .pl-loc{font-weight:bold;line-height:1.1;}
   .print-label.empty-label{visibility:hidden;}
-
-  /*
-   * APLI 01273 — 70 × 37 mm — 3 col × 8 fil = 24 etiq/hoja
-   * Márgenes hoja: sup 13mm, izq 5mm, sep H 0mm, sep V 0mm
-   */
-  .labels-sheet.size-big{
-    padding-top:13mm;
-    padding-left:5mm;
-    padding-right:0;
-    padding-bottom:0;
-    column-gap:0mm;
-    row-gap:0mm;
-  }
-  .labels-sheet.size-big .print-label{width:70mm;height:37mm;padding:2mm 2.5mm;gap:2mm;}
+  /* Tamaño grande: 70 x 37 mm (24 por hoja A4, 3 columnas x 8 filas) */
+  .labels-sheet.size-big .print-label{width:70mm;height:37mm;padding:2.5mm;gap:2.5mm;}
   .labels-sheet.size-big .pl-qr{width:30mm;height:30mm;flex-shrink:0;}
   .labels-sheet.size-big .pl-qr img,.labels-sheet.size-big .pl-qr canvas{width:30mm !important;height:30mm !important;}
-  .labels-sheet.size-big .pl-name{font-size:8.5pt;margin-bottom:0.8mm;-webkit-line-clamp:2;}
-  .labels-sheet.size-big .pl-ref{font-size:7pt;}
-  .labels-sheet.size-big .pl-loc{font-size:10.5pt;margin-top:0.8mm;}
-
-  /*
-   * APLI 03054 — 48,5 × 25,4 mm — 4 col × 10 fil = 40 etiq/hoja
-   * Márgenes hoja: sup 10.7mm, izq 8mm, sep H 0mm, sep V 0mm
-   */
-  .labels-sheet.size-small{
-    padding-top:10.7mm;
-    padding-left:8mm;
-    padding-right:0;
-    padding-bottom:0;
-    column-gap:0mm;
-    row-gap:0mm;
-  }
-  .labels-sheet.size-small .print-label{width:48.5mm;height:25.4mm;padding:1.2mm 1.5mm;gap:1.2mm;}
-  .labels-sheet.size-small .pl-qr{width:20mm;height:20mm;flex-shrink:0;}
-  .labels-sheet.size-small .pl-qr img,.labels-sheet.size-small .pl-qr canvas{width:20mm !important;height:20mm !important;}
-  .labels-sheet.size-small .pl-name{font-size:6pt;margin-bottom:0.3mm;-webkit-line-clamp:2;}
-  .labels-sheet.size-small .pl-ref{font-size:5pt;}
-  .labels-sheet.size-small .pl-loc{font-size:7.5pt;margin-top:0.3mm;}
+  .labels-sheet.size-big .pl-name{font-size:9pt;margin-bottom:1mm;-webkit-line-clamp:2;}
+  .labels-sheet.size-big .pl-ref{font-size:7.5pt;}
+  .labels-sheet.size-big .pl-loc{font-size:11pt;margin-top:1mm;}
+  /* Tamaño pequeño: 48,5 x 25,4 mm (40 por hoja A4, 4 columnas x 10 filas) */
+  .labels-sheet.size-small .print-label{width:48.5mm;height:25.4mm;padding:1.5mm;gap:1.5mm;}
+  .labels-sheet.size-small .pl-qr{width:21mm;height:21mm;flex-shrink:0;}
+  .labels-sheet.size-small .pl-qr img,.labels-sheet.size-small .pl-qr canvas{width:21mm !important;height:21mm !important;}
+  .labels-sheet.size-small .pl-name{font-size:6.5pt;margin-bottom:0.4mm;-webkit-line-clamp:2;}
+  .labels-sheet.size-small .pl-ref{font-size:5.5pt;}
+  .labels-sheet.size-small .pl-loc{font-size:8pt;margin-top:0.4mm;}
 }
 /* Rejilla visual para elegir posición inicial */
 .start-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:8px 0 14px;}
@@ -427,6 +404,10 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
           <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 17v-6h6v6M3 7h18M5 7v12a2 2 0 002 2h10a2 2 0 002-2V7" stroke-width="1.8" stroke-linecap="round"/></svg>
           Exportar a Excel (con imágenes)
         </button>
+        <button class="btn btn-block" style="margin-top:10px;" onclick="exportMovimientos()" id="btn-mov">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10" stroke-width="1.8" stroke-linecap="round"/><path d="M17 15l3 3-3 3" stroke-width="1.8" stroke-linecap="round"/></svg>
+          Exportar movimientos (entradas/salidas)
+        </button>
       </div>
     </div>
     <div class="card"><div class="card-h">Etiquetas QR</div>
@@ -465,6 +446,12 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div class="label-tabs">
       <button class="label-tab active" id="ltab-all" onclick="setLabelTab('all')">Todas</button>
       <button class="label-tab" id="ltab-pending" onclick="setLabelTab('pending')">Sin imprimir <span class="lt-badge" id="pending-count">0</span></button>
+    </div>
+    <div class="label-filters">
+      <select class="lf-sel" id="lf-shelf" onchange="onLabelShelfChange()"><option value="">Toda estanter&iacute;a</option></select>
+      <select class="lf-sel" id="lf-balda" onchange="applyLabelFilters()"><option value="">Toda balda</option></select>
+      <select class="lf-sel" id="lf-cat" onchange="applyLabelFilters()"><option value="">Toda categor&iacute;a</option></select>
+      <button class="btn btn-sm" id="lf-clear" onclick="clearLabelFilters()" style="display:none;">Limpiar</button>
     </div>
     <div class="label-actions">
       <button class="btn btn-sm" onclick="labelSelectAll(true)">Seleccionar todas</button>
@@ -643,6 +630,27 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
   </div>
 </div>
 
+<!-- RANGO DE FECHAS PARA EXPORTAR MOVIMIENTOS -->
+<div class="modal-bg center" id="modal-mov-range">
+  <div class="modal small">
+    <h2>Exportar movimientos</h2>
+    <div class="msub">Elige el periodo. Déjalo en "Todo" para exportar el historial completo.</div>
+    <div class="seg" style="margin-top:6px;margin-bottom:14px;">
+      <button id="movr-all" class="active" onclick="setMovRange('all')">Todo el historial</button>
+      <button id="movr-range" onclick="setMovRange('range')">Rango de fechas</button>
+    </div>
+    <div id="mov-range-fields" style="display:none;">
+      <div class="fg"><label>Desde</label><input type="date" class="fi" id="mov-from"></div>
+      <div class="fg"><label>Hasta</label><input type="date" class="fi" id="mov-to"></div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:8px;">Se incluyen ambos días completos.</div>
+    </div>
+    <div class="fr">
+      <button class="btn" onclick="closeModal('modal-mov-range')">Cancelar</button>
+      <button class="btn btn-primary" onclick="doExportMovimientos()">Exportar</button>
+    </div>
+  </div>
+</div>
+
 <!-- EDITAR ESTANTERÍA (desde el mapa) -->
 <div class="modal-bg center" id="modal-edit-shelf">
   <div class="modal small">
@@ -709,14 +717,35 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 
 <script>
 let db;
-let DB_NAME='almacen_db';const STORE='items',CFG='config';
-function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB_NAME,1);r.onupgradeneeded=e=>{const d=e.target.result;if(!d.objectStoreNames.contains(STORE))d.createObjectStore(STORE,{keyPath:'id'});if(!d.objectStoreNames.contains(CFG))d.createObjectStore(CFG,{keyPath:'key'});};r.onsuccess=e=>{db=e.target.result;res();};r.onerror=e=>rej(e);});}
+let DB_NAME='almacen_db';const STORE='items',CFG='config',MOV='movements';
+function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB_NAME,2);r.onupgradeneeded=e=>{const d=e.target.result;if(!d.objectStoreNames.contains(STORE))d.createObjectStore(STORE,{keyPath:'id'});if(!d.objectStoreNames.contains(CFG))d.createObjectStore(CFG,{keyPath:'key'});if(!d.objectStoreNames.contains(MOV))d.createObjectStore(MOV,{keyPath:'id',autoIncrement:true});};r.onsuccess=e=>{db=e.target.result;res();};r.onerror=e=>rej(e);});}
 function dbGetAll(){return new Promise(res=>{const t=db.transaction(STORE,'readonly').objectStore(STORE).getAll();t.onsuccess=()=>res(t.result||[]);});}
 function dbPut(item){return new Promise(res=>{const t=db.transaction(STORE,'readwrite').objectStore(STORE).put(item);t.onsuccess=()=>res();});}
 function dbDelete(id){return new Promise(res=>{const t=db.transaction(STORE,'readwrite').objectStore(STORE).delete(id);t.onsuccess=()=>res();});}
 function dbClear(){return new Promise(res=>{const t=db.transaction(STORE,'readwrite').objectStore(STORE).clear();t.onsuccess=()=>res();});}
 function cfgGet(key){return new Promise(res=>{const t=db.transaction(CFG,'readonly').objectStore(CFG).get(key);t.onsuccess=()=>res(t.result?t.result.value:null);});}
 function cfgPut(key,value){return new Promise(res=>{const t=db.transaction(CFG,'readwrite').objectStore(CFG).put({key,value});t.onsuccess=()=>res();});}
+// Movimientos de stock
+function movPut(mov){return new Promise(res=>{const t=db.transaction(MOV,'readwrite').objectStore(MOV).add(mov);t.onsuccess=()=>res();});}
+function movGetAll(){return new Promise(res=>{const t=db.transaction(MOV,'readonly').objectStore(MOV).getAll();t.onsuccess=()=>res(t.result||[]);});}
+function movClear(){return new Promise(res=>{const t=db.transaction(MOV,'readwrite').objectStore(MOV).clear();t.onsuccess=()=>res();});}
+function getTurno(date){const h=date.getHours();if(h>=6&&h<14)return'Mañana (06:00–14:00)';if(h>=14&&h<22)return'Tarde (14:00–22:00)';return'Noche (22:00–06:00)';}
+async function registrarMovimiento(item, anterior, nuevo, tipo){
+  const now=new Date();
+  const diff=nuevo-anterior;
+  const mov={
+    itemId:item.id, nombre:item.name, ref:item.ref||'', cat:item.cat||'',
+    loc:item.loc||'', brand:item.brand||'', machine:item.machine||'',
+    photo:item.photo||null,
+    fecha:now.toLocaleDateString('es-ES'),
+    hora:now.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'}),
+    turno:getTurno(now), tipo:tipo,
+    anterior, nuevo, diferencia:diff,
+    ts:now.getTime()
+  };
+  await movPut(mov);
+  await cloudMovPut(mov); // subir a Supabase para ver desde cualquier dispositivo
+}
 
 // ===== SUPABASE (sincronización en la nube) =====
 const SUPABASE_URL='https://pttopgjtndbhtvrkuppk.supabase.co';
@@ -761,6 +790,16 @@ async function cloudCfgGet(key){
   if(!sb)return null;
   try{const{data,error}=await sb.from(WH.tblCfg).select('value').eq('key',key).maybeSingle();if(error)throw error;return data?data.value:null;}
   catch(e){console.warn('cloudCfgGet error',e);return null;}
+}
+async function cloudMovPut(mov){
+  if(!sb||!WH?.tblMov)return;
+  try{const{photo,...m}=mov;await sb.from(WH.tblMov).insert(m);}
+  catch(e){console.warn('cloudMovPut error',e);}
+}
+async function cloudMovGetAll(){
+  if(!sb||!WH?.tblMov)return[];
+  try{const{data,error}=await sb.from(WH.tblMov).select('*').order('ts',{ascending:false});if(error)throw error;return data||[];}
+  catch(e){console.warn('cloudMovGetAll error',e);return[];}
 }
 function setCloudStatus(ok){
   cloudOK=ok;
@@ -821,6 +860,8 @@ async function syncFromCloud(){
   const cShelves=await cloudCfgGet('shelves');
   const cAisles=await cloudCfgGet('aisles');
   const cMapSize=await cloudCfgGet('mapSize');
+  const cPrinted=await cloudCfgGet('printedIds');
+  if(cPrinted){printedIds=new Set(cPrinted);await cfgPut('printedIds',cPrinted);}
   if(cCats){categories=cCats;await cfgPut('categories',categories);}
   if(cShelves&&cShelves.length){shelves=cShelves;await cfgPut('shelves',shelves);}
   else{await cloudCfgPut('shelves',shelves);} // primera vez: sube las por defecto
@@ -882,6 +923,7 @@ async function pushToCloud(){
     await cloudCfgPut('categories',categories);
     await cloudCfgPut('shelves',shelves);
     await cloudCfgPut('aisles',aisles);
+    await cloudCfgPut('printedIds',[...printedIds]);
   }catch(e){}
   if(fallos.length===0){
     cloudOK=true;setCloudStatus(true);
@@ -1123,9 +1165,9 @@ function openDetail(id){
   document.getElementById('detail-info').innerHTML=info;
   openModal('modal-detail');
 }
-async function quickStock(d){if(!currentItem)return;currentItem.stock=Math.max(0,currentItem.stock+d);await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;adjustValue=currentItem.stock;document.getElementById('adjust-val').textContent=adjustValue;renderAll();toast(d>0?'+1 unidad':'−1 unidad');}
+async function quickStock(d){if(!currentItem)return;const anterior=currentItem.stock;currentItem.stock=Math.max(0,anterior+d);await registrarMovimiento(currentItem,anterior,currentItem.stock,d>0?'Entrada':'Salida');await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;adjustValue=currentItem.stock;document.getElementById('adjust-val').textContent=adjustValue;renderAll();toast(d>0?'+1 unidad':'−1 unidad');}
 function stepAdjust(d){adjustValue=Math.max(0,adjustValue+d);document.getElementById('adjust-val').textContent=adjustValue;}
-async function applyAdjust(){if(!currentItem)return;currentItem.stock=adjustValue;await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;renderAll();toast('Stock actualizado: '+adjustValue);}
+async function applyAdjust(){if(!currentItem)return;const anterior=currentItem.stock;const nuevo=adjustValue;if(anterior===nuevo){toast('Sin cambios');return;}const tipo=nuevo>anterior?'Entrada':'Salida';currentItem.stock=nuevo;await registrarMovimiento(currentItem,anterior,nuevo,tipo);await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;renderAll();toast('Stock actualizado: '+nuevo);}
 
 // DELETE con modal propio (confirm() fallaba en tablet)
 function askDelete(){
@@ -1658,16 +1700,98 @@ async function loadPrintedIds(){
 }
 async function savePrintedIds(){
   await cfgPut('printedIds',[...printedIds]);
+  // Guardar también en la nube para que el estado impreso/no impreso
+  // se vea desde cualquier dispositivo
+  try{await cloudCfgPut('printedIds',[...printedIds]);}catch(e){console.warn('printedIds cloud',e);}
 }
+
+let labelFilterShelf='', labelFilterBalda='', labelFilterCat='';
 
 function openLabels(){
   labelTab='all';
   labelSel=new Set();
+  labelFilterShelf='';labelFilterBalda='';labelFilterCat='';
   showPage('labels');
+  populateLabelFilters();
+}
+
+// Rellena los desplegables de estantería y categoría
+function populateLabelFilters(){
+  const selShelf=document.getElementById('lf-shelf');
+  const selCat=document.getElementById('lf-cat');
+  if(selShelf){
+    selShelf.innerHTML='<option value="">Toda estantería</option>'+
+      shelves.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('');
+    selShelf.value=labelFilterShelf;
+  }
+  if(selCat){
+    const cats=[...categories].sort((a,b)=>a.localeCompare(b));
+    selCat.innerHTML='<option value="">Toda categoría</option>'+
+      cats.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    selCat.value=labelFilterCat;
+  }
+  fillBaldaOptions();
+}
+
+// Rellena las baldas disponibles según la estantería elegida
+function fillBaldaOptions(){
+  const selBalda=document.getElementById('lf-balda');
+  if(!selBalda)return;
+  if(!labelFilterShelf){
+    selBalda.innerHTML='<option value="">Toda balda</option>';
+    selBalda.disabled=true;
+    selBalda.value='';
+    labelFilterBalda='';
+    return;
+  }
+  selBalda.disabled=false;
+  const sh=shelves.find(s=>s.id===labelFilterShelf);
+  const nb=sh?sh.baldas:5;
+  let opts='<option value="">Toda balda</option>';
+  for(let b=1;b<=nb;b++)opts+=`<option value="${b}">Balda ${b}</option>`;
+  selBalda.innerHTML=opts;
+  selBalda.value=labelFilterBalda;
+}
+
+function onLabelShelfChange(){
+  labelFilterShelf=document.getElementById('lf-shelf').value;
+  labelFilterBalda='';
+  fillBaldaOptions();
+  applyLabelFilters();
+}
+
+function applyLabelFilters(){
+  labelFilterBalda=document.getElementById('lf-balda')?document.getElementById('lf-balda').value:'';
+  labelFilterCat=document.getElementById('lf-cat')?document.getElementById('lf-cat').value:'';
+  const hayFiltro=labelFilterShelf||labelFilterBalda||labelFilterCat;
+  const btn=document.getElementById('lf-clear');
+  if(btn)btn.style.display=hayFiltro?'':'none';
+  labelSel=new Set();
+  renderLabels();
+}
+
+function clearLabelFilters(){
+  labelFilterShelf='';labelFilterBalda='';labelFilterCat='';
+  const ss=document.getElementById('lf-shelf');if(ss)ss.value='';
+  const sc=document.getElementById('lf-cat');if(sc)sc.value='';
+  fillBaldaOptions();
+  const btn=document.getElementById('lf-clear');if(btn)btn.style.display='none';
+  labelSel=new Set();
+  renderLabels();
 }
 
 function labelList(){
-  return labelTab==='pending' ? items.filter(i=>!printedIds.has(i.id)) : items.slice();
+  let list = labelTab==='pending' ? items.filter(i=>!printedIds.has(i.id)) : items.slice();
+  if(labelFilterShelf){
+    list=list.filter(i=>splitLoc(i.loc).shelfId===labelFilterShelf);
+  }
+  if(labelFilterBalda){
+    list=list.filter(i=>splitLoc(i.loc).balda===labelFilterBalda);
+  }
+  if(labelFilterCat){
+    list=list.filter(i=>i.cat===labelFilterCat||(i.cats||[]).includes(labelFilterCat));
+  }
+  return list;
 }
 
 function setLabelTab(t){
@@ -2059,6 +2183,85 @@ async function doExportExcel(scope){
     if(btn){btn.disabled=false;btn.style.opacity='';}
   }
 }
+let movRangeMode='all';
+function setMovRange(mode){
+  movRangeMode=mode;
+  document.getElementById('movr-all').classList.toggle('active',mode==='all');
+  document.getElementById('movr-range').classList.toggle('active',mode==='range');
+  document.getElementById('mov-range-fields').style.display=mode==='range'?'':'none';
+}
+function exportMovimientos(){
+  setMovRange('all');
+  // Prerellenar: del día 1 del mes actual a hoy
+  const now=new Date();
+  const first=new Date(now.getFullYear(),now.getMonth(),1);
+  const fmt=d=>d.toISOString().slice(0,10);
+  const fEl=document.getElementById('mov-from');
+  const tEl=document.getElementById('mov-to');
+  if(fEl)fEl.value=fmt(first);
+  if(tEl)tEl.value=fmt(now);
+  openModal('modal-mov-range');
+}
+async function doExportMovimientos(){
+  // Determinar rango de fechas
+  let desdeTs=null, hastaTs=null;
+  if(movRangeMode==='range'){
+    const fv=document.getElementById('mov-from').value;
+    const tv=document.getElementById('mov-to').value;
+    if(!fv||!tv){toast('Elige las dos fechas');return;}
+    desdeTs=new Date(fv+'T00:00:00').getTime();
+    hastaTs=new Date(tv+'T23:59:59.999').getTime();
+    if(desdeTs>hastaTs){toast('La fecha "Desde" es posterior a "Hasta"');return;}
+  }
+  closeModal('modal-mov-range');
+  // Leer de Supabase (todos los dispositivos) y combinar con local por si hay sin subir
+  toast('⏳ Descargando movimientos...');
+  const cloudMovs=await cloudMovGetAll();
+  const localMovs=await movGetAll();
+  // Combinar: los de la nube tienen prioridad; los locales sin ts en nube se añaden
+  const cloudTs=new Set(cloudMovs.map(m=>m.ts));
+  const extra=localMovs.filter(m=>!cloudTs.has(m.ts));
+  let movs=[...cloudMovs,...extra];
+  // Filtrar por rango de fechas si procede
+  if(desdeTs!==null&&hastaTs!==null){
+    movs=movs.filter(m=>m.ts>=desdeTs&&m.ts<=hastaTs);
+  }
+  if(!movs.length){toast(movRangeMode==='range'?'No hay movimientos en ese periodo':'No hay movimientos registrados todavía');return;}
+  const btn=document.getElementById('btn-mov');
+  if(btn){btn.disabled=true;btn.style.opacity='0.6';}
+  toast('⏳ Generando Excel de movimientos...');
+  try{
+    const allItems=await dbGetAll();
+    const itemMap={};allItems.forEach(i=>itemMap[i.id]=i);
+    const wb=new ExcelJS.Workbook();wb.creator=WH?WH.name:'Almacén';wb.created=new Date();
+    const ws=wb.addWorksheet('Movimientos');
+    ws.columns=[{key:'foto',width:21},{key:'fecha',width:13},{key:'turno',width:24},{key:'hora',width:9},{key:'tipo',width:10},{key:'nombre',width:32},{key:'cat',width:18},{key:'loc',width:12},{key:'anterior',width:10},{key:'diferencia',width:10},{key:'nuevo',width:10},{key:'ref',width:16},{key:'brand',width:16},{key:'maq',width:22}];
+    const hRow=ws.addRow(['Foto','Fecha','Turno','Hora','Tipo','Nombre','Categoría','Ubicación','Antes','Diferencia','Después','Referencia','Marca','Equipo/Máquina']);
+    hRow.height=22;
+    hRow.eachCell(cell=>{cell.font={bold:true,color:{argb:'FFFFFFFF'},size:11};cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF1A1916'}};cell.alignment={vertical:'middle',horizontal:'center',wrapText:true};cell.border={bottom:{style:'thin',color:{argb:'FF444444'}}}; });
+    const sorted=[...movs].sort((a,b)=>b.ts-a.ts);
+    const ROW_H=82;
+    for(let idx=0;idx<sorted.length;idx++){
+      const m=sorted[idx];const rowNum=idx+2;
+      const diff=m.diferencia;const esEntrada=diff>0;
+      const row=ws.addRow(['',(m.fecha||''),(m.turno||''),(m.hora||''),(m.tipo||''),(m.nombre||''),(m.cat||''),(m.loc||''),(m.anterior??''),(diff>0?'+':'')+diff,(m.nuevo??''),(m.ref||''),(m.brand||''),(m.machine||m.maq||'')]);
+      row.height=ROW_H;
+      const bg=idx%2===0?'FFFFFFFF':'FFF5F4F0';
+      row.eachCell({includeEmpty:true},(cell,colNum)=>{cell.alignment={vertical:'middle',horizontal:colNum===6?'left':'center',wrapText:true};cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:bg}};cell.font={size:11};cell.border={bottom:{style:'hair',color:{argb:'FFDDDDDD'}}};});
+      row.getCell(10).font={size:11,bold:true,color:{argb:esEntrada?'FF217346':'FFC00000'}};
+      row.getCell(5).font={size:11,bold:true,color:{argb:esEntrada?'FF217346':'FFC00000'}};
+      const itemActual=itemMap[m.itemId];const foto=itemActual?.photo||m.photo||null;
+      if(foto){try{const parts=foto.split(',');const mimeMatch=parts[0].match(/image\/(jpeg|jpg|png|gif|webp)/i);const ext=mimeMatch?(mimeMatch[1]==='jpg'?'jpeg':mimeMatch[1]):'jpeg';const b64=parts[1];const imgId=wb.addImage({base64:b64,extension:ext});const dims=await imgDims(foto);const BOX=100;let pw=BOX,ph=BOX;if(dims&&dims.w&&dims.h){const r=Math.min(BOX/dims.w,BOX/dims.h);pw=Math.round(dims.w*r);ph=Math.round(dims.h*r);}ws.addImage(imgId,{tl:{col:0.08,row:(rowNum-1)+0.06},ext:{width:pw,height:ph},editAs:'oneCell'});}catch(e){console.warn('Imagen no incrustada',e);}}
+    }
+    ws.views=[{state:'frozen',ySplit:1}];
+    ws.autoFilter='A1:N'+(sorted.length+1);
+    const buf=await wb.xlsx.writeBuffer();
+    const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);const sufF=movRangeMode==='range'?(document.getElementById('mov-from').value+'_a_'+document.getElementById('mov-to').value):new Date().toISOString().slice(0,10);a.download='movimientos_'+(WH?WH.key+'_':'')+sufF+'.xlsx';a.click();
+    toast('✓ Movimientos exportados ('+sorted.length+' registros)');
+  }catch(err){console.error(err);toast('Error al generar Excel de movimientos');
+  }finally{if(btn){btn.disabled=false;btn.style.opacity='';}}
+}
 function askWipe(){
   document.getElementById('pass-input').value='';
   openModal('modal-pass');
@@ -2099,8 +2302,8 @@ function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t
 // ===== ALMACENES (bases de datos separadas) =====
 const AUTH_USER='manteni';
 const WAREHOUSES={
-  electrico:{key:'electrico',name:'Almacén Eléctrico',icon:'⚡',pass:'Electrico',db:'almacen_db',    tblItems:'items',    tblCfg:'config',     sesKey:'almacen_sesion_electrico'},
-  mecanico: {key:'mecanico', name:'Almacén Mecánico', icon:'🔧',pass:'Mecanico', db:'almacen_mec_db',tblItems:'items_mec',tblCfg:'config_mec', sesKey:'almacen_sesion_mecanico'}
+  electrico:{key:'electrico',name:'Almacén Eléctrico',icon:'⚡',pass:'Electrico',db:'almacen_db',    tblItems:'items',    tblCfg:'config',     tblMov:'movements',     sesKey:'almacen_sesion_electrico'},
+  mecanico: {key:'mecanico', name:'Almacén Mecánico', icon:'🔧',pass:'Mecanico', db:'almacen_mec_db',tblItems:'items_mec',tblCfg:'config_mec', tblMov:'movements_mec', sesKey:'almacen_sesion_mecanico'}
 };
 let WH=null;            // almacén activo
 let appStarted=false;
