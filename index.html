@@ -454,6 +454,10 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
       <button class="label-tab active" id="ltab-all" onclick="setLabelTab('all')">Todas</button>
       <button class="label-tab" id="ltab-pending" onclick="setLabelTab('pending')">Sin imprimir <span class="lt-badge" id="pending-count">0</span></button>
     </div>
+    <div class="search-bar">
+      <input type="text" id="label-search" placeholder="Buscar nombre, referencia, marca..." oninput="renderLabels()">
+      <button class="btn" id="label-search-clear" onclick="clearLabelSearch()" title="Limpiar búsqueda" style="padding:13px 14px;display:none;"><svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12" stroke-width="2" stroke-linecap="round"/></svg></button>
+    </div>
     <div class="label-filters">
       <select class="lf-sel" id="lf-shelf" onchange="onLabelShelfChange()"><option value="">Toda estanter&iacute;a</option></select>
       <select class="lf-sel" id="lf-balda" onchange="applyLabelFilters()"><option value="">Toda balda</option></select>
@@ -1408,6 +1412,7 @@ function goReprint(){
   document.getElementById('ltab-all').classList.add('active');
   document.getElementById('ltab-pending').classList.remove('active');
   labelFilterShelf='';labelFilterBalda='';labelFilterCat='';
+  const s=document.getElementById('label-search');if(s)s.value='';
   populateLabelFilters();
   labelSel=new Set([id]); labelQty={[id]:1};
   renderLabels();
@@ -1797,8 +1802,9 @@ let labelFilterShelf='', labelFilterBalda='', labelFilterCat='';
 
 function openLabels(){
   labelTab='all';
-  labelSel=new Set();
+  labelSel=new Set();labelQty={};
   labelFilterShelf='';labelFilterBalda='';labelFilterCat='';
+  const s=document.getElementById('label-search');if(s)s.value='';
   showPage('labels');
   populateLabelFilters();
 }
@@ -1854,7 +1860,7 @@ function applyLabelFilters(){
   const hayFiltro=labelFilterShelf||labelFilterBalda||labelFilterCat;
   const btn=document.getElementById('lf-clear');
   if(btn)btn.style.display=hayFiltro?'':'none';
-  labelSel=new Set();labelQty={};
+  // No borramos la selección: así puedes ir filtrando/buscando y acumulando etiquetas
   renderLabels();
 }
 
@@ -1864,7 +1870,6 @@ function clearLabelFilters(){
   const sc=document.getElementById('lf-cat');if(sc)sc.value='';
   fillBaldaOptions();
   const btn=document.getElementById('lf-clear');if(btn)btn.style.display='none';
-  labelSel=new Set();labelQty={};
   renderLabels();
 }
 
@@ -1879,14 +1884,26 @@ function labelList(){
   if(labelFilterCat){
     list=list.filter(i=>i.cat===labelFilterCat||(i.cats||[]).includes(labelFilterCat));
   }
+  // Búsqueda por texto (nombre, referencia, marca, máquina, ubicación)
+  const sEl=document.getElementById('label-search');
+  const q=(sEl?sEl.value:'').trim().toLowerCase();
+  if(q){
+    list=list.filter(i=>[i.name,i.ref,i.brand,i.machine,i.loc].some(v=>(v||'').toLowerCase().includes(q)));
+  }
   return list;
+}
+
+function clearLabelSearch(){
+  const s=document.getElementById('label-search');
+  if(s)s.value='';
+  renderLabels();
 }
 
 function setLabelTab(t){
   labelTab=t;
   document.getElementById('ltab-all').classList.toggle('active',t==='all');
   document.getElementById('ltab-pending').classList.toggle('active',t==='pending');
-  labelSel=new Set();labelQty={};
+  // La selección se mantiene al cambiar de pestaña
   renderLabels();
 }
 
@@ -1921,9 +1938,16 @@ function renderLabels(){
   // El contador del botón muestra el TOTAL de copias (suma de cantidades)
   let totalCopias=0; labelSel.forEach(id=>{totalCopias+=(labelQty[id]||1);});
   document.getElementById('print-count').textContent=totalCopias;
+  // Botón de limpiar búsqueda visible solo si hay texto
+  const sEl=document.getElementById('label-search');
+  const hayTexto=sEl&&sEl.value.trim()!=='';
+  const clr=document.getElementById('label-search-clear');
+  if(clr)clr.style.display=hayTexto?'':'none';
 
   if(!list.length){
-    document.getElementById('labels-list').innerHTML='<div class="empty"><p>'+(labelTab==='pending'?'No hay etiquetas pendientes. Todas se han impreso al menos una vez.':'No hay material en el inventario.')+'</p></div>';
+    const msg = hayTexto ? 'No hay material que coincida con la búsqueda.'
+      : (labelTab==='pending'?'No hay etiquetas pendientes. Todas se han impreso al menos una vez.':'No hay material en el inventario.');
+    document.getElementById('labels-list').innerHTML='<div class="empty"><p>'+msg+'</p></div>';
     return;
   }
   document.getElementById('labels-list').innerHTML=list.map(i=>{
