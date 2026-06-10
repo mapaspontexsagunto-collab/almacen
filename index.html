@@ -253,8 +253,12 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
   @page{size:A4;margin:8mm 5mm;}
   html,body{background:#fff !important;margin:0;padding:0;}
   .labels-sheet{display:flex;flex-wrap:wrap;align-content:flex-start;}
-  .print-label{box-sizing:border-box;display:flex;align-items:center;
+  .print-label{box-sizing:border-box;display:flex;align-items:center;justify-content:center;
     overflow:hidden;page-break-inside:avoid;break-inside:avoid;}
+  /* Contenedor interior: se escala CENTRADO dentro de la celda (el salto entre
+     etiquetas no cambia, solo se reduce el contenido y queda centrado en su pegatina) */
+  .print-label .pl-inner{display:flex;align-items:center;width:100%;height:100%;
+    transform:scale(var(--label-scale,1));transform-origin:center center;}
   .print-label .pl-text{flex:1;min-width:0;font-family:Arial,sans-serif;color:#000;}
   .print-label .pl-name{font-weight:bold;line-height:1.1;
     display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;}
@@ -263,14 +267,16 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
   .print-label .pl-loc{font-weight:bold;line-height:1.1;}
   .print-label.empty-label{visibility:hidden;}
   /* Tamaño grande: 70 x 37 mm (24 por hoja A4, 3 columnas x 8 filas) */
-  .labels-sheet.size-big .print-label{width:70mm;height:37mm;padding:2.5mm;gap:2.5mm;}
+  .labels-sheet.size-big .print-label{width:70mm;height:37mm;padding:2.5mm;}
+  .labels-sheet.size-big .pl-inner{gap:2.5mm;}
   .labels-sheet.size-big .pl-qr{width:30mm;height:30mm;flex-shrink:0;}
   .labels-sheet.size-big .pl-qr img,.labels-sheet.size-big .pl-qr canvas{width:30mm !important;height:30mm !important;}
   .labels-sheet.size-big .pl-name{font-size:9pt;margin-bottom:1mm;-webkit-line-clamp:2;}
   .labels-sheet.size-big .pl-ref{font-size:7.5pt;}
   .labels-sheet.size-big .pl-loc{font-size:11pt;margin-top:1mm;}
   /* Tamaño pequeño: 48,5 x 25,4 mm (40 por hoja A4, 4 columnas x 10 filas) */
-  .labels-sheet.size-small .print-label{width:48.5mm;height:25.4mm;padding:1.5mm;gap:1.5mm;}
+  .labels-sheet.size-small .print-label{width:48.5mm;height:25.4mm;padding:1.5mm;}
+  .labels-sheet.size-small .pl-inner{gap:1.5mm;}
   .labels-sheet.size-small .pl-qr{width:21mm;height:21mm;flex-shrink:0;}
   .labels-sheet.size-small .pl-qr img,.labels-sheet.size-small .pl-qr canvas{width:21mm !important;height:21mm !important;}
   .labels-sheet.size-small .pl-name{font-size:6.5pt;margin-bottom:0.4mm;-webkit-line-clamp:2;}
@@ -630,6 +636,14 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div class="seg" style="margin-top:6px;">
       <button id="lsize-big" class="active" onclick="setLabelSize('big')">70 × 37 mm<br><span style="font-weight:400;font-size:11px;">24 por hoja</span></button>
       <button id="lsize-small" onclick="setLabelSize('small')">48,5 × 25,4 mm<br><span style="font-weight:400;font-size:11px;">40 por hoja</span></button>
+    </div>
+    <div id="scale-ctrl" style="margin:4px 0 12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+        <label style="font-size:12px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;">Tamaño del contenido</label>
+        <strong id="scale-val" style="font-family:'DM Mono',monospace;">100%</strong>
+      </div>
+      <input type="range" id="scale-range" min="70" max="100" step="1" value="100" oninput="setLabelScale(this.value)" style="width:100%;">
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">Reduce el contenido y lo centra en cada pegatina, sin cambiar el salto entre etiquetas. Útil si la impresora recorta los bordes.</div>
     </div>
     <div class="msub" id="start-desc">Si la hoja ya tiene pegatinas usadas, elige la primera posición libre. Se imprimirá a partir de ahí.</div>
     <div id="start-grid" class="start-grid"></div>
@@ -1788,6 +1802,8 @@ async function loadPrintedIds(){
   printedIds=new Set(arr||[]);
   const mod=await cfgGet('modifiedIds');
   modifiedIds=new Set(mod||[]);
+  const sc=await cfgGet('labelScale');
+  if(sc)labelScale=parseInt(sc)||100;
 }
 async function savePrintedIds(){
   await cfgPut('printedIds',[...printedIds]);
@@ -1974,10 +1990,20 @@ function renderLabels(){
 
 let startPos=1;            // posición inicial elegida
 let labelSize='big';       // 'big' = 70x37 (24/hoja) · 'small' = 48,5x25,4 (40/hoja)
+let labelScale=100;        // % de tamaño del contenido para 70x37 (centrado en la pegatina)
 const LABEL_SIZES={
   big:{total:24,cols:3,qr:120,ecl:'M',cells:'cols-3'},
   small:{total:40,cols:4,qr:96,ecl:'L',cells:'cols-4'}
 };
+
+// Ajusta el % de tamaño del contenido y lo recuerda
+function setLabelScale(v){
+  labelScale=parseInt(v)||100;
+  if(labelScale<70)labelScale=70; if(labelScale>100)labelScale=100;
+  const lbl=document.getElementById('scale-val');
+  if(lbl)lbl.textContent=labelScale+'%';
+  cfgPut('labelScale',labelScale);
+}
 
 function printLabels(){
   if(!labelSel.size){toast('Selecciona al menos una etiqueta');return;}
@@ -1990,6 +2016,13 @@ function setLabelSize(s){
   labelSize=s;
   document.getElementById('lsize-big').classList.toggle('active',s==='big');
   document.getElementById('lsize-small').classList.toggle('active',s==='small');
+  // El control de tamaño del contenido solo aplica a 70x37
+  const sc=document.getElementById('scale-ctrl');
+  if(sc)sc.style.display = '';
+  const rng=document.getElementById('scale-range');
+  if(rng)rng.value=labelScale;
+  const lbl=document.getElementById('scale-val');
+  if(lbl)lbl.textContent=labelScale+'%';
   const cfg=LABEL_SIZES[s];
   if(startPos>cfg.total)startPos=cfg.total;
   document.getElementById('start-desc').textContent =
@@ -2020,6 +2053,9 @@ async function doPrintLabels(){
   const cfg=LABEL_SIZES[labelSize];
   const sheet=document.getElementById('labels-sheet');
   sheet.className='labels-sheet size-'+labelSize; // 70x37 o 48,5x25,4
+  // Escala del contenido aplicada a ambos tamaños (centrada en cada pegatina)
+  const escala = labelScale/100;
+  sheet.style.setProperty('--label-scale', escala);
   sheet.innerHTML='';
 
   // Huecos en blanco antes de la posición inicial
@@ -2036,14 +2072,18 @@ async function doPrintLabels(){
     for(let c=0;c<copias;c++){
       const label=document.createElement('div');
       label.className='print-label';
+      // Contenedor interior que se escala centrado dentro de la celda
+      const inner=document.createElement('div');
+      inner.className='pl-inner';
       const qrBox=document.createElement('div');
       qrBox.className='pl-qr';
       new QRCode(qrBox,{text:'ALMACEN:'+i.id,width:cfg.qr,height:cfg.qr,colorDark:'#000000',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel[cfg.ecl]});
       const txt=document.createElement('div');
       txt.className='pl-text';
       txt.innerHTML=`<div class="pl-name">${esc(i.name)}</div>${i.ref?`<div class="pl-ref">Ref: ${esc(i.ref)}</div>`:''}<div class="pl-loc">${esc(i.loc)}</div>`;
-      label.appendChild(qrBox);
-      label.appendChild(txt);
+      inner.appendChild(qrBox);
+      inner.appendChild(txt);
+      label.appendChild(inner);
       sheet.appendChild(label);
       totalImpresas++;
     }
