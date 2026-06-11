@@ -91,6 +91,18 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .stat .v{font-size:28px;font-weight:700;letter-spacing:-1px;}
 .stat .v.warn{color:#d97706;}.stat .v.danger{color:#dc2626;}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:14px;}
+.mov-home-list{max-height:320px;overflow-y:auto;}
+.mov-row{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);}
+.mov-row:last-child{border-bottom:none;}
+.mov-row .mv-main{flex:1;min-width:0;}
+.mov-row .mv-name{font-size:13.5px;font-weight:600;line-height:1.25;}
+.mov-row .mv-meta{font-size:11.5px;color:var(--text3);margin-top:2px;line-height:1.3;}
+.mov-row .mv-diff{font-weight:700;font-family:'DM Mono',monospace;font-size:14px;flex-shrink:0;}
+.mov-row .mv-diff.in{color:#217346;}
+.mov-row .mv-diff.out{color:#c00000;}
+.mov-row .mv-del{flex-shrink:0;width:34px;height:34px;border:1px solid var(--border);background:var(--surface);border-radius:9px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text3);-webkit-tap-highlight-color:transparent;}
+.mov-row .mv-del:active{background:var(--amber-bg);color:#c00000;}
+.mov-empty{padding:16px 14px;color:var(--text3);font-size:13px;text-align:center;}
 .card-h{padding:14px 16px;border-bottom:1px solid var(--border);font-size:14px;font-weight:600;display:flex;justify-content:space-between;align-items:center;}
 .search-bar{display:flex;gap:8px;margin-bottom:14px;}
 .search-bar input{flex:1;padding:13px 16px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);}
@@ -354,6 +366,14 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
       <div class="stat stat-btn" id="stat-out" onclick="setAlertFilter('out')"><div class="l">Sin stock</div><div class="v danger" id="s-out">0</div></div>
     </div>
     <div class="card"><div class="card-h" id="alerts-title">Alertas de stock</div><div id="alerts-list"></div></div>
+    <div class="card">
+      <div class="card-h">Entradas · últimos 3 meses</div>
+      <div id="home-entradas" class="mov-home-list"></div>
+    </div>
+    <div class="card">
+      <div class="card-h">Salidas · últimos 3 meses</div>
+      <div id="home-salidas" class="mov-home-list"></div>
+    </div>
   </div>
 
   <div class="page" id="page-buscar">
@@ -738,6 +758,19 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
   </div>
 </div>
 
+<!-- CONTRASEÑA PARA BORRAR LÍNEA DE MOVIMIENTO -->
+<div class="modal-bg center" id="modal-mov-del">
+  <div class="modal small">
+    <h2>Borrar línea</h2>
+    <div class="msub" id="mov-del-msg">Introduce la contraseña para borrar esta línea de movimiento.</div>
+    <div class="fg"><input type="password" class="fi" id="mov-del-pass" placeholder="Contraseña" onkeydown="if(event.key==='Enter')confirmDeleteMov()"></div>
+    <div class="fr">
+      <button class="btn" onclick="closeModal('modal-mov-del')">Cancelar</button>
+      <button class="btn btn-danger" onclick="confirmDeleteMov()">Borrar línea</button>
+    </div>
+  </div>
+</div>
+
 <!-- CONFIRMACIÓN GENÉRICA -->
 <div class="modal-bg center" id="modal-confirm">
   <div class="modal small">
@@ -766,6 +799,16 @@ function cfgPut(key,value){return new Promise(res=>{const t=db.transaction(CFG,'
 function movPut(mov){return new Promise(res=>{const t=db.transaction(MOV,'readwrite').objectStore(MOV).add(mov);t.onsuccess=()=>res();});}
 function movGetAll(){return new Promise(res=>{const t=db.transaction(MOV,'readonly').objectStore(MOV).getAll();t.onsuccess=()=>res(t.result||[]);});}
 function movClear(){return new Promise(res=>{const t=db.transaction(MOV,'readwrite').objectStore(MOV).clear();t.onsuccess=()=>res();});}
+// Borra del store local todas las líneas que coincidan en ts e itemId
+function movDeleteLocal(ts,itemId){return new Promise(res=>{
+  const st=db.transaction(MOV,'readwrite').objectStore(MOV);
+  const g=st.getAll();
+  g.onsuccess=()=>{
+    (g.result||[]).forEach(m=>{ if(m.ts===ts && m.itemId===itemId) st.delete(m.id); });
+    res();
+  };
+  g.onerror=()=>res();
+});}
 function getTurno(date){const h=date.getHours();if(h>=6&&h<14)return'Mañana (06:00–14:00)';if(h>=14&&h<22)return'Tarde (14:00–22:00)';return'Noche (22:00–06:00)';}
 async function registrarMovimiento(item, anterior, nuevo, tipo){
   const now=new Date();
@@ -817,6 +860,43 @@ async function cloudGetAll(){
   try{const{data,error}=await sb.from(WH.tblItems).select('*');if(error)throw error;cloudOK=true;return data||[];}
   catch(e){cloudOK=false;console.warn('cloudGetAll error',e);return null;}
 }
+// Lanza una promesa con tiempo límite: si tarda demasiado, falla rápido
+// (así una petición colgada no deja la app esperando para siempre)
+function withTimeout(promise, ms, label){
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((_,rej)=>setTimeout(()=>rej(new Error('Tiempo agotado: '+(label||''))), ms))
+  ]);
+}
+// Descarga SOLO los datos (sin fotos): payload pequeño y rápido, muy fiable
+async function cloudGetMeta(){
+  if(!sb)return null;
+  const cols='id,name,cat,categories,loc,stock,min,ref,brand,machine,notes';
+  try{
+    const{data,error}=await withTimeout(sb.from(WH.tblItems).select(cols).limit(10000),20000,'datos');
+    if(error)throw error;cloudOK=true;return data||[];
+  }catch(e){
+    console.warn('cloudGetMeta error, intento con * :',e);
+    // Respaldo: si la lista de columnas falla, usa select('*')
+    try{const{data,error}=await withTimeout(sb.from(WH.tblItems).select('*').limit(10000),25000,'datos*');if(error)throw error;cloudOK=true;return data||[];}
+    catch(e2){cloudOK=false;console.warn('cloudGetMeta * error',e2);return null;}
+  }
+}
+// Descarga las fotos de unos IDs concretos, en lotes pequeños
+async function cloudGetPhotos(ids){
+  if(!sb||!ids.length)return {};
+  const res={};
+  const lote=8;
+  for(let k=0;k<ids.length;k+=lote){
+    const grupo=ids.slice(k,k+lote);
+    try{
+      const{data,error}=await withTimeout(sb.from(WH.tblItems).select('id,photo').in('id',grupo),20000,'fotos');
+      if(error)throw error;
+      (data||[]).forEach(r=>{res[r.id]=r.photo||null;});
+    }catch(e){console.warn('cloudGetPhotos lote error',e);}
+  }
+  return res;
+}
 // Config (categorías y estanterías) en tabla aparte 'config'
 async function cloudCfgPut(key,value){
   if(!sb)return;
@@ -837,6 +917,11 @@ async function cloudMovGetAll(){
   if(!sb||!WH?.tblMov)return[];
   try{const{data,error}=await sb.from(WH.tblMov).select('*').order('ts',{ascending:false});if(error)throw error;return data||[];}
   catch(e){console.warn('cloudMovGetAll error',e);return[];}
+}
+async function cloudMovDelete(ts,itemId){
+  if(!sb||!WH?.tblMov)return;
+  try{const{error}=await sb.from(WH.tblMov).delete().eq('ts',ts).eq('itemId',itemId);if(error)throw error;}
+  catch(e){console.warn('cloudMovDelete error',e);}
 }
 function setCloudStatus(ok){
   cloudOK=ok;
@@ -872,26 +957,38 @@ async function init(){
   if(!shelves||!shelves.length){shelves=defaultShelves();}
   items=await dbGetAll();
   renderAll();
+  renderHomeMovements();
   // Sincronizar desde la nube
   await syncFromCloud();
 }
 
-// Trae todo desde Supabase y reemplaza el caché local
-async function syncFromCloud(){
+// Trae todo desde Supabase. Estrategia rápida y fiable:
+//  1) Descarga SOLO los datos (sin fotos) → rápido, casi nunca falla
+//  2) Las fotos que falten en local se bajan después en segundo plano
+async function syncFromCloud(refrescarTodasFotos=false){
   if(!sb){setCloudStatus(false);return;}
   updateSyncBadge('syncing');
-  const cloudItems=await cloudGetAll();
-  if(cloudItems===null){setCloudStatus(false);return;}
+  const meta=await cloudGetMeta();
+  if(meta===null){setCloudStatus(false);updateSyncBadge('off');return;}
   setCloudStatus(true);
-  // Reemplazar items locales con los de la nube; mapear columna 'categories' a 'cats'
-  items=cloudItems.map(it=>{
+
+  // Mapa de fotos locales actuales (para conservarlas y no volver a bajarlas)
+  const fotosLocales={};
+  items.forEach(i=>{if(i.photo)fotosLocales[i.id]=i.photo;});
+
+  // Fusionar: datos nuevos de la nube + foto local si ya la teníamos
+  items=meta.map(it=>{
     const m={...it};
-    m.cats = Array.isArray(it.categories) ? it.categories : [];
+    m.cats=Array.isArray(it.categories)?it.categories:[];
     delete m.categories;
+    m.photo=fotosLocales[it.id]||null; // conservamos la foto local; si no hay, se baja luego
     return m;
   });
+
+  // Guardar en local (merge limpio)
   await dbClear();
   for(const it of items)await dbPut(it);
+
   // Config desde la nube
   const cCats=await cloudCfgGet('categories');
   const cShelves=await cloudCfgGet('shelves');
@@ -903,17 +1000,40 @@ async function syncFromCloud(){
   if(cModified){modifiedIds=new Set(cModified);await cfgPut('modifiedIds',cModified);}
   if(cCats){categories=cCats;await cfgPut('categories',categories);}
   if(cShelves&&cShelves.length){shelves=cShelves;await cfgPut('shelves',shelves);}
-  else{await cloudCfgPut('shelves',shelves);} // primera vez: sube las por defecto
+  else{await cloudCfgPut('shelves',shelves);}
   if(cAisles){aisles=cAisles;await cfgPut('aisles',aisles);}
   if(cMapSize&&cMapSize.w&&cMapSize.h){mapSize=cMapSize;await cfgPut('mapSize',mapSize);}
   renderAll();
+  if(document.getElementById('page-inicio')?.classList.contains('active'))renderHomeMovements();
+
+  // 2) En segundo plano: bajar las fotos (todas si se pide refresco, o solo las que falten)
+  cargarFotosPendientes(refrescarTodasFotos);
+}
+
+// Descarga en segundo plano fotos. Si todas=true baja todas (para ver cambios de
+// otros equipos); si no, solo las que aún no tienen foto local (artículos nuevos)
+let cargandoFotos=false;
+async function cargarFotosPendientes(todas=false){
+  if(cargandoFotos||!sb)return;
+  const objetivo=todas?items.map(i=>i.id):items.filter(i=>!i.photo).map(i=>i.id);
+  if(!objetivo.length)return;
+  cargandoFotos=true;
+  try{
+    const fotos=await cloudGetPhotos(objetivo);
+    let cambios=0;
+    for(const id in fotos){
+      const it=items.find(x=>x.id===id);
+      if(it && fotos[id] && it.photo!==fotos[id]){it.photo=fotos[id];await dbPut(it);cambios++;}
+    }
+    if(cambios)renderAll();
+  }finally{cargandoFotos=false;}
 }
 
 async function manualSync(){
   if(!sb){toast('Sin conexión a la nube');return;}
   toast('⏳ Descargando...');
-  await syncFromCloud();
-  toast(cloudOK?'✓ Descargado de la nube':'No se pudo conectar');
+  await syncFromCloud(true); // refresca también las fotos en segundo plano
+  toast(cloudOK?'✓ Datos actualizados (las fotos siguen cargando)':'No se pudo conectar');
 }
 
 // Sube un item con reintentos. Devuelve true si lo consigue.
@@ -979,7 +1099,7 @@ function showPage(id){
   document.querySelectorAll('.navbtn').forEach(n=>n.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
   const nav=document.getElementById('nav-'+id);if(nav)nav.classList.add('active');
-  if(id==='inicio')updateStats();
+  if(id==='inicio'){updateStats();renderHomeMovements();}
   if(id==='buscar'){
     if(!cameFromShelf){document.getElementById('search-input').value='';currentCat='';expandedShelf=null;}
     cameFromShelf=false;
@@ -1032,6 +1152,67 @@ function renderAlerts(){
   document.getElementById('alerts-list').innerHTML = list.length
     ? list.map(i=>`<div class="detail-row" style="padding:13px 16px;cursor:pointer;" onclick="openDetail('${i.id}')"><div><strong>${esc(i.name)}</strong><br><span style="font-size:12px;color:var(--text2);">${i.loc}</span></div><div>${stockBadge(i)}</div></div>`).join('')
     : `<div class="empty"><p>${vacioMsg}</p></div>`;
+}
+
+// ===== Entradas / Salidas en la pantalla de inicio (últimos 3 meses) =====
+let homeMovsCache=[];      // movimientos cargados para inicio
+let pendingMovDel=null;    // {ts,itemId,name} pendiente de borrar
+
+async function renderHomeMovements(){
+  const cont1=document.getElementById('home-entradas');
+  const cont2=document.getElementById('home-salidas');
+  if(!cont1||!cont2)return;
+  cont1.innerHTML='<div class="mov-empty">Cargando...</div>';
+  cont2.innerHTML='<div class="mov-empty">Cargando...</div>';
+  // De la nube (todos los dispositivos), con respaldo local
+  let movs=await cloudMovGetAll();
+  if(!movs||!movs.length){movs=await movGetAll();}
+  const limite=Date.now()-(90*24*60*60*1000); // 3 meses aprox.
+  movs=(movs||[]).filter(m=>m.ts&&m.ts>=limite).sort((a,b)=>b.ts-a.ts);
+  homeMovsCache=movs;
+  cont1.innerHTML=renderMovRows(movs.filter(m=>m.diferencia>0),'in');
+  cont2.innerHTML=renderMovRows(movs.filter(m=>m.diferencia<0),'out');
+}
+
+function renderMovRows(list,dir){
+  if(!list.length)return '<div class="mov-empty">Sin movimientos en los últimos 3 meses.</div>';
+  return list.map(m=>{
+    const signo=m.diferencia>0?'+':'';
+    const turnoCorto=(m.turno||'').split(' ')[0];
+    return `<div class="mov-row">
+      <div class="mv-main">
+        <div class="mv-name">${esc(m.nombre||'')}</div>
+        <div class="mv-meta">${esc(m.fecha||'')} · ${esc(turnoCorto)} ${esc(m.hora||'')}${m.loc?' · '+esc(m.loc):''}${m.ref?' · '+esc(m.ref):''}</div>
+      </div>
+      <div class="mv-diff ${dir}">${signo}${m.diferencia}</div>
+      <button class="mv-del" title="Borrar línea" onclick="askDeleteMov(${m.ts},'${esc(m.itemId)}')"><svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m2 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    </div>`;
+  }).join('');
+}
+
+function askDeleteMov(ts,itemId){
+  const m=homeMovsCache.find(x=>x.ts===ts&&x.itemId===itemId);
+  pendingMovDel={ts,itemId};
+  document.getElementById('mov-del-msg').textContent = m
+    ? `Vas a borrar la línea de "${m.nombre}" (${m.fecha} ${m.hora}, ${m.diferencia>0?'+':''}${m.diferencia}). Introduce la contraseña.`
+    : 'Introduce la contraseña para borrar esta línea de movimiento.';
+  document.getElementById('mov-del-pass').value='';
+  openModal('modal-mov-del');
+  setTimeout(()=>document.getElementById('mov-del-pass').focus(),100);
+}
+
+async function confirmDeleteMov(){
+  const pass=document.getElementById('mov-del-pass').value;
+  if(pass!=='Mapamsi01'){toast('Contraseña incorrecta');return;}
+  if(!pendingMovDel){closeModal('modal-mov-del');return;}
+  const {ts,itemId}=pendingMovDel;
+  closeModal('modal-mov-del');
+  toast('Borrando línea...');
+  await cloudMovDelete(ts,itemId);
+  await movDeleteLocal(ts,itemId);
+  pendingMovDel=null;
+  await renderHomeMovements();
+  toast('Línea borrada');
 }
 
 function renderCats(){
@@ -2471,7 +2652,10 @@ async function loadDemo(){
 
 // Estado de stock. Si el mínimo es 0, el artículo NO genera alertas (descatalogado / ya no se tiene).
 function isOut(i){return (i.min||0)>0 && (i.stock||0)===0;}
-function isLow(i){return (i.min||0)>0 && i.stock>0 && i.stock<=i.min;}
+// Los artículos con mínimo 1 NO se consideran "stock bajo" cuando tienen 1 unidad:
+// solo avisan cuando se consumen (stock 0 → "Sin stock"). El aviso de stock bajo
+// aplica a artículos con mínimo 2 o más.
+function isLow(i){return (i.min||0)>=2 && i.stock>0 && i.stock<=i.min;}
 function stockBadge(i){if(isOut(i))return'<span class="badge badge-out">Sin stock</span>';if(isLow(i))return`<span class="badge badge-low">↓ ${i.stock}</span>`;return`<span class="badge badge-ok">${i.stock} uds.</span>`;}
 function esc(s){return(s||'').toString().replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function openModal(id){document.getElementById(id).classList.add('open');}
