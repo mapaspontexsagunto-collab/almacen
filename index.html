@@ -445,6 +445,10 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
           <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10" stroke-width="1.8" stroke-linecap="round"/><path d="M17 15l3 3-3 3" stroke-width="1.8" stroke-linecap="round"/></svg>
           Exportar movimientos (entradas/salidas)
         </button>
+        <button class="btn btn-block" style="margin-top:10px;" onclick="diagnosticoMovimientos()" id="btn-diag">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Diagnóstico de movimientos en la nube
+        </button>
       </div>
     </div>
     <div class="card"><div class="card-h">Etiquetas QR</div>
@@ -771,6 +775,17 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div class="fr">
       <button class="btn" onclick="closeModal('modal-mov-del')">Cancelar</button>
       <button class="btn btn-danger" onclick="confirmDeleteMov()">Borrar línea</button>
+    </div>
+  </div>
+</div>
+
+<!-- INFO / RESULTADO DIAGNÓSTICO -->
+<div class="modal-bg center" id="modal-info">
+  <div class="modal small">
+    <h2 id="info-title">Información</h2>
+    <div class="msub" id="info-msg" style="line-height:1.5;"></div>
+    <div class="fr">
+      <button class="btn btn-primary" onclick="closeModal('modal-info')">Entendido</button>
     </div>
   </div>
 </div>
@@ -2616,6 +2631,47 @@ function setMovRange(mode){
   document.getElementById('movr-range').classList.toggle('active',mode==='range');
   document.getElementById('mov-range-fields').style.display=mode==='range'?'':'none';
 }
+function showInfo(title,msg){
+  document.getElementById('info-title').textContent=title;
+  document.getElementById('info-msg').innerHTML=String(msg).replace(/</g,'&lt;').replace(/\n/g,'<br>');
+  openModal('modal-info');
+}
+
+// Comprueba si la tabla de movimientos de la nube se puede leer y escribir
+async function diagnosticoMovimientos(){
+  const btn=document.getElementById('btn-diag');
+  if(btn){btn.disabled=true;btn.style.opacity='0.6';}
+  const tabla=WH?.tblMov||'(desconocida)';
+  let titulo='Diagnóstico de movimientos', msg='';
+  try{
+    if(!sb){
+      msg='No hay conexión con la nube (Supabase). Revisa tu conexión a internet e inténtalo de nuevo.';
+    }else{
+      // 1) ¿Se puede LEER la tabla?
+      const lectura=await sb.from(tabla).select('id',{count:'exact'}).limit(1);
+      if(lectura.error){
+        msg='❌ No se puede acceder a la tabla "'+tabla+'".\n\nCausa probable: la tabla NO existe en Supabase, o tiene el candado de seguridad (RLS) activado.\n\nSolución: ejecuta en Supabase el SQL para crear las tablas y poner "disable row level security".\n\nDetalle técnico: '+(lectura.error.message||lectura.error);
+      }else{
+        const total=lectura.count;
+        // 2) ¿Se puede ESCRIBIR? insert de prueba y borrado
+        const testTs=Date.now();
+        const prueba={itemId:'__TEST__',nombre:'PRUEBA',ref:'',cat:'',loc:'',brand:'',machine:'',fecha:'',hora:'',turno:'',tipo:'Entrada',anterior:0,nuevo:0,diferencia:0,ts:testTs};
+        const ins=await sb.from(tabla).insert(prueba);
+        if(ins.error){
+          msg='⚠ La tabla "'+tabla+'" se puede LEER ('+total+' movimientos guardados en la nube) pero NO se puede ESCRIBIR.\n\nCausa: el candado de seguridad (RLS) bloquea la escritura.\n\nSolución: ejecuta en Supabase:\nalter table '+tabla+' disable row level security;\n\nDetalle técnico: '+(ins.error.message||ins.error);
+        }else{
+          await sb.from(tabla).delete().eq('itemId','__TEST__').eq('ts',testTs);
+          msg='✅ Todo correcto.\n\nLa tabla "'+tabla+'" funciona: se puede leer y escribir.\n\nMovimientos guardados en la nube ahora mismo: '+total+'.\n\nSi tienes movimientos antiguos que solo se ven en un navegador, abre ese navegador y pulsa "Descargar de la nube": la app subirá automáticamente los que falten.';
+        }
+      }
+    }
+  }catch(e){
+    msg='❌ Error inesperado: '+(e.message||e);
+  }
+  if(btn){btn.disabled=false;btn.style.opacity='';}
+  showInfo(titulo,msg);
+}
+
 function exportMovimientos(){
   setMovRange('all');
   // Prerellenar: del día 1 del mes actual a hoy
