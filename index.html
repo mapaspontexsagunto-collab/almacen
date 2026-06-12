@@ -868,8 +868,12 @@ async function pushPendingMovements(){
 async function getMergedMovements(){
   const cloud=await cloudMovGetAll();
   const local=await movGetAll();
+  // Solo añadimos los movimientos locales que AÚN no se han subido a la nube.
+  // Los que ya están subidos (synced) viven en la nube: si se borran allí desde
+  // cualquier dispositivo, deben desaparecer y no "revivir" desde la copia local.
+  const pendientes=(local||[]).filter(m=>m.synced!==true);
   const vistos=new Set((cloud||[]).map(m=>m.ts+'|'+m.itemId));
-  const extra=(local||[]).filter(m=>!vistos.has(m.ts+'|'+m.itemId));
+  const extra=pendientes.filter(m=>!vistos.has(m.ts+'|'+m.itemId));
   return [...(cloud||[]),...extra];
 }
 
