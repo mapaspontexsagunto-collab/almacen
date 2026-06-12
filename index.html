@@ -94,6 +94,9 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .mov-home-list{max-height:320px;overflow-y:auto;}
 .mov-row{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);}
 .mov-row:last-child{border-bottom:none;}
+.mov-row .mv-click{display:flex;align-items:center;gap:10px;flex:1;min-width:0;}
+.mov-row .mv-thumb{width:40px;height:40px;border-radius:8px;background:var(--surface2);overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+.mov-row .mv-thumb img{width:100%;height:100%;object-fit:cover;}
 .mov-row .mv-main{flex:1;min-width:0;}
 .mov-row .mv-name{font-size:13.5px;font-weight:600;line-height:1.25;}
 .mov-row .mv-meta{font-size:11.5px;color:var(--text3);margin-top:2px;line-height:1.3;}
@@ -255,6 +258,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .label-qty button{width:30px;height:30px;border:1px solid var(--border2);background:var(--surface2);border-radius:7px;font-size:18px;font-weight:600;cursor:pointer;color:var(--text);display:flex;align-items:center;justify-content:center;line-height:1;-webkit-tap-highlight-color:transparent;}
 .label-qty button:active{background:var(--accent);color:var(--accent-text);}
 .label-qty .qnum{min-width:24px;text-align:center;font-weight:700;font-family:'DM Mono',monospace;font-size:15px;}
+.label-qty .qstock{width:auto !important;padding:0 8px;font-size:12px !important;font-weight:700;color:var(--accent) !important;border-color:var(--accent) !important;}
 
 /* Contenedor de impresión: oculto en pantalla, visible solo al imprimir */
 #print-area{display:none;}
@@ -494,7 +498,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
       <button class="btn btn-sm" onclick="labelSelectAll(true)">Seleccionar todas</button>
       <button class="btn btn-sm" onclick="labelSelectAll(false)">Quitar selección</button>
       <span style="flex:1;"></span>
-      <span style="font-size:13px;color:var(--text2);align-self:center;"><span id="label-sel-count">0</span> sel.</span>
+      <span style="font-size:13px;color:var(--text2);align-self:center;"><strong id="label-list-count">0</strong> art. · <span id="label-sel-count">0</span> sel.</span>
     </div>
     <div id="labels-list"></div>
     <div style="position:sticky;bottom:80px;padding-top:12px;">
@@ -796,7 +800,8 @@ function dbClear(){return new Promise(res=>{const t=db.transaction(STORE,'readwr
 function cfgGet(key){return new Promise(res=>{const t=db.transaction(CFG,'readonly').objectStore(CFG).get(key);t.onsuccess=()=>res(t.result?t.result.value:null);});}
 function cfgPut(key,value){return new Promise(res=>{const t=db.transaction(CFG,'readwrite').objectStore(CFG).put({key,value});t.onsuccess=()=>res();});}
 // Movimientos de stock
-function movPut(mov){return new Promise(res=>{const t=db.transaction(MOV,'readwrite').objectStore(MOV).add(mov);t.onsuccess=()=>res();});}
+function movPut(mov){return new Promise(res=>{const r=db.transaction(MOV,'readwrite').objectStore(MOV).add(mov);r.onsuccess=()=>res(r.result);});}
+function movUpdate(mov){return new Promise(res=>{const t=db.transaction(MOV,'readwrite').objectStore(MOV).put(mov);t.onsuccess=()=>res();});}
 function movGetAll(){return new Promise(res=>{const t=db.transaction(MOV,'readonly').objectStore(MOV).getAll();t.onsuccess=()=>res(t.result||[]);});}
 function movClear(){return new Promise(res=>{const t=db.transaction(MOV,'readwrite').objectStore(MOV).clear();t.onsuccess=()=>res();});}
 // Borra del store local todas las líneas que coincidan en ts e itemId
@@ -816,15 +821,41 @@ async function registrarMovimiento(item, anterior, nuevo, tipo){
   const mov={
     itemId:item.id, nombre:item.name, ref:item.ref||'', cat:item.cat||'',
     loc:item.loc||'', brand:item.brand||'', machine:item.machine||'',
-    photo:item.photo||null,
     fecha:now.toLocaleDateString('es-ES'),
     hora:now.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'}),
     turno:getTurno(now), tipo:tipo,
     anterior, nuevo, diferencia:diff,
-    ts:now.getTime()
+    ts:now.getTime(),
+    synced:false
   };
-  await movPut(mov);
-  await cloudMovPut(mov); // subir a Supabase para ver desde cualquier dispositivo
+  const localId=await movPut(mov); // guarda local y devuelve su id
+  const ok=await cloudMovPut(mov); // intenta subir a la nube
+  if(ok){mov.id=localId;mov.synced=true;await movUpdate(mov);} // marcar como sincronizado
+}
+
+// Sube a la nube los movimientos locales que aún no se hayan subido (cola de pendientes)
+async function pushPendingMovements(){
+  if(!sb||!WH?.tblMov)return;
+  const all=await movGetAll();
+  const pend=all.filter(m=>m.synced!==true);
+  if(!pend.length)return;
+  // Evitar duplicados: ver qué movimientos ya existen en la nube
+  const cloud=await cloudMovGetAll();
+  const enNube=new Set((cloud||[]).map(m=>m.ts+'|'+m.itemId));
+  for(const m of pend){
+    if(enNube.has(m.ts+'|'+m.itemId)){m.synced=true;await movUpdate(m);continue;} // ya estaba subido
+    const ok=await cloudMovPut(m);
+    if(ok){m.synced=true;await movUpdate(m);}
+  }
+}
+
+// Devuelve TODOS los movimientos combinando nube + local (sin duplicar)
+async function getMergedMovements(){
+  const cloud=await cloudMovGetAll();
+  const local=await movGetAll();
+  const vistos=new Set((cloud||[]).map(m=>m.ts+'|'+m.itemId));
+  const extra=(local||[]).filter(m=>!vistos.has(m.ts+'|'+m.itemId));
+  return [...(cloud||[]),...extra];
 }
 
 // ===== SUPABASE (sincronización en la nube) =====
@@ -909,9 +940,13 @@ async function cloudCfgGet(key){
   catch(e){console.warn('cloudCfgGet error',e);return null;}
 }
 async function cloudMovPut(mov){
-  if(!sb||!WH?.tblMov)return;
-  try{const{photo,...m}=mov;await sb.from(WH.tblMov).insert(m);}
-  catch(e){console.warn('cloudMovPut error',e);}
+  if(!sb||!WH?.tblMov)return false;
+  try{
+    const{photo,synced,id,...m}=mov; // quitar campos que no van a la nube
+    const{error}=await sb.from(WH.tblMov).insert(m);
+    if(error)throw error;
+    return true;
+  }catch(e){console.warn('cloudMovPut error',e);return false;}
 }
 async function cloudMovGetAll(){
   if(!sb||!WH?.tblMov)return[];
@@ -968,6 +1003,7 @@ async function init(){
 async function syncFromCloud(refrescarTodasFotos=false){
   if(!sb){setCloudStatus(false);return;}
   updateSyncBadge('syncing');
+  await pushPendingMovements(); // subir primero los movimientos que quedaron pendientes
   const meta=await cloudGetMeta();
   if(meta===null){setCloudStatus(false);updateSyncBadge('off');return;}
   setCloudStatus(true);
@@ -1164,9 +1200,8 @@ async function renderHomeMovements(){
   if(!cont1||!cont2)return;
   cont1.innerHTML='<div class="mov-empty">Cargando...</div>';
   cont2.innerHTML='<div class="mov-empty">Cargando...</div>';
-  // De la nube (todos los dispositivos), con respaldo local
-  let movs=await cloudMovGetAll();
-  if(!movs||!movs.length){movs=await movGetAll();}
+  // Combinar nube + local (para ver siempre los propios aunque aún no hayan subido)
+  let movs=await getMergedMovements();
   const limite=Date.now()-(90*24*60*60*1000); // 3 meses aprox.
   movs=(movs||[]).filter(m=>m.ts&&m.ts>=limite).sort((a,b)=>b.ts-a.ts);
   homeMovsCache=movs;
@@ -1179,13 +1214,20 @@ function renderMovRows(list,dir){
   return list.map(m=>{
     const signo=m.diferencia>0?'+':'';
     const turnoCorto=(m.turno||'').split(' ')[0];
+    const it=items.find(x=>x.id===m.itemId); // artículo actual (para foto y abrir ficha)
+    const foto=it?.photo||null;
+    const thumb=`<div class="mv-thumb">${foto?`<img src="${foto}">`:`<svg width="18" height="18" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>`}</div>`;
+    const abrible=it?`onclick="openDetail('${esc(m.itemId)}')" style="cursor:pointer;"`:'';
     return `<div class="mov-row">
-      <div class="mv-main">
-        <div class="mv-name">${esc(m.nombre||'')}</div>
-        <div class="mv-meta">${esc(m.fecha||'')} · ${esc(turnoCorto)} ${esc(m.hora||'')}${m.loc?' · '+esc(m.loc):''}${m.ref?' · '+esc(m.ref):''}</div>
+      <div class="mv-click" ${abrible}>
+        ${thumb}
+        <div class="mv-main">
+          <div class="mv-name">${esc(m.nombre||'')}</div>
+          <div class="mv-meta">${esc(m.fecha||'')} · ${esc(turnoCorto)} ${esc(m.hora||'')}${m.loc?' · '+esc(m.loc):''}${m.ref?' · '+esc(m.ref):''}</div>
+        </div>
       </div>
       <div class="mv-diff ${dir}">${signo}${m.diferencia}</div>
-      <button class="mv-del" title="Borrar línea" onclick="askDeleteMov(${m.ts},'${esc(m.itemId)}')"><svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m2 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <button class="mv-del" title="Borrar línea" onclick="event.stopPropagation();askDeleteMov(${m.ts},'${esc(m.itemId)}')"><svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m2 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     </div>`;
   }).join('');
 }
@@ -1910,7 +1952,16 @@ function saveEditAisle(){
   editAisleIdx=null;
   renderMap();
 }
-function filterByShelf(sid){cameFromShelf=true;document.getElementById('search-input').value=sid+'-';currentCat='';showPage('buscar');renderCats();renderItems();}
+function filterByShelf(sid){
+  cameFromShelf=true;
+  document.getElementById('search-input').value='';
+  currentCat='';
+  expandedShelf=sid; // abre ese grupo concreto (filtrado preciso por estantería, no por texto)
+  showPage('buscar');
+  renderCats();renderItems();
+  // Llevar la vista hasta la estantería abierta
+  setTimeout(()=>{document.querySelector('.shelf-group-head.open')?.scrollIntoView({behavior:'smooth',block:'start'});},60);
+}
 
 // ===== GESTOR DE ESTANTERÍAS =====
 function openShelfManager(){
@@ -2120,6 +2171,15 @@ function changeLabelQty(id,delta,ev){
   renderLabels();
 }
 
+// Pone las copias igual al stock del artículo (para imprimir una etiqueta por unidad)
+function setLabelQtyToStock(id,stock,ev){
+  if(ev)ev.stopPropagation();
+  if(!labelSel.has(id))labelSel.add(id);
+  let q=stock||1; if(q<1)q=1; if(q>99)q=99;
+  labelQty[id]=q;
+  renderLabels();
+}
+
 function labelSelectAll(on){
   if(on)labelList().forEach(i=>{labelSel.add(i.id);if(!labelQty[i.id])labelQty[i.id]=1;});
   else{labelSel=new Set();labelQty={};}
@@ -2131,6 +2191,7 @@ function renderLabels(){
   document.getElementById('pending-count').textContent=pend;
   const list=labelList();
   document.getElementById('labels-sub').textContent=labelTab==='pending'?pend+' sin imprimir':items.length+' referencias';
+  document.getElementById('label-list-count').textContent=list.length;
   document.getElementById('label-sel-count').textContent=labelSel.size;
   // El contador del botón muestra el TOTAL de copias (suma de cantidades)
   let totalCopias=0; labelSel.forEach(id=>{totalCopias+=(labelQty[id]||1);});
@@ -2152,18 +2213,20 @@ function renderLabels(){
     const printed=printedIds.has(i.id);
     const modif=modifiedIds.has(i.id);
     const q=labelQty[i.id]||1;
+    const stock=i.stock||0;
     let estado='';
     if(modif)estado='<span class="lmodified">modificado</span>';
     else if(printed)estado='<span class="lprinted">impresa</span>';
-    // Contador de copias: solo visible cuando la etiqueta está seleccionada
+    // Contador de copias + botón rápido "= stock" (solo cuando está seleccionada)
     const qty=sel?`<div class="label-qty" onclick="event.stopPropagation()">
+        ${stock>1?`<button class="qstock" title="Tantas etiquetas como stock (${stock})" onclick="setLabelQtyToStock('${i.id}',${stock},event)">×${stock}</button>`:''}
         <button onclick="changeLabelQty('${i.id}',-1,event)">−</button>
         <span class="qnum">${q}</span>
         <button onclick="changeLabelQty('${i.id}',1,event)">+</button>
       </div>`:'';
     return `<div class="label-row ${sel?'sel':''}" onclick="toggleLabel('${i.id}')">
       <div class="lcheck">${sel?'<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>':''}</div>
-      <div class="linfo"><strong>${esc(i.name)}</strong><span>${i.ref?esc(i.ref)+' · ':''}${i.loc}</span></div>
+      <div class="linfo"><strong>${esc(i.name)}</strong><span>${i.ref?esc(i.ref)+' · ':''}${i.loc} · <strong style="color:var(--text2);">stock: ${stock}</strong></span></div>
       ${estado}${qty}
     </div>`;
   }).join('');
@@ -2577,14 +2640,10 @@ async function doExportMovimientos(){
     if(desdeTs>hastaTs){toast('La fecha "Desde" es posterior a "Hasta"');return;}
   }
   closeModal('modal-mov-range');
-  // Leer de Supabase (todos los dispositivos) y combinar con local por si hay sin subir
+  // Subir pendientes y leer combinando nube + local
   toast('⏳ Descargando movimientos...');
-  const cloudMovs=await cloudMovGetAll();
-  const localMovs=await movGetAll();
-  // Combinar: los de la nube tienen prioridad; los locales sin ts en nube se añaden
-  const cloudTs=new Set(cloudMovs.map(m=>m.ts));
-  const extra=localMovs.filter(m=>!cloudTs.has(m.ts));
-  let movs=[...cloudMovs,...extra];
+  await pushPendingMovements();
+  let movs=await getMergedMovements();
   // Filtrar por rango de fechas si procede
   if(desdeTs!==null&&hastaTs!==null){
     movs=movs.filter(m=>m.ts>=desdeTs&&m.ts<=hastaTs);
