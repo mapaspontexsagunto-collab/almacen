@@ -1,9 +1,12 @@
-// Función intermediaria: recibe imagen+prompt desde la app, llama a Google Gemini
-// con la clave secreta guardada en Netlify y devuelve { text }.
-// La clave NUNCA llega al navegador.
+// Función intermediaria de Netlify. Dos modos:
 //
-// Gemini free tier: 1.500 peticiones/día, 1 millón de tokens/minuto.
-// Clave gratis en aistudio.google.com (empieza por AIza o Aq., ambas válidas).
+//  1) MODO IA (por defecto): recibe imagen+prompt, llama a Google Gemini con la
+//     clave secreta GEMINI_API_KEY y devuelve { text }.
+//
+//  2) MODO WEB ({ mode:'web', query }): busca en internet con Brave Search API
+//     usando BRAVE_API_KEY y devuelve { results:[{title,link,snippet,display}] }.
+//
+// Las claves NUNCA llegan al navegador.
 
 exports.handler = async (event) => {
   const resp = (statusCode, obj) => ({
@@ -14,12 +17,68 @@ exports.handler = async (event) => {
 
   if (event.httpMethod !== 'POST') return resp(405, { error: 'Method Not Allowed' });
 
-  const API_KEY = process.env.GEMINI_API_KEY;
-  if (!API_KEY) return resp(500, { error: 'Falta la clave (GEMINI_API_KEY) en Netlify' });
-
   let body;
   try { body = JSON.parse(event.body); }
   catch (e) { return resp(400, { error: 'JSON inválido' }); }
+
+  // ============================================================
+  //  MODO WEB: búsqueda de información técnica en internet (Brave)
+  // ============================================================
+  if (body.mode === 'web') {
+    const BRAVE_KEY = process.env.BRAVE_API_KEY;
+    if (!BRAVE_KEY) return resp(500, { error: 'Falta BRAVE_API_KEY en Netlify' });
+
+    const query = (body.query || '').toString().trim();
+    if (!query) return resp(400, { error: 'Falta la consulta (query)' });
+
+    const count = Math.min(Math.max(parseInt(body.num) || 6, 1), 10);
+    const url = 'https://api.search.brave.com/res/v1/web/search'
+      + `?q=${encodeURIComponent(query)}`
+      + `&count=${count}&country=es&search_lang=es`;
+
+    let last = { status: 0, msg: 'desconocido' };
+    for (let intento = 1; intento <= 2; intento++) {
+      let res, data;
+      try {
+        res = await fetch(url, {
+          headers: {
+            'Accept': 'application/json',
+            'Accept-Encoding': 'gzip',
+            'X-Subscription-Token': BRAVE_KEY
+          }
+        });
+        data = await res.json();
+      } catch (err) {
+        last = { status: 503, msg: String(err) };
+        if (intento < 2) { await new Promise(r => setTimeout(r, 1200)); continue; }
+        break;
+      }
+
+      if (res.ok) {
+        const arr = (data && data.web && data.web.results) ? data.web.results : [];
+        const results = arr.map(it => ({
+          title: it.title || '',
+          link: it.url || '',
+          snippet: it.description || '',
+          display: (it.meta_url && it.meta_url.hostname) ? it.meta_url.hostname : ''
+        }));
+        return resp(200, { results });
+      }
+
+      const msg = (data && data.error && (data.error.detail || data.error.message)) || 'desconocido';
+      last = { status: res.status, msg };
+      if (res.status >= 500 && intento < 2) { await new Promise(r => setTimeout(r, 1200)); continue; }
+      break;
+    }
+    const out = (last.status === 429 || last.status >= 500) ? last.status : 502;
+    return resp(out, { error: 'Búsqueda web falló', status: last.status, message: last.msg });
+  }
+
+  // ============================================================
+  //  MODO IA: identificación por imagen con Gemini
+  // ============================================================
+  const API_KEY = process.env.GEMINI_API_KEY;
+  if (!API_KEY) return resp(500, { error: 'Falta la clave (GEMINI_API_KEY) en Netlify' });
 
   const { image, prompt } = body;
   if (!image || !prompt) return resp(400, { error: 'Faltan datos (image/prompt)' });
@@ -78,7 +137,6 @@ exports.handler = async (event) => {
     console.log('GEMINI ERROR ' + res.status + ':', msg);
     last = { status: res.status, msg };
 
-    // Reintentar solo ante saturación transitoria (5xx), no ante límite (429).
     if (res.status >= 500 && intento < 2) { await new Promise(r => setTimeout(r, 1500)); continue; }
     break;
   }
