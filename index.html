@@ -2411,7 +2411,8 @@ Devuelve SOLO un objeto JSON (sin texto adicional, sin markdown):
   "marca": "marca/fabricante si se ve; si no, vac\u00edo",
   "referencia": "referencia o c\u00f3digo del fabricante si se ve; si no, vac\u00edo",
   "categoria": "la categor\u00eda m\u00e1s adecuada de la lista de existentes; si ninguna encaja, prop\u00f3n una",
-  "busqueda_sugerida": "los mejores t\u00e9rminos para buscar la ficha t\u00e9cnica de este componente en internet (marca + referencia + tipo si los tienes)"
+  "busqueda_sugerida": "los mejores t\u00e9rminos para buscar la ficha t\u00e9cnica de este componente en internet (marca + referencia + tipo si los tienes)",
+  "fabricante_web": "dominio oficial del fabricante si lo conoces con seguridad (p.ej. 'siemens.com', 'lovatoelectric.es'); si no, vac\u00edo. SOLO el dominio, sin https"
 }`;
 
   try{
@@ -2510,7 +2511,8 @@ function renderAIResult(r){
 }
 
 // Construye la consulta de internet a partir de lo que identific\u00f3 la IA
-function buildWebQuery(){
+// Construye la consulta base a partir de lo que identific\u00f3 la IA
+function buildWebBase(){
   if(!lastAIIdent)return '';
   const r=lastAIIdent;
   let base=(r.busqueda_sugerida||'').trim();
@@ -2520,67 +2522,92 @@ function buildWebQuery(){
     partes.forEach(p=>{const k=p.toLowerCase();if(!vistos.has(k)){vistos.add(k);limpio.push(p);}});
     base=limpio.join(' ');
   }
-  if(!base)return '';
-  return (base+' ficha t\u00e9cnica datasheet').trim();
+  return base.trim();
 }
 
-// Llama a la funci\u00f3n de Netlify en modo web (Brave) y muestra los enlaces reales
-async function runWebSearch(){
-  const cont=document.getElementById('ai-web-results');
-  const btn=document.getElementById('ai-web-btn');
-  const query=buildWebQuery();
-  if(!query){cont.innerHTML='<div style="font-size:13px;color:var(--text2);">No hay datos suficientes para buscar.</div>';return;}
-  if(btn){btn.disabled=true;btn.style.opacity='0.6';}
-  cont.innerHTML='<div class="empty"><p>\u23f3 Buscando en internet...</p></div>';
-
+// Una llamada a Brave (a trav\u00e9s de Netlify) para una consulta concreta
+async function braveSearch(query,num){
   const reintentables=[500,502,503,504];
-  let resultado=null, ultimoEstado=0, errRed=false;
+  let ultimoEstado=0;
   for(let intento=1;intento<=3;intento++){
     let resp;
     try{
       resp=await fetch('/.netlify/functions/buscar',{
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({mode:'web', query, num:6})
+        body:JSON.stringify({mode:'web', query, num:num||4})
       });
     }catch(e){
-      if(intento<3){await new Promise(r=>setTimeout(r,intento*1200));continue;}
-      errRed=true;break;
+      if(intento<3){await new Promise(r=>setTimeout(r,intento*1000));continue;}
+      return {error:'red'};
     }
-    if(resp.ok){resultado=await resp.json();break;}
+    if(resp.ok){const d=await resp.json();return {results:(d.results||[])};}
     ultimoEstado=resp.status;
-    if(reintentables.includes(resp.status)&&intento<3){await new Promise(r=>setTimeout(r,intento*1500));continue;}
+    if(reintentables.includes(resp.status)&&intento<3){await new Promise(r=>setTimeout(r,intento*1200));continue;}
     break;
+  }
+  return {error:'http', status:ultimoEstado};
+}
+
+// Pulsar el bot\u00f3n: hace una b\u00fasqueda por cada categor\u00eda y muestra los enlaces
+async function runWebSearch(){
+  const cont=document.getElementById('ai-web-results');
+  const btn=document.getElementById('ai-web-btn');
+  const base=buildWebBase();
+  if(!base){cont.innerHTML='<div style="font-size:13px;color:var(--text2);">No hay datos suficientes para buscar.</div>';return;}
+  if(btn){btn.disabled=true;btn.style.opacity='0.6';}
+  cont.innerHTML='<div class="empty"><p>\u23f3 Buscando en internet...</p></div>';
+
+  // Categor\u00edas: cada una con su t\u00edtulo, icono, color y t\u00e9rminos a\u00f1adidos
+  const cats=[
+    {titulo:'Ficha t\u00e9cnica / datasheet', icono:'\ud83d\udcc4', color:'var(--blue-text)', extra:' ficha t\u00e9cnica datasheet pdf'},
+    {titulo:'Manual de uso o instalaci\u00f3n', icono:'\ud83d\udcd8', color:'var(--blue-text)', extra:' manual instrucciones'},
+    {titulo:'D\u00f3nde comprar / precio', icono:'\ud83d\uded2', color:'var(--green-text)', extra:' comprar precio'},
+    {titulo:'B\u00fasqueda general', icono:'\ud83d\udd0d', color:'var(--text2)', extra:''}
+  ];
+
+  let huboLimite=false, huboAlgo=false, html='';
+  for(const c of cats){
+    const r=await braveSearch((base+c.extra).trim(),4);
+    if(r.error){
+      if(r.status===429)huboLimite=true;
+      continue; // si una categor\u00eda falla, seguimos con las dem\u00e1s
+    }
+    const its=(r.results||[]);
+    if(!its.length)continue;
+    huboAlgo=true;
+    html+=`<div style="margin:16px 0 8px;display:flex;align-items:center;gap:8px;"><span style="font-size:16px;">${c.icono}</span><span class="fl" style="color:${c.color};">${esc(c.titulo)}</span></div>`;
+    its.forEach(it=>{
+      html+=`<a href="${esc(it.link)}" target="_blank" rel="noopener" class="card" style="display:block;margin-bottom:10px;text-decoration:none;color:inherit;">
+        <div style="padding:12px 14px;">
+          <strong style="font-size:14px;color:var(--blue-text);line-height:1.35;">${esc(it.title)}</strong>
+          <div style="font-size:11px;color:var(--text3);margin:3px 0 6px;">${esc(it.display)}</div>
+          <div style="font-size:12px;color:var(--text2);line-height:1.45;">${esc(it.snippet)}</div>
+        </div>
+      </a>`;
+    });
+  }
+
+  // Web oficial del fabricante (si la IA la conoce) — enlace directo, no gasta búsqueda
+  const web=((lastAIIdent&&lastAIIdent.fabricante_web)||'').trim().replace(/^https?:\/\//,'').replace(/\/$/,'');
+  if(web && /\.[a-z]{2,}$/i.test(web)){
+    html+='<div style="margin:16px 0 8px;display:flex;align-items:center;gap:8px;"><span style="font-size:16px;">\ud83c\udf10</span><span class="fl" style="color:var(--green-text);">Web oficial del fabricante</span></div>';
+    html+='<a href="https://'+esc(web)+'" target="_blank" rel="noopener" class="card" style="display:block;margin-bottom:10px;text-decoration:none;color:inherit;"><div style="padding:12px 14px;"><strong style="font-size:14px;color:var(--green-text);">'+esc(web)+'</strong></div></a>';
+    huboAlgo=true;
   }
 
   if(btn){btn.disabled=false;btn.style.opacity='1';}
 
-  if(errRed){cont.innerHTML='<div style="font-size:13px;color:var(--text2);">Sin conexi\u00f3n con el servidor. Int\u00e9ntalo de nuevo.</div>';return;}
-  if(!resultado){
-    let msg='No se pudo buscar en internet.';
-    if(ultimoEstado===429)msg='Se ha alcanzado el l\u00edmite de b\u00fasquedas en internet de este mes. Int\u00e9ntalo m\u00e1s adelante.';
-    else if(ultimoEstado>=500)msg='El buscador est\u00e1 saturado. Espera unos segundos y reintenta.';
+  if(!huboAlgo){
+    let msg='No se encontraron resultados en internet.';
+    if(huboLimite)msg='Se ha alcanzado el l\u00edmite de b\u00fasquedas en internet de este mes. Int\u00e9ntalo m\u00e1s adelante.';
     cont.innerHTML='<div style="font-size:13px;color:var(--text2);">'+esc(msg)+'</div>';
     return;
   }
-
-  const items_=(resultado.results||[]);
-  if(!items_.length){cont.innerHTML='<div style="font-size:13px;color:var(--text2);">No se encontraron resultados en internet.</div>';return;}
-
-  let html='<div class="fl" style="margin-bottom:8px;">Resultados en internet</div>';
-  items_.forEach(it=>{
-    html+=`<a href="${esc(it.link)}" target="_blank" rel="noopener" class="card" style="display:block;margin-bottom:10px;text-decoration:none;color:inherit;">
-      <div style="padding:12px 14px;">
-        <strong style="font-size:14px;color:var(--blue-text);line-height:1.35;">${esc(it.title)}</strong>
-        <div style="font-size:11px;color:var(--text3);margin:3px 0 6px;">${esc(it.display)}</div>
-        <div style="font-size:12px;color:var(--text2);line-height:1.45;">${esc(it.snippet)}</div>
-      </div>
-    </a>`;
-  });
   cont.innerHTML=html;
 }
 
-// Obtiene el ancho/alto reales de una foto (para mantener la proporción en el Excel)
+
 function imgDims(dataUrl){return new Promise(res=>{const im=new Image();im.onload=()=>res({w:im.naturalWidth,h:im.naturalHeight});im.onerror=()=>res(null);im.src=dataUrl;});}
 
 function exportExcel(){
