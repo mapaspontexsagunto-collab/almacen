@@ -315,6 +315,70 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .resize-handle{position:absolute;right:-2px;bottom:-2px;width:16px;height:16px;cursor:nwse-resize;display:none;}
 .map-node.editing-node .resize-handle{display:block;}
 .resize-handle::after{content:'';position:absolute;right:3px;bottom:3px;width:8px;height:8px;border-right:2px solid var(--accent);border-bottom:2px solid var(--accent);}
+
+/* ===== ESTANTERÍA VISUAL ===== */
+/* ===== ESTANTERÍA VISUAL v2 (con artículos) ===== */
+.sv2-balda{display:flex;gap:8px;margin-bottom:10px;align-items:stretch;}
+.sv2-tag{width:54px;flex-shrink:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--text);color:#fff;border-radius:10px;font-size:12px;font-weight:700;padding:6px 4px;text-align:center;line-height:1.15;}
+.sv2-cells{flex:1;display:flex;gap:8px;overflow-x:auto;align-items:flex-start;border:1.5px solid var(--border);border-radius:12px;padding:8px;background:var(--surface2);}
+.sv2-hueco{flex:0 0 auto;width:190px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:8px;}
+.sv2-hueco-h,.sv2-gav-h,.sv2-gaveta-h{font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.3px;}
+.sv2-gav{flex:0 0 auto;border:1.5px dashed var(--border2);border-radius:10px;padding:7px;background:var(--surface);}
+.sv2-gav-h{margin-bottom:6px;}
+.sv2-gav-grid{display:grid;gap:6px;}
+.sv2-gaveta{border-radius:9px;padding:7px;display:flex;flex-direction:column;gap:6px;min-height:64px;border:1px solid rgba(0,0,0,.06);}
+.sv2-gaveta-h{font-size:10px;}
+.sv2-mini{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;cursor:pointer;transition:transform .08s;}
+.sv2-mini:active{transform:scale(.98);}
+.sv2-mini-img{width:100%;height:110px;background:var(--surface2);overflow:hidden;display:flex;align-items:center;justify-content:center;}
+.sv2-mini-img img{width:100%;height:100%;object-fit:cover;}
+.sv2-mini-tx{min-width:0;padding:8px 10px;}
+.sv2-mini-nm{font-size:14px;font-weight:600;line-height:1.3;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
+.sv2-mini-st{font-size:12px;color:var(--text2);margin-top:4px;}
+.sv2-add{font-size:11px;color:var(--blue-text);background:none;border:1px dashed var(--border2);border-radius:7px;padding:5px;cursor:pointer;width:100%;}
+.sv2-add:active{background:var(--surface2);}
+.sv2-empty{font-size:11px;color:var(--text3);text-align:center;padding:6px 2px;}
+.sv2-toolbar{display:flex;gap:8px;margin-bottom:10px;}
+.sv2-orghint{font-size:12px;background:var(--amber-bg);color:var(--amber-text);border-radius:8px;padding:8px 10px;margin-bottom:10px;line-height:1.4;font-weight:500;}
+.sv2-mini.sv2-sel{outline:2px solid var(--blue-text);box-shadow:0 0 0 3px var(--blue-bg);}
+.sv2-cells.org .sv2-hueco,.sv2-cells.org .sv2-gaveta{cursor:copy;}
+.sv2-cells.org .sv2-mini{cursor:grab;}
+
+
+#modal-shelf-view .modal{max-width:920px;}
+@media(min-width:700px){#modal-shelf-view .modal{padding:26px 28px;}}
+.sv-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;margin-bottom:14px;color:var(--text2);}
+.sv-legend span{display:flex;align-items:center;gap:5px;}
+.sv-leg-box{width:14px;height:14px;border-radius:4px;border:1.5px solid var(--border);}
+.sv-balda{display:flex;gap:8px;margin-bottom:8px;align-items:stretch;}
+.sv-tag{width:56px;flex-shrink:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--surface2);border-radius:10px;font-size:12px;font-weight:600;color:var(--text2);padding:6px 4px;text-align:center;line-height:1.2;}
+.sv-cells{flex:1;display:flex;flex-wrap:wrap;gap:6px;align-content:stretch;}
+.sv-cell{flex:1 1 64px;min-height:46px;border:1.5px solid var(--border);border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:12px;cursor:pointer;background:var(--surface);padding:4px;text-align:center;transition:transform .08s;}
+.sv-cell:active{transform:scale(.97);}
+.sv-cell .c-lab{font-weight:600;}
+.sv-cell .c-cnt{font-size:11px;color:var(--text2);margin-top:2px;}
+.sv-cell.occ{background:var(--blue-bg);border-color:#bfdbfe;color:var(--blue-text);}
+.sv-cell.low{background:var(--amber-bg);border-color:#fcd34d;color:var(--amber-text);}
+.sv-cell.out{background:var(--red-bg);border-color:#fecaca;color:var(--red-text);}
+.sv-cell.occ .c-cnt,.sv-cell.low .c-cnt,.sv-cell.out .c-cnt{color:inherit;opacity:.85;}
+.sv-gav{flex:1 1 100%;border:1.5px dashed var(--border2);border-radius:10px;padding:7px;}
+.sv-gav-title{font-size:11px;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px;}
+.sv-gav-grid{display:grid;gap:5px;}
+.sv-gav .sv-cell{flex:none;min-height:40px;font-size:11px;}
+.sv-unplaced{flex:1 1 100%;}
+.sv-unplaced .sv-cell{border-style:dashed;}
+/* editor distribución */
+.lay-balda{border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin-bottom:10px;}
+.lay-balda-head{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-weight:600;}
+.lay-block{display:flex;align-items:center;gap:8px;background:var(--surface2);border-radius:8px;padding:7px 10px;margin-bottom:6px;font-size:13px;flex-wrap:wrap;}
+.lay-block .lbl{font-weight:600;}
+.lay-block .del{margin-left:auto;background:none;border:none;color:var(--red-text);cursor:pointer;font-size:20px;line-height:1;padding:0 4px;}
+.lay-step{display:inline-flex;align-items:center;gap:4px;}
+.lay-step button{width:26px;height:26px;border:1px solid var(--border2);background:var(--surface);border-radius:7px;font-size:15px;cursor:pointer;}
+.lay-add{display:flex;gap:8px;margin-top:4px;}
+.lay-add button{flex:1;font-size:13px;}
+.lay-empty{font-size:12px;color:var(--text3);padding:4px 0;}
+.lock-pill{display:inline-flex;align-items:center;gap:5px;font-size:12px;background:var(--amber-bg);color:var(--amber-text);border-radius:99px;padding:5px 12px;font-weight:600;}
 </style>
 </head>
 <body>
@@ -470,6 +534,14 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
         <button class="btn btn-block btn-danger" onclick="askWipe()">Borrar todo el inventario</button>
       </div>
     </div>
+    <div class="card"><div class="card-h">Seguridad y contraseñas</div>
+      <div style="padding:16px;">
+        <p style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.5;">Una sola contraseña protege Ajustes, eliminar artículos y movimientos, y mover material entre almacenes. Aquí puedes cambiarla y gestionar los accesos de los almacenes.</p>
+        <button class="btn btn-block btn-primary" style="margin-bottom:10px;" onclick="openChangePass()">Cambiar contraseña de Ajustes</button>
+        <button class="btn btn-block" style="margin-bottom:10px;" onclick="openUsers()">Usuario y contraseñas de almacenes</button>
+        <button class="btn btn-block" onclick="lockAdmin()">Bloquear Ajustes ahora</button>
+      </div>
+    </div>
     <div class="card"><div class="card-h">Sesión</div>
       <div style="padding:16px;">
         <p style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.5;">Cierra la sesión en este dispositivo. La próxima vez pedirá usuario y contraseña.</p>
@@ -518,7 +590,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <button class="navbtn" id="nav-buscar" onclick="showPage('buscar')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" stroke-width="1.8"/><path d="m20 20-3-3" stroke-width="1.8" stroke-linecap="round"/></svg><span>Buscar</span></button>
     <button class="navbtn add-btn" onclick="openAddForm()"><span class="plus"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke-width="2.2" stroke-linecap="round"/></svg></span></button>
     <button class="navbtn" id="nav-mapa" onclick="showPage('mapa')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 3v15M15 6v15" stroke-width="1.8"/></svg><span>Mapa</span></button>
-    <button class="navbtn" id="nav-ajustes" onclick="showPage('ajustes')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" stroke-width="1.8"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z" stroke-width="1.8"/></svg><span>Ajustes</span></button>
+    <button class="navbtn" id="nav-ajustes" onclick="goAjustes()"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" stroke-width="1.8"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z" stroke-width="1.8"/></svg><span>Ajustes</span></button>
   </div>
 </div>
 
@@ -552,6 +624,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
       <button class="btn" onclick="showQR()">Ver QR</button>
       <button class="btn" onclick="editCurrentItem()">Editar</button>
     </div>
+    <button class="btn btn-block" id="btn-move-wh" style="margin-top:10px;" onclick="moveToOtherWarehouse()">Mover a otro almacén</button>
     <button class="btn btn-block btn-danger" style="margin-top:10px;" onclick="askDelete()">Eliminar artículo</button>
     <button class="btn btn-block" style="margin-top:10px;" onclick="closeModal('modal-detail')">Cerrar</button>
   </div>
@@ -578,8 +651,9 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div class="fg"><label class="fl">Familias adicionales (opcional)</label><div class="msub" style="margin:0 0 8px;">Toca para añadir el material a más familias. Aparecerá al filtrar por cualquiera de ellas.</div><div id="f-cats-chips" class="cats-chips"></div></div>
     <div class="fr">
       <div class="fg"><label class="fl">Estantería *</label><select class="fi" id="f-shelf" onchange="updateBaldaOptions()"></select></div>
-      <div class="fg"><label class="fl">Balda *</label><select class="fi" id="f-balda"></select></div>
+      <div class="fg"><label class="fl">Balda *</label><select class="fi" id="f-balda" onchange="updatePosOptions()"></select></div>
     </div>
+    <div class="fg" id="f-pos-group" style="display:none;"><label class="fl">Hueco / gaveta (opcional)</label><select class="fi" id="f-pos"></select></div>
     <div class="fr">
       <div class="fg"><label class="fl">Stock</label><input type="number" class="fi" id="f-stock" placeholder="0" min="0"></div>
       <div class="fg"><label class="fl">Stock mínimo</label><input type="number" class="fi" id="f-min" placeholder="2" min="0"></div>
@@ -802,6 +876,92 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
   </div>
 </div>
 
+
+<!-- DESBLOQUEO ÚNICO (Ajustes / acciones protegidas) -->
+<div class="modal-bg center" id="modal-unlock">
+  <div class="modal small">
+    <h2>🔒 Acción protegida</h2>
+    <div class="msub" id="unlock-msg">Introduce la contraseña de Ajustes para continuar. Una vez desbloqueado, no te la volverá a pedir mientras tengas la app abierta.</div>
+    <div class="fg"><input type="password" class="fi" id="unlock-pass" placeholder="Contraseña" onkeydown="if(event.key==='Enter')submitUnlock()"></div>
+    <div class="fr">
+      <button class="btn" onclick="closeModal('modal-unlock');pendingAdminAction=null;">Cancelar</button>
+      <button class="btn btn-primary" onclick="submitUnlock()">Desbloquear</button>
+    </div>
+  </div>
+</div>
+
+<!-- ESTANTERÍA VISUAL -->
+<div class="modal-bg" id="modal-shelf-view">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">
+      <h2 id="sv-title" style="margin:0;flex:1;">Estantería</h2>
+      <button class="btn btn-sm" onclick="openLayout(svShelfId)" title="Organizar baldas, huecos y gavetas">Distribución</button>
+    </div>
+    <div class="msub" id="sv-sub"></div>
+    <div class="msub" style="margin:6px 0 12px;line-height:1.45;">Cada balda muestra sus huecos de izquierda a derecha. Si en un hueco o gaveta hay varios artículos, salen apilados. Las gavetas se distinguen por color. Toca un artículo para ver su ficha, o «+ Añadir aquí» para meter material en ese sitio.</div>
+    <div id="sv-body"></div>
+    <button class="btn btn-block" style="margin-top:14px;" onclick="closeModal('modal-shelf-view')">Cerrar</button>
+  </div>
+</div>
+
+<!-- CONTENIDO DE UN HUECO / GAVETA -->
+<div class="modal-bg" id="modal-cell">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2 id="cell-title">Ubicación</h2>
+    <div class="msub" id="cell-sub"></div>
+    <div id="cell-items"></div>
+    <button class="btn btn-block btn-primary" style="margin-top:12px;" onclick="addHere()">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke-width="2" stroke-linecap="round"/></svg>Añadir material aquí
+    </button>
+    <button class="btn btn-block" style="margin-top:10px;" onclick="closeModal('modal-cell')">Cerrar</button>
+  </div>
+</div>
+
+<!-- EDITAR DISTRIBUCIÓN DE LA ESTANTERÍA -->
+<div class="modal-bg" id="modal-layout">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2 id="layout-title">Distribución</h2>
+    <div class="msub">Para cada balda puedes añadir <strong>huecos</strong> (posiciones sueltas) y/o <strong>gaveteros</strong> (rejilla de cajones). Si una balda no tiene nada, queda como balda simple.</div>
+    <div id="layout-editor"></div>
+    <button class="btn btn-block btn-primary" style="margin-top:14px;" onclick="saveLayout()">Guardar distribución</button>
+    <button class="btn btn-block" style="margin-top:10px;" onclick="closeModal('modal-layout')">Cancelar</button>
+  </div>
+</div>
+
+<!-- CAMBIAR CONTRASEÑA DE AJUSTES -->
+<div class="modal-bg center" id="modal-change-pass">
+  <div class="modal small">
+    <h2>Cambiar contraseña de Ajustes</h2>
+    <div class="msub">Es la contraseña única que protege Ajustes, eliminar artículos y movimientos, y mover material entre almacenes.</div>
+    <div class="fg"><label class="fl">Contraseña actual</label><input type="password" class="fi" id="cp-cur" placeholder="Actual"></div>
+    <div class="fg"><label class="fl">Nueva contraseña</label><input type="password" class="fi" id="cp-new" placeholder="Nueva"></div>
+    <div class="fg"><label class="fl">Repite la nueva</label><input type="password" class="fi" id="cp-new2" placeholder="Repite la nueva"></div>
+    <div class="fr">
+      <button class="btn" onclick="closeModal('modal-change-pass')">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveAdminPass()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- USUARIOS Y CONTRASEÑAS DE LOS ALMACENES -->
+<div class="modal-bg center" id="modal-users">
+  <div class="modal small">
+    <h2>Usuario y contraseñas de almacenes</h2>
+    <div class="msub">Son los datos que se piden al entrar en cada almacén. El usuario es común a los dos.</div>
+    <div class="fg"><label class="fl">Usuario (común)</label><input type="text" class="fi" id="us-user"></div>
+    <div class="fg"><label class="fl">Contraseña · ⚡ Almacén Eléctrico</label><input type="text" class="fi" id="us-pass-e"></div>
+    <div class="fg"><label class="fl">Contraseña · 🔧 Almacén Mecánico</label><input type="text" class="fi" id="us-pass-m"></div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:12px;line-height:1.4;">El cambio se aplica en este dispositivo al instante y se sincroniza con los demás cuando descargan de la nube.</div>
+    <div class="fr">
+      <button class="btn" onclick="closeModal('modal-users')">Cancelar</button>
+      <button class="btn btn-primary" onclick="saveUsers()">Guardar</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1010,6 +1170,9 @@ async function init(){
   mapSize=await cfgGet('mapSize')||{...DEFAULT_MAP_SIZE};
   await loadPrintedIds();
   if(!shelves||!shelves.length){shelves=defaultShelves();}
+  adminPass=(await cfgGet('adminPass'))||ADMIN_PASS_DEFAULT;
+  const _lc=await cfgGet('loginCfg'); if(_lc)setLoginCfg(_lc);
+  try{adminUnlocked=sessionStorage.getItem('almacen_admin_'+WH.key)==='1';}catch(e){}
   items=await dbGetAll();
   renderAll();
   renderHomeMovements();
@@ -1059,6 +1222,8 @@ async function syncFromCloud(refrescarTodasFotos=false){
   else{await cloudCfgPut('shelves',shelves);}
   if(cAisles){aisles=cAisles;await cfgPut('aisles',aisles);}
   if(cMapSize&&cMapSize.w&&cMapSize.h){mapSize=cMapSize;await cfgPut('mapSize',mapSize);}
+  const cAdmin=await cloudCfgGet('adminPass'); if(cAdmin){adminPass=cAdmin;await cfgPut('adminPass',cAdmin);}
+  const cLogin=await cloudCfgGet('loginCfg'); if(cLogin){setLoginCfg(cLogin);await cfgPut('loginCfg',cLogin);}
   renderAll();
   if(document.getElementById('page-inicio')?.classList.contains('active'))renderHomeMovements();
 
@@ -1253,22 +1418,21 @@ function renderMovRows(list,dir){
 }
 
 function askDeleteMov(ts,itemId){
-  const m=homeMovsCache.find(x=>x.ts===ts&&x.itemId===itemId);
-  pendingMovDel={ts,itemId};
-  document.getElementById('mov-del-msg').textContent = m
-    ? `Vas a borrar la línea de "${m.nombre}" (${m.fecha} ${m.hora}, ${m.diferencia>0?'+':''}${m.diferencia}). Introduce la contraseña.`
-    : 'Introduce la contraseña para borrar esta línea de movimiento.';
-  document.getElementById('mov-del-pass').value='';
-  openModal('modal-mov-del');
-  setTimeout(()=>document.getElementById('mov-del-pass').focus(),100);
+  requireAdmin(()=>{
+    const m=homeMovsCache.find(x=>x.ts===ts&&x.itemId===itemId);
+    pendingMovDel={ts,itemId};
+    document.getElementById('confirm-title').textContent='Borrar línea';
+    document.getElementById('confirm-msg').textContent = m
+      ? `Vas a borrar la línea de "${m.nombre}" (${m.fecha} ${m.hora}, ${m.diferencia>0?'+':''}${m.diferencia}). ¿Continuar?`
+      : '¿Borrar esta línea de movimiento?';
+    document.getElementById('confirm-ok').onclick=()=>{closeModal('modal-confirm');confirmDeleteMov();};
+    openModal('modal-confirm');
+  });
 }
 
 async function confirmDeleteMov(){
-  const pass=document.getElementById('mov-del-pass').value;
-  if(pass!=='Mapamsi01'){toast('Contraseña incorrecta');return;}
-  if(!pendingMovDel){closeModal('modal-mov-del');return;}
+  if(!pendingMovDel)return;
   const {ts,itemId}=pendingMovDel;
-  closeModal('modal-mov-del');
   toast('Borrando línea...');
   await cloudMovDelete(ts,itemId);
   await movDeleteLocal(ts,itemId);
@@ -1307,6 +1471,7 @@ function updateBaldaOptions(){
   const n=sh?sh.baldas:5;
   let html='';for(let b=1;b<=n;b++)html+=`<option value="${b}">${b}</option>`;
   document.getElementById('f-balda').innerHTML=html;
+  updatePosOptions();
 }
 
 let expandedShelf=null; // id de la estantería desplegada
@@ -1347,15 +1512,7 @@ function renderItems(){
           <span class="shelf-count">${its.length} ref.</span>
           <svg class="chev" width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </div>`;
-      if(abierta){
-        if(its.length){
-          html+='<div class="shelf-group-body">'+(currentView==='gallery'
-            ? '<div class="items-grid">'+its.map(itemCardHTML).join('')+'</div>'
-            : its.map(itemRowHTML).join(''))+'</div>';
-        }else{
-          html+='<div class="shelf-group-body"><div class="empty" style="padding:20px;"><p>Estantería vacía</p></div></div>';
-        }
-      }
+      if(abierta) html+='<div class="shelf-group-body" style="padding:10px;">'+shelfLayoutHTML(s.id)+'</div>';
       html+='</div>';
     });
     html+='</div>';
@@ -1438,13 +1595,15 @@ function openDetail(id){
   adjustValue=i.stock;document.getElementById('adjust-val').textContent=adjustValue;
   let info='';
   // Ubicación destacada al principio
-  info+=`<div class="loc-box"><svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" stroke-width="1.8"/><circle cx="12" cy="10" r="3" stroke-width="1.8"/></svg><div><div class="loc-label">Ubicación</div><div class="loc-value">${esc(locFull(i.loc))}</div></div></div>`;
+  const _pl=posLabel(i);
+  info+=`<div class="loc-box"><svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" stroke-width="1.8"/><circle cx="12" cy="10" r="3" stroke-width="1.8"/></svg><div><div class="loc-label">Ubicación</div><div class="loc-value">${esc(locFull(i.loc))}${_pl?' · '+esc(_pl):''}</div></div></div>`;
   if(i.ref)info+=`<div class="detail-row"><span class="k">Referencia</span><span class="v">${esc(i.ref)}</span></div>`;
   if(i.brand)info+=`<div class="detail-row"><span class="k">Marca</span><span class="v">${esc(i.brand)}</span></div>`;
   if(i.machine)info+=`<div class="detail-row"><span class="k">Equipo/máquina</span><span class="v">${esc(i.machine)}</span></div>`;
   info+=`<div class="detail-row"><span class="k">Stock mínimo</span><span class="v">${i.min}</span></div>`;
   if(i.notes)info+=`<div class="detail-row"><span class="k">Notas</span><span class="v">${esc(i.notes)}</span></div>`;
   document.getElementById('detail-info').innerHTML=info;
+  const _other=otherWarehouse();const _mb=document.getElementById('btn-move-wh');if(_mb&&_other)_mb.textContent='Mover a '+_other.name;
   openModal('modal-detail');
 }
 async function quickStock(d){if(!currentItem)return;const anterior=currentItem.stock;currentItem.stock=Math.max(0,anterior+d);await registrarMovimiento(currentItem,anterior,currentItem.stock,d>0?'Entrada':'Salida');await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;adjustValue=currentItem.stock;document.getElementById('adjust-val').textContent=adjustValue;renderAll();toast(d>0?'+1 unidad':'−1 unidad');}
@@ -1454,11 +1613,13 @@ async function applyAdjust(){if(!currentItem)return;const anterior=currentItem.s
 // DELETE con modal propio (confirm() fallaba en tablet)
 function askDelete(){
   if(!currentItem)return;
-  document.getElementById('confirm-title').textContent='Eliminar artículo';
-  document.getElementById('confirm-msg').textContent='¿Eliminar "'+currentItem.name+'" del inventario? Esta acción no se puede deshacer.';
-  const ok=document.getElementById('confirm-ok');
-  ok.onclick=async()=>{const id=currentItem.id;await dbDelete(id);await cloudDelete(id);items=await dbGetAll();closeModal('modal-confirm');closeModal('modal-detail');renderAll();toast('Artículo eliminado');};
-  openModal('modal-confirm');
+  requireAdmin(()=>{
+    document.getElementById('confirm-title').textContent='Eliminar artículo';
+    document.getElementById('confirm-msg').textContent='¿Eliminar "'+currentItem.name+'" del inventario? Esta acción no se puede deshacer.';
+    const ok=document.getElementById('confirm-ok');
+    ok.onclick=async()=>{const id=currentItem.id;await dbDelete(id);await cloudDelete(id);items=await dbGetAll();closeModal('modal-confirm');closeModal('modal-detail');renderAll();toast('Artículo eliminado');};
+    openModal('modal-confirm');
+  });
 }
 
 function openAddForm(){
@@ -1470,7 +1631,11 @@ function openAddForm(){
   document.getElementById('f-cat').value='';
   selectedExtraCats=new Set();renderCatChips();
   if(shelves.length)document.getElementById('f-shelf').value=shelves[0].id;
+  if(addPreset && addPreset.shelf){document.getElementById('f-shelf').value=addPreset.shelf;}
   updateBaldaOptions();
+  if(addPreset && addPreset.balda){document.getElementById('f-balda').value=addPreset.balda;updatePosOptions();}
+  if(addPreset && addPreset.pos){const sel=document.getElementById('f-pos');if(sel)sel.value=addPreset.pos;}
+  addPreset=null;
   document.getElementById('newcat-zone').style.display='none';
   renderPhotoZone();resetAiFillStatus();openModal('modal-form');
 }
@@ -1481,7 +1646,7 @@ function editCurrentItem(){
   document.getElementById('f-ref').value=currentItem.ref||'';document.getElementById('f-brand').value=currentItem.brand||'';
   document.getElementById('f-machine').value=currentItem.machine||'';document.getElementById('f-notes').value=currentItem.notes||'';
   document.getElementById('f-stock').value=currentItem.stock;document.getElementById('f-min').value=currentItem.min;
-  const sp=splitLoc(currentItem.loc);document.getElementById('f-shelf').value=sp.shelfId;updateBaldaOptions();document.getElementById('f-balda').value=sp.balda;
+  const sp=splitLoc(currentItem.loc);document.getElementById('f-shelf').value=sp.shelfId;updateBaldaOptions();document.getElementById('f-balda').value=sp.balda;updatePosOptions();{const _ps=document.getElementById('f-pos');if(_ps)_ps.value=currentItem.pos||'';}
   selectedExtraCats=new Set(currentItem.cats||[]);renderCatChips();
   document.getElementById('newcat-zone').style.display='none';renderPhotoZone();resetAiFillStatus();closeModal('modal-detail');openModal('modal-form');
 }
@@ -1631,7 +1796,8 @@ async function saveItem(){
   const extraCats=[...selectedExtraCats].filter(c=>c&&c!==cat);
   const minRaw=document.getElementById('f-min').value.trim();
   const minVal = minRaw==='' ? 2 : (parseInt(minRaw)||0);
-  const item={id:editingId||('I'+Date.now()+Math.floor(Math.random()*1000)),name,cat,cats:extraCats,loc:shelf+'-'+balda,stock:parseInt(document.getElementById('f-stock').value)||0,min:minVal,ref:document.getElementById('f-ref').value.trim(),brand:document.getElementById('f-brand').value.trim(),machine:document.getElementById('f-machine').value.trim(),notes:document.getElementById('f-notes').value.trim(),photo:pendingPhoto};
+  const pos=getFormPos();
+  const item={id:editingId||('I'+Date.now()+Math.floor(Math.random()*1000)),name,cat,cats:extraCats,loc:shelf+'-'+balda,pos:pos,stock:parseInt(document.getElementById('f-stock').value)||0,min:minVal,ref:document.getElementById('f-ref').value.trim(),brand:document.getElementById('f-brand').value.trim(),machine:document.getElementById('f-machine').value.trim(),notes:document.getElementById('f-notes').value.trim(),photo:pendingPhoto};
   // ¿Es un artículo ya impreso cuya etiqueta ha cambiado?
   // La etiqueta muestra nombre, referencia y ubicación: si alguno cambia, conviene reimprimir.
   let etiquetaCambiada=false;
@@ -2854,15 +3020,9 @@ async function doExportMovimientos(){
   }finally{if(btn){btn.disabled=false;btn.style.opacity='';}}
 }
 function askWipe(){
-  document.getElementById('pass-input').value='';
-  openModal('modal-pass');
-  setTimeout(()=>document.getElementById('pass-input').focus(),100);
-}
-function checkWipePass(){
-  const pass=document.getElementById('pass-input').value;
-  if(pass!=='Mapamsi01'){toast('Contraseña incorrecta');return;}
-  closeModal('modal-pass');
-  document.getElementById('confirm-title').textContent='Borrar todo';document.getElementById('confirm-msg').textContent='¿Borrar TODO el inventario? Se borrará también en la nube y en todos los dispositivos. Exporta una copia antes. Esta acción no se puede deshacer.';document.getElementById('confirm-ok').onclick=async()=>{const ids=items.map(i=>i.id);await dbClear();categories=[];await cfgPut('categories',[]);for(const id of ids)await cloudDelete(id);await cloudCfgPut('categories',[]);items=[];closeModal('modal-confirm');renderAll();toast('Inventario borrado');};openModal('modal-confirm');
+  requireAdmin(()=>{
+    document.getElementById('confirm-title').textContent='Borrar todo';document.getElementById('confirm-msg').textContent='¿Borrar TODO el inventario? Se borrará también en la nube y en todos los dispositivos. Exporta una copia antes. Esta acción no se puede deshacer.';document.getElementById('confirm-ok').onclick=async()=>{const ids=items.map(i=>i.id);await dbClear();categories=[];await cfgPut('categories',[]);for(const id of ids)await cloudDelete(id);await cloudCfgPut('categories',[]);items=[];closeModal('modal-confirm');renderAll();toast('Inventario borrado');};openModal('modal-confirm');
+  });
 }
 
 async function loadDemo(){
@@ -2940,7 +3100,8 @@ function doLogin(){
   if(!WH){showWarehouseSelector();return;}
   const u=document.getElementById('login-user').value.trim();
   const p=document.getElementById('login-pass').value;
-  if(u===AUTH_USER && p===WH.pass){
+  const _cfg=getLoginCfg();
+  if(u===_cfg.user && p===_cfg['pass_'+WH.key]){
     try{localStorage.setItem(WH.sesKey,'1');}catch(e){}
     enterApp();
   }else{
@@ -2959,6 +3120,393 @@ function enterApp(){
 function logout(){
   try{if(WH)localStorage.removeItem(WH.sesKey);}catch(e){}
   location.reload();
+}
+
+
+// ===== CONTRASEÑA ÚNICA / DESBLOQUEO DE SESIÓN =====
+const ADMIN_PASS_DEFAULT='Mpamsi01';
+let adminPass=ADMIN_PASS_DEFAULT, adminUnlocked=false, pendingAdminAction=null;
+
+function requireAdmin(action){
+  if(adminUnlocked){if(action)action();return;}
+  pendingAdminAction=action;
+  document.getElementById('unlock-pass').value='';
+  openModal('modal-unlock');
+  setTimeout(()=>document.getElementById('unlock-pass').focus(),120);
+}
+function submitUnlock(){
+  const p=document.getElementById('unlock-pass').value;
+  if(p!==adminPass){toast('Contraseña incorrecta');return;}
+  adminUnlocked=true;
+  try{sessionStorage.setItem('almacen_admin_'+(WH?WH.key:''),'1');}catch(e){}
+  closeModal('modal-unlock');
+  const a=pendingAdminAction;pendingAdminAction=null;
+  if(a)a();
+}
+function lockAdmin(){
+  adminUnlocked=false;
+  try{sessionStorage.removeItem('almacen_admin_'+(WH?WH.key:''));}catch(e){}
+  toast('🔒 Ajustes bloqueados');
+  showPage('inicio');
+}
+function goAjustes(){ requireAdmin(()=>showPage('ajustes')); }
+
+// Cambiar la contraseña única de Ajustes
+function openChangePass(){
+  ['cp-cur','cp-new','cp-new2'].forEach(id=>document.getElementById(id).value='');
+  openModal('modal-change-pass');
+}
+async function saveAdminPass(){
+  const cur=document.getElementById('cp-cur').value, nu=document.getElementById('cp-new').value, n2=document.getElementById('cp-new2').value;
+  if(cur!==adminPass){toast('La contraseña actual no es correcta');return;}
+  if(nu.length<4){toast('La nueva debe tener al menos 4 caracteres');return;}
+  if(nu!==n2){toast('Las dos contraseñas nuevas no coinciden');return;}
+  adminPass=nu;
+  await cfgPut('adminPass',adminPass);
+  await cloudCfgPut('adminPass',adminPass);
+  closeModal('modal-change-pass');
+  toast('✓ Contraseña actualizada');
+}
+
+// Usuario y contraseñas de los almacenes (login)
+function getLoginCfg(){
+  let c={};try{c=JSON.parse(localStorage.getItem('almacen_login')||'{}');}catch(e){}
+  return {
+    user: c.user || AUTH_USER,
+    pass_electrico: c.pass_electrico || WAREHOUSES.electrico.pass,
+    pass_mecanico:  c.pass_mecanico  || WAREHOUSES.mecanico.pass
+  };
+}
+function setLoginCfg(c){
+  const merged={...getLoginCfg(),...c};
+  try{localStorage.setItem('almacen_login',JSON.stringify(merged));}catch(e){}
+}
+function openUsers(){
+  const c=getLoginCfg();
+  document.getElementById('us-user').value=c.user;
+  document.getElementById('us-pass-e').value=c.pass_electrico;
+  document.getElementById('us-pass-m').value=c.pass_mecanico;
+  openModal('modal-users');
+}
+async function saveUsers(){
+  const cfg={
+    user:(document.getElementById('us-user').value.trim())||AUTH_USER,
+    pass_electrico:document.getElementById('us-pass-e').value.trim()||WAREHOUSES.electrico.pass,
+    pass_mecanico:document.getElementById('us-pass-m').value.trim()||WAREHOUSES.mecanico.pass
+  };
+  setLoginCfg(cfg);
+  await cfgPut('loginCfg',cfg);
+  await cloudCfgPut('loginCfg',cfg);
+  closeModal('modal-users');
+  toast('✓ Accesos de almacenes actualizados');
+}
+
+// ===== MOVER ARTÍCULO ENTRE ALMACENES =====
+function otherWarehouse(){
+  if(!WH)return null;
+  return WH.key==='electrico'?WAREHOUSES.mecanico:WAREHOUSES.electrico;
+}
+async function cloudPutTo(table,item){
+  if(!sb)return false;
+  const ci={...item}; ci.categories=item.cats||[]; delete ci.cats;
+  try{const{error}=await sb.from(table).upsert(ci,{onConflict:'id'});if(error)throw error;return true;}
+  catch(e){console.warn('cloudPutTo error',e);return false;}
+}
+function moveToOtherWarehouse(){
+  if(!currentItem)return;
+  const other=otherWarehouse(); if(!other)return;
+  requireAdmin(()=>{
+    document.getElementById('confirm-title').textContent='Mover a '+other.name;
+    document.getElementById('confirm-msg').textContent='"'+currentItem.name+'" se quitará de '+WH.name+' y aparecerá en '+other.name+' SIN ubicación, para que lo coloques allí. ¿Continuar?';
+    document.getElementById('confirm-ok').onclick=async()=>{
+      closeModal('modal-confirm');
+      const it=currentItem; const id=it.id;
+      toast('Moviendo...');
+      const moved={...it, loc:'', pos:''};
+      const okCloud=await cloudPutTo(other.tblItems,moved);
+      if(!sb || okCloud){
+        await dbDelete(id); await cloudDelete(id);
+        items=await dbGetAll();
+        closeModal('modal-detail');
+        renderAll();
+        toast('✓ Movido a '+other.name+' (sin ubicación)');
+      }else{
+        toast('No se pudo mover (sin conexión). Inténtalo con internet.');
+      }
+    };
+    openModal('modal-confirm');
+  });
+}
+
+// ===== POSICIONES (huecos / gavetas) =====
+// Bloques de distribución de una balda, o null si la balda es simple
+function baldaBlocks(shelfId,balda){
+  const sh=shelves.find(s=>s.id===shelfId);
+  if(!sh||!sh.layout)return null;
+  const b=sh.layout[String(balda)];
+  return (b&&b.length)?b:null;
+}
+// Lista de celdas {id,label,group} de una balda
+function baldaCellList(shelfId,balda){
+  const blocks=baldaBlocks(shelfId,balda);
+  if(!blocks)return [];
+  const out=[];
+  let gcount=0;
+  blocks.forEach(blk=>{
+    if(blk.k==='h'){
+      const n=blk.n||1;
+      for(let i=0;i<n;i++)out.push({id:blk.id+'_'+i,label:'Hueco '+(i+1),group:'Huecos'});
+    }else if(blk.k==='g'){
+      gcount++;
+      const rows=blk.rows||1, cols=blk.cols||1;
+      const gname=(blk.name||'Gavetero')+(gcount>1?' '+gcount:'');
+      for(let r=0;r<rows;r++)for(let c=0;c<cols;c++)out.push({id:blk.id+'_'+r+'_'+c,label:'F'+(r+1)+'·C'+(c+1),group:gname});
+    }
+  });
+  return out;
+}
+function updatePosOptions(){
+  const group=document.getElementById('f-pos-group'), sel=document.getElementById('f-pos');
+  if(!group||!sel)return;
+  const shelfId=document.getElementById('f-shelf').value;
+  const balda=document.getElementById('f-balda').value;
+  const cells=baldaCellList(shelfId,balda);
+  if(!cells.length){group.style.display='none';sel.innerHTML='';return;}
+  let html='<option value="">— Sin colocar (toda la balda) —</option>';
+  let lastG=null;
+  cells.forEach(c=>{
+    if(c.group!==lastG){if(lastG!==null)html+='</optgroup>';html+='<optgroup label="'+esc(c.group)+'">';lastG=c.group;}
+    html+='<option value="'+esc(c.id)+'">'+esc(c.label)+'</option>';
+  });
+  if(lastG!==null)html+='</optgroup>';
+  sel.innerHTML=html;
+  group.style.display='block';
+}
+function getFormPos(){
+  const group=document.getElementById('f-pos-group'), sel=document.getElementById('f-pos');
+  if(!group||!sel||group.style.display==='none')return '';
+  return sel.value||'';
+}
+function posLabel(item){
+  if(!item||!item.pos)return '';
+  const sp=splitLoc(item.loc);
+  const cells=baldaCellList(sp.shelfId,sp.balda);
+  const c=cells.find(x=>x.id===item.pos);
+  return c?(c.group+' · '+c.label):item.pos;
+}
+
+// ===== ESTANTERÍA VISUAL =====
+let svShelfId=null;
+let addPreset=null; // {shelf,balda,pos} sólo cuando se pulsa "Añadir aquí"
+let currentCellCtx=null;
+
+function cellClass(its){
+  if(!its.length)return '';
+  if(its.some(isOut))return 'out';
+  if(its.some(isLow))return 'low';
+  return 'occ';
+}
+function openShelfView(sid){ filterByShelf(sid); }
+const GAV_COLORS=['#eff6ff','#f0fdf4','#fffbeb','#fef2f2','#f5f3ff','#ecfeff','#fdf2f8'];
+let organizeShelf=null;   // estantería en modo organizar
+let svSelectedId=null;    // artículo seleccionado para mover (táctil)
+let svDragId=null;        // artículo arrastrándose (ratón)
+
+function svMini(i,org){
+  const img = i.photo
+    ? '<img src="'+i.photo+'">'
+    : '<svg width="34" height="34" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.4"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.4"/><path d="M21 15l-5-5L5 21" stroke-width="1.4"/></svg>';
+  const st = isOut(i)
+    ? '<span style="color:var(--red-text);font-weight:600;">Sin stock</span>'
+    : isLow(i)
+      ? '<span style="color:var(--amber-text);font-weight:600;">↓ '+i.stock+' uds.</span>'
+      : i.stock+' uds.';
+  const click = org ? 'event.stopPropagation();svPick(\''+i.id+'\')' : 'openDetail(\''+i.id+'\')';
+  const drag = org ? ' draggable="true" ondragstart="svDragStart(event,\''+i.id+'\')" ondragend="svDragId=null"' : '';
+  const sel = (org && svSelectedId===i.id) ? ' sv2-sel' : '';
+  return '<div class="sv2-mini'+sel+'"'+drag+' onclick="'+click+'"><div class="sv2-mini-img">'+img+'</div><div class="sv2-mini-tx"><div class="sv2-mini-nm">'+esc(i.name)+'</div><div class="sv2-mini-st">'+st+'</div></div></div>';
+}
+function svAdd(sid,balda,cid){
+  return '<button class="sv2-add" onclick="event.stopPropagation();quickAddHere(\''+sid+'\',\''+balda+'\',\''+cid+'\')">+ Añadir aquí</button>';
+}
+function quickAddHere(sid,balda,cid){
+  addPreset={shelf:sid,balda:String(balda),pos:cid};
+  openAddForm();
+}
+
+function toggleOrganize(sid){
+  organizeShelf = (organizeShelf===sid) ? null : sid;
+  svSelectedId=null;
+  renderItems();
+}
+function svPick(id){
+  svSelectedId = (svSelectedId===id) ? null : id;
+  renderItems();
+}
+function svCellClick(sid,balda,cid){
+  if(!svSelectedId)return;
+  moveItemToCell(svSelectedId,sid,balda,cid);
+}
+function svDragStart(e,id){ svDragId=id; try{e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',id);}catch(_){} }
+function svDrop(e,sid,balda,cid){ e.preventDefault(); const id=svDragId||(e.dataTransfer&&e.dataTransfer.getData('text/plain')); if(id)moveItemToCell(id,sid,balda,cid); svDragId=null; }
+async function moveItemToCell(id,sid,balda,cid){
+  const it=items.find(x=>x.id===id); if(!it)return;
+  it.loc=sid+'-'+balda; it.pos=cid||'';
+  await dbPut(it); await cloudPut(it);
+  items=await dbGetAll();
+  svSelectedId=null;
+  renderItems();
+  toast('✓ Movido');
+}
+
+function shelfLayoutHTML(sid){
+  const sh=shelves.find(s=>s.id===sid); if(!sh)return '';
+  const org = organizeShelf===sid;
+  let html='';
+  html+='<div class="sv2-toolbar">';
+  html+='<button class="btn btn-sm" onclick="event.stopPropagation();openLayout(\''+sid+'\')">Distribución</button>';
+  html+='<button class="btn btn-sm'+(org?' btn-primary':'')+'" onclick="event.stopPropagation();toggleOrganize(\''+sid+'\')">'+(org?'✓ Hecho':'Organizar')+'</button>';
+  html+='</div>';
+  if(org){
+    const selName = svSelectedId ? ((items.find(x=>x.id===svSelectedId)||{}).name||'') : '';
+    html+='<div class="sv2-orghint">'+(svSelectedId
+      ? 'Moviendo «'+esc(selName)+'». Toca el hueco o gaveta de destino.'
+      : 'Toca un artículo y luego el hueco o gaveta de destino. En el ordenador también puedes arrastrarlo.')+'</div>';
+  }
+  for(let b=1;b<=sh.baldas;b++){
+    const blocks=baldaBlocks(sh.id,b);
+    const baseLoc=sh.id+'-'+b;
+    html+='<div class="sv2-balda"><div class="sv2-tag">Balda<br>'+b+'</div><div class="sv2-cells'+(org?' org':'')+'">';
+    if(!blocks){
+      const its=items.filter(i=>i.loc===baseLoc);
+      const oc = org ? ' onclick="svCellClick(\''+sh.id+'\','+b+',\'\')"' : '';
+      html+='<div class="sv2-hueco" style="min-width:150px;flex:1;"'+oc+' ondragover="event.preventDefault()" ondrop="svDrop(event,\''+sh.id+'\','+b+',\'\')">';
+      html+='<div class="sv2-hueco-h"><span>Balda '+b+'</span></div>';
+      html+= its.length? its.map(it=>svMini(it,org)).join('') : '<div class="sv2-empty">Balda vacía</div>';
+      if(!org) html+= svAdd(sh.id,b,'');
+      html+='</div>';
+    }else{
+      let gcount=0;
+      blocks.forEach(blk=>{
+        if(blk.k==='h'){
+          const n=blk.n||1;
+          for(let i=0;i<n;i++){
+            const cid=blk.id+'_'+i;
+            const its=items.filter(it=>it.loc===baseLoc&&it.pos===cid);
+            const oc = org ? ' onclick="svCellClick(\''+sh.id+'\','+b+',\''+cid+'\')"' : '';
+            html+='<div class="sv2-hueco"'+oc+' ondragover="event.preventDefault()" ondrop="svDrop(event,\''+sh.id+'\','+b+',\''+cid+'\')"><div class="sv2-hueco-h"><span>Hueco '+(i+1)+'</span></div>';
+            html+= its.length? its.map(it=>svMini(it,org)).join('') : '<div class="sv2-empty">—</div>';
+            if(!org) html+= svAdd(sh.id,b,cid);
+            html+='</div>';
+          }
+        }else if(blk.k==='g'){
+          gcount++;
+          const rows=blk.rows||1, cols=blk.cols||1;
+          const gname=(blk.name||'Gavetero')+(gcount>1?' '+gcount:'');
+          html+='<div class="sv2-gav"><div class="sv2-gav-h">'+esc(gname)+'</div>';
+          html+='<div class="sv2-gav-grid" style="grid-template-columns:repeat('+cols+',minmax(190px,1fr));">';
+          for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+            const cid=blk.id+'_'+r+'_'+c;
+            const its=items.filter(it=>it.loc===baseLoc&&it.pos===cid);
+            const col=GAV_COLORS[r%GAV_COLORS.length];
+            const oc = org ? ' onclick="svCellClick(\''+sh.id+'\','+b+',\''+cid+'\')"' : '';
+            html+='<div class="sv2-gaveta" style="background:'+col+';"'+oc+' ondragover="event.preventDefault()" ondrop="svDrop(event,\''+sh.id+'\','+b+',\''+cid+'\')"><div class="sv2-gaveta-h"><span>Gaveta F'+(r+1)+'·C'+(c+1)+'</span></div>';
+            html+= its.length? its.map(it=>svMini(it,org)).join('') : '<div class="sv2-empty">—</div>';
+            if(!org) html+= svAdd(sh.id,b,cid);
+            html+='</div>';
+          }
+          html+='</div></div>';
+        }
+      });
+      const sinPos=items.filter(i=>i.loc===baseLoc&&(!i.pos||i.pos===''));
+      if(sinPos.length){
+        const oc = org ? ' onclick="svCellClick(\''+sh.id+'\','+b+',\'\')"' : '';
+        html+='<div class="sv2-hueco" style="border-style:dashed;border-color:var(--amber-text);"'+oc+' ondragover="event.preventDefault()" ondrop="svDrop(event,\''+sh.id+'\','+b+',\'\')"><div class="sv2-hueco-h"><span style="color:var(--amber-text);">Sin colocar</span></div>'+sinPos.map(it=>svMini(it,org)).join('')+'</div>';
+      }
+    }
+    html+='</div></div>';
+  }
+  return html;
+}
+function openCell(sid,balda,cid,label){
+  const sh=shelves.find(s=>s.id===sid); if(!sh)return;
+  currentCellCtx={shelf:sid,balda:String(balda),pos:cid};
+  const baseLoc=sid+'-'+balda;
+  const its = cid
+    ? items.filter(i=>i.loc===baseLoc&&i.pos===cid)
+    : items.filter(i=>i.loc===baseLoc&&(!i.pos||i.pos===''));
+  document.getElementById('cell-title').textContent=sh.name+' · Balda '+balda;
+  document.getElementById('cell-sub').textContent=label+' · '+its.length+' referencia(s)';
+  document.getElementById('cell-items').innerHTML = its.length
+    ? '<div class="card">'+its.map(itemRowHTML).join('')+'</div>'
+    : '<div class="empty" style="padding:24px;"><p>Aquí no hay material todavía</p></div>';
+  openModal('modal-cell');
+}
+function addHere(){
+  addPreset=currentCellCtx;
+  closeModal('modal-cell');
+  closeModal('modal-shelf-view');
+  openAddForm();
+}
+
+// ===== EDITOR DE DISTRIBUCIÓN (baldas / huecos / gavetas) =====
+let layoutDraft=null, layoutShelfId=null;
+function openLayout(sid){
+  const sh=shelves.find(s=>s.id===sid); if(!sh)return;
+  layoutShelfId=sid;
+  layoutDraft=JSON.parse(JSON.stringify(sh.layout||{}));
+  document.getElementById('layout-title').textContent='Distribución · '+sh.name;
+  renderLayoutEditor();
+  openModal('modal-layout');
+}
+function renderLayoutEditor(){
+  const sh=shelves.find(s=>s.id===layoutShelfId); if(!sh)return;
+  let html='';
+  for(let b=1;b<=sh.baldas;b++){
+    const blocks=layoutDraft[String(b)]||[];
+    html+='<div class="lay-balda"><div class="lay-balda-head"><span>Balda '+b+'</span><span style="font-size:12px;font-weight:400;color:var(--text3);">'+(blocks.length?'':'simple')+'</span></div>';
+    if(!blocks.length){html+='<div class="lay-empty">Balda simple (sin huecos ni gavetas).</div>';}
+    blocks.forEach((blk,bi)=>{
+      if(blk.k==='h'){
+        html+='<div class="lay-block"><span class="lbl">Huecos</span><span class="lay-step"><button onclick="layStep('+b+','+bi+',\'n\',-1)">−</button><span style="min-width:22px;text-align:center;">'+(blk.n||1)+'</span><button onclick="layStep('+b+','+bi+',\'n\',1)">+</button></span><button class="del" onclick="layDel('+b+','+bi+')">×</button></div>';
+      }else{
+        html+='<div class="lay-block"><span class="lbl">Gavetero</span><span class="lay-step">Filas <button onclick="layStep('+b+','+bi+',\'rows\',-1)">−</button><span style="min-width:22px;text-align:center;">'+(blk.rows||1)+'</span><button onclick="layStep('+b+','+bi+',\'rows\',1)">+</button></span><span class="lay-step">Col. <button onclick="layStep('+b+','+bi+',\'cols\',-1)">−</button><span style="min-width:22px;text-align:center;">'+(blk.cols||1)+'</span><button onclick="layStep('+b+','+bi+',\'cols\',1)">+</button></span><button class="del" onclick="layDel('+b+','+bi+')">×</button></div>';
+      }
+    });
+    html+='<div class="lay-add"><button class="btn btn-sm" onclick="layAdd('+b+',\'h\')">+ Huecos</button><button class="btn btn-sm" onclick="layAdd('+b+',\'g\')">+ Gavetero</button></div>';
+    html+='</div>';
+  }
+  document.getElementById('layout-editor').innerHTML=html;
+}
+function newBlockId(){return 'b'+Date.now().toString(36)+Math.floor(Math.random()*1000).toString(36);}
+function layAdd(b,k){
+  const key=String(b);
+  if(!layoutDraft[key])layoutDraft[key]=[];
+  if(k==='h')layoutDraft[key].push({id:newBlockId(),k:'h',n:3});
+  else layoutDraft[key].push({id:newBlockId(),k:'g',rows:3,cols:4,name:'Gavetero'});
+  renderLayoutEditor();
+}
+function layStep(b,bi,prop,d){
+  const blk=layoutDraft[String(b)][bi]; if(!blk)return;
+  const max = prop==='n'?40:12;
+  blk[prop]=Math.max(1,Math.min(max,(blk[prop]||1)+d));
+  renderLayoutEditor();
+}
+function layDel(b,bi){
+  layoutDraft[String(b)].splice(bi,1);
+  if(!layoutDraft[String(b)].length)delete layoutDraft[String(b)];
+  renderLayoutEditor();
+}
+async function saveLayout(){
+  const sh=shelves.find(s=>s.id===layoutShelfId); if(!sh)return;
+  const clean={};
+  Object.keys(layoutDraft).forEach(k=>{if(layoutDraft[k]&&layoutDraft[k].length)clean[k]=layoutDraft[k];});
+  sh.layout=clean;
+  await cfgPut('shelves',shelves);
+  await cloudCfgPut('shelves',shelves);
+  closeModal('modal-layout');
+  if(document.getElementById('modal-shelf-view').classList.contains('open'))renderShelfView();
+  toast('✓ Distribución guardada');
 }
 
 // Al abrir, siempre se elige primero el almacén
