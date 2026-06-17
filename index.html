@@ -342,6 +342,16 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .sv2-tabs{display:flex;gap:6px;margin-bottom:12px;background:var(--surface2);border-radius:10px;padding:4px;}
 .sv2-tab{flex:1;border:none;background:none;padding:9px;border-radius:8px;font-size:13px;font-weight:600;color:var(--text2);cursor:pointer;}
 .sv2-tab.active{background:var(--surface);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.08);}
+.sv2-list{border:1px solid var(--border);border-radius:12px;overflow:hidden;}
+.sv2-row{display:flex;align-items:center;gap:12px;padding:calc(9px + var(--svt,1) * 3px) 14px;border-bottom:1px solid var(--border);cursor:pointer;}
+.sv2-row:last-child{border-bottom:none;}
+.sv2-row:active{background:var(--surface2);}
+.sv2-row-img{width:calc(34px + var(--svt,1) * 22px);height:calc(34px + var(--svt,1) * 22px);border-radius:8px;background:var(--surface2);overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+.sv2-row-img img{width:100%;height:100%;object-fit:cover;}
+.sv2-row-tx{min-width:0;flex:1;}
+.sv2-row-nm{display:block;font-size:calc(13px + var(--svt,1) * 3px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.sv2-row-sub{font-size:calc(11px + var(--svt,1) * 2px);color:var(--text2);}
+
 .sv2-orghint{font-size:12px;background:var(--amber-bg);color:var(--amber-text);border-radius:8px;padding:8px 10px;margin-bottom:10px;line-height:1.4;font-weight:500;}
 .sv2-sizebar{display:flex;align-items:center;gap:10px;background:var(--surface2);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:var(--text2);}
 .sv2-sizebar input[type=range]{flex:1;accent-color:var(--blue-text);}
@@ -3314,7 +3324,7 @@ function cellClass(its){
 }
 function openShelfView(sid){ filterByShelf(sid); }
 const GAV_COLORS=['#eff6ff','#f0fdf4','#fffbeb','#fef2f2','#f5f3ff','#ecfeff','#fdf2f8'];
-let svScale=(function(){try{const v=parseInt(localStorage.getItem('almacen_svscale'));return isNaN(v)?100:Math.max(0,Math.min(100,v));}catch(e){return 100;}})();
+let svScale=100;   // tamaño de tarjetas en %, por defecto 100
 let svViewMode='visual';   // 'visual' (estantería) o 'list' (lista)
 let organizeShelf=null;   // estantería en modo organizar
 let svSelectedId=null;    // artículo seleccionado para mover (táctil)
@@ -3341,6 +3351,14 @@ function quickAddHere(sid,balda,cid){
   addPreset={shelf:sid,balda:String(balda),pos:cid};
   openAddForm();
 }
+function svRow(i){
+  const img = i.photo
+    ? '<img src="'+i.photo+'">'
+    : '<svg width="20" height="20" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>';
+  const pl = posLabel(i);
+  const sub = esc(i.cat||'')+' · '+esc(i.loc||'')+(pl?' · '+esc(pl):'');
+  return '<div class="sv2-row" onclick="openDetail(\''+i.id+'\')"><div class="sv2-row-img">'+img+'</div><div class="sv2-row-tx"><strong class="sv2-row-nm">'+esc(i.name)+'</strong><span class="sv2-row-sub">'+sub+'</span></div>'+stockBadge(i)+'</div>';
+}
 
 function toggleOrganize(sid){
   organizeShelf = (organizeShelf===sid) ? null : sid;
@@ -3348,8 +3366,7 @@ function toggleOrganize(sid){
   renderItems();
 }
 function setSvScale(v){
-  svScale=Math.max(0,Math.min(100,parseInt(v)||0));
-  try{localStorage.setItem('almacen_svscale',svScale);}catch(e){}
+  svScale=Math.max(0,Math.min(200,parseInt(v)||0));
   document.documentElement.style.setProperty('--svt', (svScale/100));
   const p=document.getElementById('sv-size-pct'); if(p)p.textContent=svScale+'%';
 }
@@ -3412,13 +3429,14 @@ function shelfLayoutHTML(sid){
   html+='<button class="sv2-tab '+(svViewMode==='list'?'':'active')+'" onclick="event.stopPropagation();setSvViewMode(\'visual\')">Estantería</button>';
   html+='<button class="sv2-tab '+(svViewMode==='list'?'active':'')+'" onclick="event.stopPropagation();setSvViewMode(\'list\')">Lista</button>';
   html+='</div>';
+  html+='<div class="sv2-sizebar"><span>Tamaño</span><input type="range" min="0" max="200" value="'+svScale+'" oninput="setSvScale(this.value)"><span id="sv-size-pct">'+svScale+'%</span></div>';
   if(svViewMode==='list'){
     const lst=items.filter(i=>i.loc&&i.loc.startsWith(sid+'-')).slice().sort((a,b)=>{
       if(a.loc!==b.loc)return String(a.loc).localeCompare(String(b.loc),undefined,{numeric:true});
       if((a.pos||'')!==(b.pos||''))return String(a.pos||'').localeCompare(String(b.pos||''));
       return String(a.name||'').localeCompare(String(b.name||''));
     });
-    html+= lst.length ? lst.map(itemRowHTML).join('') : '<div class="sv2-empty" style="padding:20px;">No hay artículos en esta estantería</div>';
+    html+= lst.length ? '<div class="sv2-list">'+lst.map(svRow).join('')+'</div>' : '<div class="sv2-empty" style="padding:20px;">No hay artículos en esta estantería</div>';
     return html;
   }
   html+='<div class="sv2-toolbar">';
@@ -3426,7 +3444,6 @@ function shelfLayoutHTML(sid){
   html+='<button class="btn btn-sm'+(org?' btn-primary':'')+'" onclick="event.stopPropagation();toggleOrganize(\''+sid+'\')">'+(org?'✓ Hecho':'Organizar')+'</button>';
   html+='</div>';
   if(org){
-    html+='<div class="sv2-sizebar"><span>Tamaño de los artículos</span><input type="range" min="0" max="100" value="'+svScale+'" oninput="setSvScale(this.value)"><span id="sv-size-pct">'+svScale+'%</span></div>';
     const selName = svSelectedId ? ((items.find(x=>x.id===svSelectedId)||{}).name||'') : '';
     html+='<div class="sv2-orghint">'+(svSelectedId
       ? 'Moviendo «'+esc(selName)+'». Toca el hueco o gaveta de destino.'
@@ -3463,7 +3480,7 @@ function shelfLayoutHTML(sid){
           const rows=blk.rows||1, cols=blk.cols||1;
           const gname=(blk.name||'Gavetero')+(gcount>1?' '+gcount:'');
           html+='<div class="sv2-gav"><div class="sv2-gav-h">'+esc(gname)+'</div>';
-          html+='<div class="sv2-gav-grid" style="grid-template-columns:repeat('+cols+',minmax(calc(110px + var(--svt,1) * 80px),1fr));">';
+          html+='<div class="sv2-gav-grid" style="grid-template-columns:repeat('+cols+',calc(110px + var(--svt,1) * 80px));">';
           for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
             const cid=blk.id+'_'+r+'_'+c;
             const its=items.filter(it=>it.loc===baseLoc&&it.pos===cid);
