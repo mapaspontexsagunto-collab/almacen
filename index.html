@@ -316,6 +316,46 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .map-node.editing-node .resize-handle{display:block;}
 .resize-handle::after{content:'';position:absolute;right:3px;bottom:3px;width:8px;height:8px;border-right:2px solid var(--accent);border-bottom:2px solid var(--accent);}
 
+
+
+/* ===== SELECCIÓN MÚLTIPLE ===== */
+.sel-bar{position:fixed;left:0;right:0;bottom:0;z-index:250;background:var(--surface);border-top:1px solid var(--border);padding:10px 16px;display:none;align-items:center;justify-content:space-between;gap:10px;box-shadow:0 -4px 16px rgba(0,0,0,.1);}
+.sel-bar > span{font-size:14px;white-space:nowrap;}
+.sel-bar-btns{display:flex;gap:8px;}
+.sel-group{margin-bottom:14px;border:1px solid var(--border);border-radius:12px;overflow:hidden;}
+.sel-group-head{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--surface2);font-size:14px;}
+.sel-group-head .shelf-count{margin-left:auto;color:var(--text2);font-size:12px;}
+.sel-allbox{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);font-weight:600;cursor:pointer;}
+.sel-allbox input{width:18px;height:18px;}
+.sel-row{display:flex;align-items:center;gap:12px;padding:10px 14px;border-top:1px solid var(--border);cursor:pointer;}
+.sel-row.on{background:var(--blue-bg);}
+.sel-row input{width:20px;height:20px;flex-shrink:0;accent-color:var(--blue-text);}
+.sel-tx{min-width:0;flex:1;}
+.sel-tx strong{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.sel-tx span{font-size:12px;color:var(--text2);}
+.sel-stk{font-size:12px;color:var(--text2);white-space:nowrap;}
+
+/* ===== VER UBICACIÓN (esquema con parpadeo) ===== */
+.loc-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;margin:6px 0 14px;color:var(--text2);}
+.loc-legend span{display:flex;align-items:center;gap:5px;}
+.loc-leg{width:14px;height:14px;border-radius:4px;display:inline-block;border:1px solid rgba(0,0,0,.08);}
+.loc-balda{display:flex;gap:8px;margin-bottom:8px;align-items:stretch;}
+.loc-tag{width:46px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border-radius:8px;font-size:13px;font-weight:700;background:#dbeafe;color:#1e40af;}
+.loc-cells{flex:1;display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start;}
+.loc-cell{flex:1 1 56px;min-height:42px;display:flex;align-items:center;justify-content:center;border-radius:8px;font-size:12px;font-weight:600;text-align:center;padding:4px;}
+.loc-shelf{background:#dbeafe;color:#1e40af;}
+.loc-hueco{background:#dcfce7;color:#166534;}
+.loc-gav{background:#fef3c7;color:#92400e;}
+.loc-leg.loc-shelf{background:#dbeafe;}
+.loc-leg.loc-hueco{background:#dcfce7;}
+.loc-leg.loc-gav{background:#fef3c7;}
+.loc-leg.pulse{background:#ef4444;border-color:#ef4444;animation:legpulse .85s ease-in-out infinite;}
+.loc-gavwrap{flex:1 1 100%;border:1.5px dashed #fcd34d;border-radius:10px;padding:7px;}
+.loc-gtitle{font-size:11px;font-weight:700;color:#92400e;margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px;}
+.loc-ggrid{display:grid;gap:5px;}
+.blink-loc{animation:locblink .85s ease-in-out infinite;position:relative;z-index:1;}
+@keyframes locblink{0%,100%{outline:3px solid #ef4444;outline-offset:-2px;box-shadow:0 0 0 4px rgba(239,68,68,.25);}50%{outline:3px solid transparent;outline-offset:-2px;box-shadow:0 0 0 0 rgba(239,68,68,0);}}
+@keyframes legpulse{0%,100%{opacity:1;}50%{opacity:.25;}}
 /* ===== ESTANTERÍA VISUAL ===== */
 /* ===== ESTANTERÍA VISUAL v2 (con artículos) ===== */
 .sv2-balda{display:flex;gap:8px;margin-bottom:10px;align-items:stretch;}
@@ -466,6 +506,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div class="search-bar"><input type="text" id="search-input" placeholder="Buscar nombre, referencia, marca..." oninput="renderItems()"><button class="btn" style="padding:13px 14px;" onclick="document.getElementById('ai-photo-file').click()" title="Buscar por foto con IA"><svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 9a2 2 0 012-2h.93a2 2 0 001.66-.9l.82-1.2A2 2 0 0110.07 4h3.86a2 2 0 011.66.9l.82 1.2a2 2 0 001.66.9H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z" stroke-width="1.7"/><circle cx="12" cy="13" r="3" stroke-width="1.7"/></svg></button></div>
     <input type="file" id="ai-photo-file" accept="image/*" capture="environment" style="display:none;" onchange="handleAIPhoto(event)">
     <div class="seg"><button id="view-gallery" class="active" onclick="setView('gallery')">Galería</button><button id="view-list" onclick="setView('list')">Lista</button></div>
+    <button class="btn btn-sm" id="btn-select-mode" onclick="toggleSelectMode()" style="width:100%;margin-bottom:14px;">Seleccionar varios</button>
     <div class="cats" id="cats"></div>
     <div id="items-container"></div>
   </div>
@@ -515,7 +556,8 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div class="card"><div class="card-h">Copia de seguridad</div>
       <div style="padding:16px;">
         <p style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.5;">Los datos se guardan dentro de esta tablet. Exporta una copia regularmente y guárdala en un USB o envíatela por correo. Si cambias de tablet, importa el archivo para recuperar todo.</p>
-        <button class="btn btn-block btn-primary" style="margin-bottom:10px;" onclick="exportData()">Exportar copia de seguridad</button>
+        <button class="btn btn-block btn-primary" style="margin-bottom:10px;" onclick="exportData()">Exportar copia (este almacén)</button>
+        <button class="btn btn-block" style="margin-bottom:10px;" onclick="exportBoth()">Copia de los DOS almacenes</button>
         <label class="btn btn-block" style="margin-bottom:10px;">Importar copia<input type="file" accept=".json" onchange="importData(event)" style="display:none;"></label>
         <button class="btn btn-block" onclick="exportExcel()" id="btn-excel">
           <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 17v-6h6v6M3 7h18M5 7v12a2 2 0 002 2h10a2 2 0 002-2V7" stroke-width="1.8" stroke-linecap="round"/></svg>
@@ -640,6 +682,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
       <button class="btn" onclick="showQR()">Ver QR</button>
       <button class="btn" onclick="editCurrentItem()">Editar</button>
     </div>
+    <button class="btn btn-block" style="margin-top:10px;" onclick="openLocate()">📍 Ver ubicación</button>
     <button class="btn btn-block" id="btn-move-wh" style="margin-top:10px;" onclick="moveToOtherWarehouse()">Mover a otro almacén</button>
     <button class="btn btn-block btn-danger" style="margin-top:10px;" onclick="askDelete()">Eliminar artículo</button>
     <button class="btn btn-block" style="margin-top:10px;" onclick="closeModal('modal-detail')">Cerrar</button>
@@ -974,6 +1017,48 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div class="fr">
       <button class="btn" onclick="closeModal('modal-users')">Cancelar</button>
       <button class="btn btn-primary" onclick="saveUsers()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- VER UBICACIÓN (estantería esquemática con parpadeo) -->
+<div class="modal-bg" id="modal-locate">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2 id="locate-title">Ubicación</h2>
+    <div class="msub" id="locate-sub"></div>
+    <div class="loc-legend">
+      <span><span class="loc-leg loc-shelf"></span>Estantería / baldas</span>
+      <span><span class="loc-leg loc-hueco"></span>Huecos</span>
+      <span><span class="loc-leg loc-gav"></span>Gavetas</span>
+      <span><span class="loc-leg pulse"></span>Aquí está</span>
+    </div>
+    <div id="locate-body"></div>
+    <button class="btn btn-block" style="margin-top:14px;" onclick="closeModal('modal-locate')">Cerrar</button>
+  </div>
+</div>
+
+<!-- Barra de acciones de selección múltiple -->
+<div id="sel-bar" class="sel-bar">
+  <span><strong id="sel-count">0</strong> sel.</span>
+  <div class="sel-bar-btns">
+    <button class="btn btn-sm btn-primary" onclick="bulkAssignLoc()">Ubicación</button>
+    <button class="btn btn-sm" id="sel-move-btn" onclick="bulkMove()">Mover</button>
+    <button class="btn btn-sm" onclick="toggleSelectMode()">Salir</button>
+  </div>
+</div>
+
+<!-- Asignar ubicación en grupo -->
+<div class="modal-bg center" id="modal-bulkloc">
+  <div class="modal small">
+    <h2>Asignar ubicación</h2>
+    <div class="msub">Se aplicará a los <strong id="bl-count">0</strong> artículos seleccionados.</div>
+    <div class="fg"><label class="fl">Estantería</label><select class="fi" id="bl-shelf" onchange="updateBulkBalda()"></select></div>
+    <div class="fg"><label class="fl">Balda</label><select class="fi" id="bl-balda" onchange="updateBulkPos()"></select></div>
+    <div class="fg" id="bl-pos-group" style="display:none;"><label class="fl">Hueco / gaveta (opcional)</label><select class="fi" id="bl-pos"></select></div>
+    <div class="fr">
+      <button class="btn" onclick="closeModal('modal-bulkloc')">Cancelar</button>
+      <button class="btn btn-primary" onclick="applyBulkLoc()">Aplicar</button>
     </div>
   </div>
 </div>
@@ -1332,6 +1417,7 @@ async function pushToCloud(){
 function renderAll(){updateStats();renderCats();renderItems();renderMap();renderCatManage();renderShelfSummary();}
 
 function showPage(id){
+  if(id!=='buscar' && typeof selectMode!=='undefined' && selectMode){ selectMode=false; selectedIds.clear(); const _b=document.getElementById('btn-select-mode'); if(_b){_b.textContent='Seleccionar varios';_b.classList.remove('btn-primary');} updateSelBar(); }
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.navbtn').forEach(n=>n.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
@@ -1510,6 +1596,7 @@ function itemRowHTML(i){
 
 function renderItems(){
   const c=document.getElementById('items-container');
+  if(selectMode){ renderSelectList(); updateSelBar(); return; }
   const q=(document.getElementById('search-input')||{}).value||'';
   const hayBusqueda = q.trim()!=='' || currentCat!=='';
 
@@ -2552,8 +2639,76 @@ function showQR(){if(!currentItem)return;document.getElementById('qr-item-name')
 function openScanner(){openModal('modal-scan');scanner=new Html5Qrcode('qr-reader');scanner.start({facingMode:'environment'},{fps:10,qrbox:220},text=>{if(text.startsWith('ALMACEN:')){const id=text.replace('ALMACEN:','');closeScanner();const found=items.find(i=>i.id===id);if(found)openDetail(id);else toast('Componente no encontrado');}},()=>{}).catch(e=>{toast('No se pudo abrir la cámara');console.error(e);});}
 function closeScanner(){if(scanner){scanner.stop().then(()=>{scanner.clear();scanner=null;}).catch(()=>{scanner=null;});}closeModal('modal-scan');}
 
+async function cloudCfgGetFrom(tbl,key){
+  if(!sb)return null;
+  try{const{data,error}=await sb.from(tbl).select('value').eq('key',key).maybeSingle();if(error)throw error;return data?data.value:null;}
+  catch(e){return null;}
+}
+async function cloudCfgPutTo(tbl,key,value){
+  if(!sb)return;
+  try{const{error}=await sb.from(tbl).upsert({key,value},{onConflict:'key'});if(error)throw error;}
+  catch(e){console.warn('cloudCfgPutTo error',e);}
+}
+async function collectWarehouse(wh){
+  if(WH && wh.key===WH.key){
+    return {items: await dbGetAll(), categories: categories||[], shelves: shelves||[]};
+  }
+  // Otro almacén: desde la nube (fuente compartida)
+  let its=[], cats=[], shs=[];
+  if(sb){
+    try{const{data,error}=await sb.from(wh.tblItems).select('*').limit(10000);
+      if(!error&&data){its=data.map(r=>{const o={...r};o.cats=o.categories||[];delete o.categories;return o;});}
+    }catch(e){console.warn('collect items',e);}
+    const c=await cloudCfgGetFrom(wh.tblCfg,'categories'); if(c)cats=c;
+    const sh=await cloudCfgGetFrom(wh.tblCfg,'shelves'); if(sh)shs=sh;
+  }
+  return {items:its, categories:cats, shelves:shs};
+}
+async function exportBoth(){
+  if(!sb){toast('Para la copia de los dos almacenes necesitas conexión a internet');return;}
+  toast('⏳ Preparando copia de los dos almacenes...');
+  const out={version:3, exported:new Date().toISOString(), warehouses:{}};
+  for(const wh of [WAREHOUSES.electrico, WAREHOUSES.mecanico]){
+    out.warehouses[wh.key]=await collectWarehouse(wh);
+  }
+  const e=(out.warehouses.electrico.items||[]).length, m=(out.warehouses.mecanico.items||[]).length;
+  const blob=new Blob([JSON.stringify(out)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='almacen_backup_AMBOS_'+new Date().toISOString().slice(0,10)+'.json';a.click();
+  toast('✓ Copia de los dos almacenes ('+e+' eléctrico, '+m+' mecánico)');
+}
+async function importBoth(data){
+  const keys=Object.keys(data.warehouses||{});
+  let total=0; keys.forEach(k=>total+=((data.warehouses[k].items)||[]).length);
+  document.getElementById('confirm-title').textContent='Importar copia (2 almacenes)';
+  document.getElementById('confirm-msg').textContent='Reemplazará el inventario de los DOS almacenes con '+total+' artículos en total y lo subirá a la nube. ¿Continuar?';
+  document.getElementById('confirm-ok').onclick=async()=>{
+    closeModal('modal-confirm');
+    if(!sb){toast('Necesitas conexión para importar los dos almacenes');return;}
+    toast('⏳ Importando ambos almacenes...');
+    for(const k of keys){
+      const wh=WAREHOUSES[k]; if(!wh)continue;
+      const wd=data.warehouses[k]||{};
+      for(const it of (wd.items||[])){ await cloudPutTo(wh.tblItems,it); }
+      await cloudCfgPutTo(wh.tblCfg,'categories',wd.categories||[]);
+      await cloudCfgPutTo(wh.tblCfg,'shelves',wd.shelves||[]);
+      if(WH && wh.key===WH.key){
+        await dbClear();
+        for(const it of (wd.items||[])) await dbPut(it);
+        categories=wd.categories||[];
+        if(wd.shelves&&wd.shelves.length)shelves=wd.shelves;
+        await cfgPut('categories',categories);
+        await cfgPut('shelves',shelves);
+        items=await dbGetAll();
+      }
+    }
+    renderAll();
+    toast('✓ Importados los dos almacenes ('+total+' artículos)');
+  };
+  openModal('modal-confirm');
+}
 async function exportData(){const data={version:2,exported:new Date().toISOString(),categories,shelves,items:await dbGetAll()};const blob=new Blob([JSON.stringify(data)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='almacen_backup_'+(WH?WH.key+'_':'')+new Date().toISOString().slice(0,10)+'.json';a.click();toast('✓ Copia descargada');}
-function importData(e){const file=e.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=async ev=>{try{const data=JSON.parse(ev.target.result);if(!data.items)throw new Error('no valid');document.getElementById('confirm-title').textContent='Importar copia';document.getElementById('confirm-msg').textContent='Reemplazará el inventario actual con '+data.items.length+' items. ¿Continuar?';document.getElementById('confirm-ok').onclick=async()=>{await dbClear();for(const it of data.items)await dbPut(it);categories=data.categories||[];if(data.shelves&&data.shelves.length)shelves=data.shelves;await cfgPut('categories',categories);await cfgPut('shelves',shelves);items=await dbGetAll();closeModal('modal-confirm');renderAll();toast('⏳ Subiendo a la nube...');for(const it of items)await cloudPut(it);await cloudCfgPut('categories',categories);await cloudCfgPut('shelves',shelves);toast('✓ Importado y sincronizado ('+items.length+' items)');};openModal('modal-confirm');}catch(err){toast('Error: archivo no válido');}};reader.readAsText(file);}
+function importData(e){const file=e.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=async ev=>{try{const data=JSON.parse(ev.target.result);if(data.warehouses){return importBoth(data);}if(!data.items)throw new Error('no valid');document.getElementById('confirm-title').textContent='Importar copia';document.getElementById('confirm-msg').textContent='Reemplazará el inventario actual con '+data.items.length+' items. ¿Continuar?';document.getElementById('confirm-ok').onclick=async()=>{await dbClear();for(const it of data.items)await dbPut(it);categories=data.categories||[];if(data.shelves&&data.shelves.length)shelves=data.shelves;await cfgPut('categories',categories);await cfgPut('shelves',shelves);items=await dbGetAll();closeModal('modal-confirm');renderAll();toast('⏳ Subiendo a la nube...');for(const it of items)await cloudPut(it);await cloudCfgPut('categories',categories);await cloudCfgPut('shelves',shelves);toast('✓ Importado y sincronizado ('+items.length+' items)');};openModal('modal-confirm');}catch(err){toast('Error: archivo no válido');}};reader.readAsText(file);}
 // ===== BÚSQUEDA POR FOTO CON IA =====
 function handleAIPhoto(e){
   const file=e.target.files[0];if(!file)return;
@@ -3320,6 +3475,44 @@ function posShort(item){
   if(!c)return '';
   return (c.group&&c.group.indexOf('Gav')===0) ? ('Gav '+c.label) : c.label;
 }
+function openLocate(){
+  const i=currentItem; if(!i)return;
+  const titleEl=document.getElementById('locate-title'), subEl=document.getElementById('locate-sub'), body=document.getElementById('locate-body');
+  if(!i.loc){ titleEl.textContent=i.name||'Ubicación'; subEl.textContent='Sin ubicación'; body.innerHTML='<div class="sv2-empty" style="padding:24px;">Este artículo no tiene una ubicación asignada todavía.</div>'; openModal('modal-locate'); return; }
+  const sp=splitLoc(i.loc);
+  const sh=shelves.find(s=>s.id===sp.shelfId);
+  const pl=posLabel(i);
+  titleEl.textContent=(sh?sh.name:i.loc);
+  subEl.textContent='Balda '+sp.balda+(pl?' · '+pl:'');
+  if(!sh){ body.innerHTML='<div class="sv2-empty" style="padding:24px;">Ubicación: '+esc(i.loc)+'</div>'; openModal('modal-locate'); return; }
+  let html='';
+  for(let b=1;b<=sh.baldas;b++){
+    const blocks=baldaBlocks(sh.id,b);
+    const isTB=String(b)===String(sp.balda);
+    html+='<div class="loc-balda"><div class="loc-tag'+((isTB&&!i.pos)?' blink-loc':'')+'">B'+b+'</div><div class="loc-cells">';
+    if(!blocks){
+      const t=isTB&&!i.pos;
+      html+='<div class="loc-cell loc-shelf'+(t?' blink-loc':'')+'" style="flex:1 1 100%;">Balda '+b+'</div>';
+    }else{
+      let gc=0;
+      blocks.forEach(blk=>{
+        if(blk.k==='h'){
+          const n=blk.n||1;
+          for(let k=0;k<n;k++){const cid=blk.id+'_'+k;const t=isTB&&i.pos===cid;html+='<div class="loc-cell loc-hueco'+(t?' blink-loc':'')+'">H'+(k+1)+'</div>';}
+        }else{
+          gc++;const rows=blk.rows||1,cols=blk.cols||1;
+          html+='<div class="loc-gavwrap"><div class="loc-gtitle">'+esc((blk.name||'Gavetero')+(gc>1?' '+gc:''))+'</div><div class="loc-ggrid" style="grid-template-columns:repeat('+cols+',1fr);">';
+          for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){const cid=blk.id+'_'+r+'_'+c;const t=isTB&&i.pos===cid;html+='<div class="loc-cell loc-gav'+(t?' blink-loc':'')+'">F'+(r+1)+'·C'+(c+1)+'</div>';}
+          html+='</div></div>';
+        }
+      });
+      if(isTB&&!i.pos){ html+='<div class="loc-cell loc-shelf blink-loc" style="flex:1 1 100%;">En esta balda (sin hueco/gaveta concreto)</div>'; }
+    }
+    html+='</div></div>';
+  }
+  body.innerHTML=html;
+  openModal('modal-locate');
+}
 
 // ===== ESTANTERÍA VISUAL =====
 let svShelfId=null;
@@ -3595,6 +3788,134 @@ async function saveLayout(){
   toast('✓ Distribución guardada');
 }
 
+
+// ===== SELECCIÓN MÚLTIPLE (asignar ubicación / mover en grupo) =====
+let selectMode=false;
+const selectedIds=new Set();
+
+function toggleSelectMode(){
+  selectMode=!selectMode;
+  selectedIds.clear();
+  const b=document.getElementById('btn-select-mode');
+  if(b){ b.textContent=selectMode?'✕ Salir de selección':'Seleccionar varios'; b.classList.toggle('btn-primary',selectMode); }
+  renderItems();
+  updateSelBar();
+}
+function toggleSel(id){
+  if(selectedIds.has(id))selectedIds.delete(id); else selectedIds.add(id);
+  const el=document.querySelector('.sel-row[data-id="'+id+'"]');
+  if(el)el.classList.toggle('on',selectedIds.has(id));
+  updateSelBar();
+}
+function selGroupItems(gid){
+  const all=getFiltered();
+  if(gid==='__none__')return all.filter(i=>!i.loc||!shelves.some(s=>i.loc.startsWith(s.id+'-')));
+  return all.filter(i=>i.loc&&i.loc.startsWith(gid+'-'));
+}
+function toggleSelGroup(gid){
+  const its=selGroupItems(gid);
+  const allSel=its.length && its.every(i=>selectedIds.has(i.id));
+  its.forEach(i=>{ if(allSel)selectedIds.delete(i.id); else selectedIds.add(i.id); });
+  renderItems(); updateSelBar();
+}
+function selRow(i){
+  const sel=selectedIds.has(i.id);
+  const ps=posShort(i);
+  const loc=i.loc?(esc(i.loc)+(ps?' · '+esc(ps):'')):'Sin ubicación';
+  return '<label class="sel-row'+(sel?' on':'')+'" data-id="'+i.id+'"><input type="checkbox" '+(sel?'checked':'')+' onchange="toggleSel(\''+i.id+'\')"><div class="sel-tx"><strong>'+esc(i.name)+'</strong><span>'+loc+'</span></div><span class="sel-stk">'+i.stock+' uds.</span></label>';
+}
+function selGroupHTML(name,gid,its){
+  const allSel=its.length && its.every(i=>selectedIds.has(i.id));
+  let h='<div class="sel-group"><div class="sel-group-head"><label class="sel-allbox"><input type="checkbox" '+(allSel?'checked':'')+' onchange="toggleSelGroup(\''+gid+'\')"> Todos</label><strong>'+esc(name)+'</strong><span class="shelf-count">'+its.length+' ref.</span></div>';
+  h+=its.map(selRow).join('');
+  h+='</div>';
+  return h;
+}
+function renderSelectList(){
+  const c=document.getElementById('items-container');
+  const all=getFiltered();
+  let html='';
+  shelves.forEach(s=>{const its=all.filter(i=>i.loc&&i.loc.startsWith(s.id+'-')); if(its.length)html+=selGroupHTML(s.name,s.id,its);});
+  const orphans=all.filter(i=>!i.loc||!shelves.some(s=>i.loc.startsWith(s.id+'-')));
+  if(orphans.length)html+=selGroupHTML('Sin ubicación','__none__',orphans);
+  c.innerHTML=html||'<div class="empty"><p>No hay material</p></div>';
+}
+function updateSelBar(){
+  const bar=document.getElementById('sel-bar'); if(!bar)return;
+  bar.style.display=selectMode?'flex':'none';
+  const cnt=document.getElementById('sel-count'); if(cnt)cnt.textContent=selectedIds.size;
+  const mb=document.getElementById('sel-move-btn'); const o=otherWarehouse();
+  if(mb&&o)mb.textContent='Mover a '+o.name.replace('Almacén ','');
+}
+
+// Asignar ubicación a varios (protegido)
+function bulkAssignLoc(){
+  if(!selectedIds.size){toast('No has seleccionado ningún artículo');return;}
+  requireAdmin(()=>{
+    document.getElementById('bl-count').textContent=selectedIds.size;
+    document.getElementById('bl-shelf').innerHTML=shelves.map(s=>'<option value="'+s.id+'">'+esc(s.name)+'</option>').join('');
+    updateBulkBalda();
+    openModal('modal-bulkloc');
+  });
+}
+function updateBulkBalda(){
+  const sid=document.getElementById('bl-shelf').value;
+  const sh=shelves.find(s=>s.id===sid); const n=sh?sh.baldas:1;
+  let h=''; for(let b=1;b<=n;b++)h+='<option value="'+b+'">'+b+'</option>';
+  document.getElementById('bl-balda').innerHTML=h;
+  updateBulkPos();
+}
+function updateBulkPos(){
+  const sid=document.getElementById('bl-shelf').value, b=document.getElementById('bl-balda').value;
+  const cells=baldaCellList(sid,b);
+  const group=document.getElementById('bl-pos-group'), sel=document.getElementById('bl-pos');
+  if(!cells.length){group.style.display='none';sel.innerHTML='';return;}
+  let h='<option value="">— Sin colocar (toda la balda) —</option>'; let lastG=null;
+  cells.forEach(c=>{if(c.group!==lastG){if(lastG!==null)h+='</optgroup>';h+='<optgroup label="'+esc(c.group)+'">';lastG=c.group;}h+='<option value="'+esc(c.id)+'">'+esc(c.label)+'</option>';});
+  if(lastG!==null)h+='</optgroup>';
+  sel.innerHTML=h; group.style.display='block';
+}
+async function applyBulkLoc(){
+  const sid=document.getElementById('bl-shelf').value, b=document.getElementById('bl-balda').value;
+  const group=document.getElementById('bl-pos-group');
+  const pos=(group.style.display==='none')?'':(document.getElementById('bl-pos').value||'');
+  const ids=[...selectedIds];
+  closeModal('modal-bulkloc');
+  toast('⏳ Asignando ubicación a '+ids.length+' artículos...');
+  for(const id of ids){ const it=items.find(x=>x.id===id); if(!it)continue; it.loc=sid+'-'+b; it.pos=pos; await dbPut(it); await cloudPut(it); }
+  items=await dbGetAll();
+  selectedIds.clear();
+  renderItems(); updateSelBar();
+  toast('✓ Ubicación asignada a '+ids.length+' artículos');
+}
+
+// Mover varios a otro almacén (protegido)
+function bulkMove(){
+  if(!selectedIds.size){toast('No has seleccionado ningún artículo');return;}
+  const o=otherWarehouse(); if(!o)return;
+  requireAdmin(()=>{
+    document.getElementById('confirm-title').textContent='Mover a '+o.name;
+    document.getElementById('confirm-msg').textContent='Vas a mover '+selectedIds.size+' artículos a '+o.name+'. Aparecerán SIN ubicación allí, para colocarlos. ¿Continuar?';
+    document.getElementById('confirm-ok').onclick=async()=>{
+      closeModal('modal-confirm');
+      if(!sb){toast('Necesitas conexión para mover entre almacenes');return;}
+      const ids=[...selectedIds];
+      toast('⏳ Moviendo '+ids.length+' artículos...');
+      let okc=0;
+      for(const id of ids){
+        const it=items.find(x=>x.id===id); if(!it)continue;
+        const moved={...it, loc:'', pos:''};
+        const ok=await cloudPutTo(o.tblItems,moved);
+        if(ok){ await dbDelete(id); await cloudDelete(id); okc++; }
+      }
+      items=await dbGetAll();
+      selectedIds.clear();
+      renderItems(); updateSelBar();
+      toast('✓ Movidos '+okc+' artículos a '+o.name);
+    };
+    openModal('modal-confirm');
+  });
+}
 // Al abrir, siempre se elige primero el almacén
 showWarehouseSelector();
 
