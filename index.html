@@ -1820,8 +1820,8 @@ async function saveItem(){
   if(editingId && printedIds.has(editingId)){
     const prev=items.find(x=>x.id===editingId);
     if(prev){
-      const antes=[prev.name,prev.ref||'',prev.loc].join('|');
-      const ahora=[item.name,item.ref||'',item.loc].join('|');
+      const antes=[prev.name,prev.ref||'',prev.loc,prev.pos||''].join('|');
+      const ahora=[item.name,item.ref||'',item.loc,item.pos||''].join('|');
       if(antes!==ahora){etiquetaCambiada=true;}
     }
   }
@@ -2526,7 +2526,8 @@ async function doPrintLabels(){
       new QRCode(qrBox,{text:'ALMACEN:'+i.id,width:cfg.qr,height:cfg.qr,colorDark:'#000000',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel[cfg.ecl]});
       const txt=document.createElement('div');
       txt.className='pl-text';
-      txt.innerHTML=`<div class="pl-name">${esc(i.name)}</div>${i.ref?`<div class="pl-ref">Ref: ${esc(i.ref)}</div>`:''}<div class="pl-loc">${esc(i.loc)}</div>`;
+      const _ps=posShort(i);
+      txt.innerHTML=`<div class="pl-name">${esc(i.name)}</div>${i.ref?`<div class="pl-ref">Ref: ${esc(i.ref)}</div>`:''}<div class="pl-loc">${esc(i.loc)}${_ps?' · '+esc(_ps):''}</div>`;
       inner.appendChild(qrBox);
       inner.appendChild(txt);
       label.appendChild(inner);
@@ -3309,6 +3310,15 @@ function posLabel(item){
   const cells=baldaCellList(sp.shelfId,sp.balda);
   const c=cells.find(x=>x.id===item.pos);
   return c?(c.group+' · '+c.label):item.pos;
+}
+// Texto compacto de hueco/gaveta para las etiquetas (gavetas con fila y columna)
+function posShort(item){
+  if(!item||!item.pos)return '';
+  const sp=splitLoc(item.loc);
+  const cells=baldaCellList(sp.shelfId,sp.balda);
+  const c=cells.find(x=>x.id===item.pos);
+  if(!c)return '';
+  return (c.group&&c.group.indexOf('Gav')===0) ? ('Gav '+c.label) : c.label;
 }
 
 // ===== ESTANTERÍA VISUAL =====
