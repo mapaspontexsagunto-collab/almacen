@@ -335,6 +335,17 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .sel-tx span{font-size:12px;color:var(--text2);}
 .sel-stk{font-size:12px;color:var(--text2);white-space:nowrap;}
 
+
+.sch-wrap{margin-bottom:8px;}
+.sch-cell{position:relative;cursor:pointer;min-height:50px;}
+.sch-cell:active{filter:brightness(.95);}
+.sch-cell.sch-sel{outline:3px solid var(--text);outline-offset:-2px;z-index:1;}
+.sch-cnt{position:absolute;top:2px;right:3px;background:rgba(0,0,0,.6);color:#fff;font-size:9px;font-weight:700;border-radius:8px;padding:0 5px;line-height:16px;min-width:16px;text-align:center;}
+.sch-panel{margin-top:4px;}
+.sch-panel-h{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text2);}
+.sch-panel-items{display:flex;flex-wrap:wrap;gap:8px;}
+.sch-panel-items .sv2-mini{width:150px;}
+
 /* ===== VER UBICACIÓN (esquema con parpadeo) ===== */
 .loc-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;margin:6px 0 14px;color:var(--text2);}
 .loc-legend span{display:flex;align-items:center;gap:5px;}
@@ -3533,7 +3544,8 @@ function cellClass(its){
 function openShelfView(sid){ filterByShelf(sid); }
 const GAV_COLORS=['#eff6ff','#f0fdf4','#fffbeb','#fef2f2','#f5f3ff','#ecfeff','#fdf2f8'];
 let svScale=100;   // tamaño de tarjetas en %, por defecto 100
-let svViewMode='visual';   // 'visual' (estantería) o 'list' (lista)
+let svViewMode='visual';   // 'visual' (estantería) | 'schema' (esquema) | 'list' (lista)
+let schemaCell=null;       // celda abierta en el esquema
 let organizeShelf=null;   // estantería en modo organizar
 let svSelectedId=null;    // artículo seleccionado para mover (táctil)
 let svDragId=null;        // artículo arrastrándose (ratón)
@@ -3580,7 +3592,8 @@ function setSvScale(v){
 }
 function setSvViewMode(m){
   svViewMode=m;
-  if(m==='list')organizeShelf=null;
+  schemaCell=null;
+  if(m!=='visual')organizeShelf=null;
   renderItems();
 }
 function svPick(id){
@@ -3634,9 +3647,13 @@ function shelfLayoutHTML(sid){
   document.documentElement.style.setProperty('--svt', (svScale/100));
   let html='';
   html+='<div class="sv2-tabs">';
-  html+='<button class="sv2-tab '+(svViewMode==='list'?'':'active')+'" onclick="event.stopPropagation();setSvViewMode(\'visual\')">Estantería</button>';
+  html+='<button class="sv2-tab '+(svViewMode==='visual'?'active':'')+'" onclick="event.stopPropagation();setSvViewMode(\'visual\')">Estantería</button>';
+  html+='<button class="sv2-tab '+(svViewMode==='schema'?'active':'')+'" onclick="event.stopPropagation();setSvViewMode(\'schema\')">Esquema</button>';
   html+='<button class="sv2-tab '+(svViewMode==='list'?'active':'')+'" onclick="event.stopPropagation();setSvViewMode(\'list\')">Lista</button>';
   html+='</div>';
+  if(svViewMode==='schema'){
+    return html+schemaHTML(sid);
+  }
   html+='<div class="sv2-sizebar"><span>Tamaño</span><input type="range" min="0" max="200" value="'+svScale+'" oninput="setSvScale(this.value)"><span id="sv-size-pct">'+svScale+'%</span></div>';
   if(svViewMode==='list'){
     const lst=items.filter(i=>i.loc&&i.loc.startsWith(sid+'-')).slice().sort((a,b)=>{
@@ -3711,6 +3728,58 @@ function shelfLayoutHTML(sid){
     html+='</div></div>';
   }
   return html;
+}
+function schCell(cls,label,count,sid,b,cid,fullLabel,grid){
+  const style = grid ? '' : ' style="flex:1 1 0;"';
+  const badge = count ? '<span class="sch-cnt">'+count+'</span>' : '';
+  const fl=String(fullLabel).replace(/'/g,'');
+  return '<div class="loc-cell sch-cell '+cls+'"'+style+' onclick="schemaOpen(this,\''+sid+'\','+b+',\''+cid+'\',\''+fl+'\')"><span class="cl">'+label+'</span>'+badge+'</div>';
+}
+function schemaHTML(sid){
+  const sh=shelves.find(s=>s.id===sid); if(!sh)return '';
+  let html='<div class="sch-wrap">';
+  for(let b=1;b<=sh.baldas;b++){
+    const blocks=baldaBlocks(sh.id,b);
+    const baseLoc=sh.id+'-'+b;
+    html+='<div class="loc-balda"><div class="loc-tag">B'+b+'</div><div class="loc-cells">';
+    if(!blocks){
+      const its=items.filter(i=>i.loc===baseLoc);
+      html+=schCell('loc-shelf','Balda '+b,its.length,sh.id,b,'','Balda '+b,false);
+    }else{
+      let gc=0;
+      blocks.forEach(blk=>{
+        if(blk.k==='h'){
+          const n=blk.n||1;
+          for(let k=0;k<n;k++){const cid=blk.id+'_'+k;const its=items.filter(it=>it.loc===baseLoc&&it.pos===cid);
+            html+=schCell('loc-hueco','<b>H</b>'+(k+1),its.length,sh.id,b,cid,'Hueco '+(k+1),false);}
+        }else{
+          gc++;const rows=blk.rows||1,cols=blk.cols||1;
+          html+='<div class="loc-gavwrap" style="flex:'+cols+' 1 0;"><div class="loc-gtitle">'+esc((blk.name||'Gav')+(gc>1?' '+gc:''))+'</div><div class="loc-ggrid" style="grid-template-columns:repeat('+cols+',1fr);grid-template-rows:repeat('+rows+',1fr);">';
+          for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){const cid=blk.id+'_'+r+'_'+c;const its=items.filter(it=>it.loc===baseLoc&&it.pos===cid);
+            html+=schCell('loc-gav','F'+(r+1)+'<br>C'+(c+1),its.length,sh.id,b,cid,'Gaveta F'+(r+1)+'·C'+(c+1),true);}
+          html+='</div></div>';
+        }
+      });
+      const sinPos=items.filter(i=>i.loc===baseLoc&&(!i.pos||i.pos===''));
+      if(sinPos.length){ html+=schCell('loc-shelf','Sin<br>colocar',sinPos.length,sh.id,b,'','Sin colocar en balda '+b,false); }
+    }
+    html+='</div></div>';
+  }
+  html+='</div>';
+  html+='<div id="schema-panel" class="sch-panel"></div>';
+  return html;
+}
+function schemaOpen(el,sid,balda,cid,label){
+  document.querySelectorAll('.sch-cell.sch-sel').forEach(x=>x.classList.remove('sch-sel'));
+  if(el)el.classList.add('sch-sel');
+  schemaCell={sid:sid,balda:String(balda),cid:cid};
+  const baseLoc=sid+'-'+balda;
+  const its = cid ? items.filter(i=>i.loc===baseLoc&&i.pos===cid) : items.filter(i=>i.loc===baseLoc&&(!i.pos||i.pos===''));
+  const panel=document.getElementById('schema-panel'); if(!panel)return;
+  let h='<div class="sch-panel-h"><span>'+esc(label)+' · '+its.length+' ref.</span><button class="sv2-add" style="width:auto;padding:6px 12px;margin-left:auto;" onclick="quickAddHere(\''+sid+'\',\''+balda+'\',\''+cid+'\')">+ Añadir aquí</button></div>';
+  h+= its.length ? '<div class="sch-panel-items">'+its.map(it=>svMini(it,false)).join('')+'</div>' : '<div class="sv2-empty" style="padding:16px;">Aquí no hay material todavía</div>';
+  panel.innerHTML=h;
+  panel.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 function openCell(sid,balda,cid,label){
   const sh=shelves.find(s=>s.id===sid); if(!sh)return;
