@@ -341,10 +341,10 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .loc-leg{width:14px;height:14px;border-radius:4px;display:inline-block;border:1px solid rgba(0,0,0,.08);}
 .loc-balda{display:flex;gap:8px;margin-bottom:8px;align-items:stretch;}
 .loc-tag{width:46px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border-radius:8px;font-size:13px;font-weight:700;background:#dbeafe;color:#1e40af;}
-.loc-cells{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;}
-.loc-hrow{display:flex;gap:5px;}
-.loc-hrow .loc-cell{flex:1 1 0;}
-.loc-cell{min-width:0;min-height:40px;display:flex;align-items:center;justify-content:center;border-radius:7px;font-size:11px;font-weight:600;text-align:center;padding:3px 2px;overflow:hidden;}
+.loc-cells{flex:1;min-width:0;display:flex;gap:5px;align-items:stretch;min-height:64px;}
+.loc-cell{min-width:0;display:flex;align-items:center;justify-content:center;border-radius:7px;font-size:11px;font-weight:600;text-align:center;padding:2px;overflow:hidden;line-height:1.05;}
+.loc-cell .cl{display:inline-block;}
+.loc-cell .cl b{display:block;font-size:13px;font-weight:700;}
 .loc-shelf{background:#dbeafe;color:#1e40af;}
 .loc-hueco{background:#dcfce7;color:#166534;}
 .loc-gav{background:#fef3c7;color:#92400e;}
@@ -352,9 +352,9 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .loc-leg.loc-hueco{background:#dcfce7;}
 .loc-leg.loc-gav{background:#fef3c7;}
 .loc-leg.pulse{background:#ef4444;border-color:#ef4444;animation:legpulse .85s ease-in-out infinite;}
-.loc-gavwrap{flex:1 1 100%;border:1.5px dashed #fcd34d;border-radius:10px;padding:7px;}
-.loc-gtitle{font-size:11px;font-weight:700;color:#92400e;margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px;}
-.loc-ggrid{display:grid;gap:4px;}
+.loc-gavwrap{min-width:0;display:flex;flex-direction:column;border:1.5px dashed #fcd34d;border-radius:9px;padding:4px;}
+.loc-gtitle{font-size:9px;font-weight:700;color:#92400e;margin-bottom:3px;text-transform:uppercase;letter-spacing:.3px;text-align:center;white-space:nowrap;overflow:hidden;}
+.loc-ggrid{flex:1;display:grid;gap:3px;min-height:48px;}
 .loc-ggrid .loc-cell{min-width:0;}
 .blink-loc{animation:locblink .85s ease-in-out infinite;position:relative;z-index:1;}
 @keyframes locblink{0%,100%{outline:3px solid #ef4444;outline-offset:-2px;box-shadow:0 0 0 4px rgba(239,68,68,.25);}50%{outline:3px solid transparent;outline-offset:-2px;box-shadow:0 0 0 0 rgba(239,68,68,0);}}
@@ -3495,27 +3495,27 @@ function openLocate(){
     html+='<div class="loc-balda"><div class="loc-tag'+((isTB&&!i.pos)?' blink-loc':'')+'">B'+b+'</div><div class="loc-cells">';
     if(!blocks){
       const t=isTB&&!i.pos;
-      html+='<div class="loc-hrow"><div class="loc-cell loc-shelf'+(t?' blink-loc':'')+'">Balda '+b+'</div></div>';
+      html+='<div class="loc-cell loc-shelf'+(t?' blink-loc':'')+'" style="flex:1 1 0;"><span class="cl">Balda '+b+'</span></div>';
     }else{
       let gc=0;
       blocks.forEach(blk=>{
         if(blk.k==='h'){
           const n=blk.n||1;
-          html+='<div class="loc-hrow">';
-          for(let k=0;k<n;k++){const cid=blk.id+'_'+k;const t=isTB&&i.pos===cid;html+='<div class="loc-cell loc-hueco'+(t?' blink-loc':'')+'">H'+(k+1)+'</div>';}
-          html+='</div>';
+          for(let k=0;k<n;k++){const cid=blk.id+'_'+k;const t=isTB&&i.pos===cid;
+            html+='<div class="loc-cell loc-hueco'+(t?' blink-loc':'')+'" style="flex:1 1 0;"><span class="cl"><b>H</b>'+(k+1)+'</span></div>';}
         }else{
           gc++;const rows=blk.rows||1,cols=blk.cols||1;
-          html+='<div class="loc-gavwrap"><div class="loc-gtitle">'+esc((blk.name||'Gavetero')+(gc>1?' '+gc:''))+'</div><div class="loc-ggrid" style="grid-template-columns:repeat('+cols+',1fr);">';
-          for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){const cid=blk.id+'_'+r+'_'+c;const t=isTB&&i.pos===cid;html+='<div class="loc-cell loc-gav'+(t?' blink-loc':'')+'">F'+(r+1)+'·C'+(c+1)+'</div>';}
+          html+='<div class="loc-gavwrap" style="flex:'+cols+' 1 0;"><div class="loc-gtitle">'+esc((blk.name||'Gav')+(gc>1?' '+gc:''))+'</div><div class="loc-ggrid" style="grid-template-columns:repeat('+cols+',1fr);grid-template-rows:repeat('+rows+',1fr);">';
+          for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){const cid=blk.id+'_'+r+'_'+c;const t=isTB&&i.pos===cid;
+            html+='<div class="loc-cell loc-gav'+(t?' blink-loc':'')+'"><span class="cl">F'+(r+1)+'<br>C'+(c+1)+'</span></div>';}
           html+='</div></div>';
         }
       });
-      if(isTB&&!i.pos){ html+='<div class="loc-hrow"><div class="loc-cell loc-shelf blink-loc">En esta balda (sin hueco/gaveta concreto)</div></div>'; }
     }
     html+='</div></div>';
   }
-  body.innerHTML=html;
+  if(!i.pos){ html+='<div style="font-size:12px;color:var(--text2);margin-top:8px;">El artículo está en la balda '+esc(sp.balda)+', sin hueco/gaveta concreto.</div>'; }
+    body.innerHTML=html;
   openModal('modal-locate');
 }
 
