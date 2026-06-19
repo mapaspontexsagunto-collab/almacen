@@ -1077,6 +1077,22 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
   </div>
 </div>
 
+<!-- AÑADIR AQUÍ (nuevo / escanear / elegir varios) -->
+<div class="modal-bg" id="modal-addhere">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2>Añadir aquí</h2>
+    <div class="msub" id="ah-target"></div>
+    <button class="btn btn-block btn-primary" onclick="ahNew()">➕ Crear artículo nuevo</button>
+    <button class="btn btn-block" style="margin-top:10px;" onclick="ahScan()">📷 Escanear QR y colocar</button>
+    <div style="margin-top:18px;margin-bottom:8px;font-weight:600;font-size:14px;">O elige artículos ya guardados (puedes marcar varios):</div>
+    <input type="text" class="fi" id="ah-search" placeholder="Buscar por nombre, referencia, marca..." oninput="ahRenderList()">
+    <div id="ah-list" style="max-height:42vh;overflow-y:auto;margin-top:10px;border:1px solid var(--border);border-radius:10px;"></div>
+    <button class="btn btn-block btn-primary" style="margin-top:12px;" id="ah-place-btn" onclick="ahPlace()">Colocar aquí</button>
+    <button class="btn btn-block" style="margin-top:10px;" onclick="closeModal('modal-addhere')">Cerrar</button>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1269,7 +1285,7 @@ function updateSyncBadge(state){
   t.textContent = state==='ok'?'Sincronizado' : state==='syncing'?'Sincronizando…' : 'Sin conexión';
 }
 
-let items=[],categories=[],shelves=[],currentView='gallery',currentCat='',currentItem=null,pendingPhoto=null,adjustValue=0,editingId=null,scanner=null,shelfDraft=[];
+let items=[],categories=[],shelves=[],currentView='gallery',currentCat='',currentItem=null,pendingPhoto=null,adjustValue=0,editingId=null,scanner=null,shelfDraft=[],scanPurpose=null;
 let lastAIIdent=null; // última identificación cruda de la IA (para buscar en internet)
 
 // shelves model: [{id:'01', name:'Estantería 01', baldas:5}, ...]
@@ -2650,8 +2666,8 @@ async function doPrintLabels(){
 }
 
 function showQR(){if(!currentItem)return;document.getElementById('qr-item-name').textContent=currentItem.name+' · '+currentItem.loc;const box=document.getElementById('qr-canvas');box.innerHTML='';new QRCode(box,{text:'ALMACEN:'+currentItem.id,width:200,height:200,colorDark:'#1a1916',colorLight:'#ffffff'});openModal('modal-qr');}
-function openScanner(){openModal('modal-scan');scanner=new Html5Qrcode('qr-reader');scanner.start({facingMode:'environment'},{fps:10,qrbox:220},text=>{if(text.startsWith('ALMACEN:')){const id=text.replace('ALMACEN:','');closeScanner();const found=items.find(i=>i.id===id);if(found)openDetail(id);else toast('Componente no encontrado');}},()=>{}).catch(e=>{toast('No se pudo abrir la cámara');console.error(e);});}
-function closeScanner(){if(scanner){scanner.stop().then(()=>{scanner.clear();scanner=null;}).catch(()=>{scanner=null;});}closeModal('modal-scan');}
+function openScanner(){openModal('modal-scan');scanner=new Html5Qrcode('qr-reader');scanner.start({facingMode:'environment'},{fps:10,qrbox:220},text=>{if(text.startsWith('ALMACEN:')){const id=text.replace('ALMACEN:','');const purpose=scanPurpose;closeScanner();const found=items.find(i=>i.id===id);if(!found){toast('Componente no encontrado');return;}if(purpose==='addhere'&&addHereTarget){const t=addHereTarget;found.loc=t.sid+'-'+t.balda;found.pos=t.cid||'';Promise.resolve(dbPut(found)).then(()=>cloudPut(found)).then(()=>dbGetAll()).then(r=>{items=r;renderItems();});toast('✓ '+found.name+' colocado aquí');}else{openDetail(id);}}},()=>{}).catch(e=>{toast('No se pudo abrir la cámara');console.error(e);});}
+function closeScanner(){scanPurpose=null;if(scanner){scanner.stop().then(()=>{scanner.clear();scanner=null;}).catch(()=>{scanner=null;});}closeModal('modal-scan');}
 
 async function cloudCfgGetFrom(tbl,key){
   if(!sb)return null;
@@ -3567,10 +3583,65 @@ function svMini(i,org){
 function svAdd(sid,balda,cid){
   return '<button class="sv2-add" onclick="event.stopPropagation();quickAddHere(\''+sid+'\',\''+balda+'\',\''+cid+'\')">+ Añadir aquí</button>';
 }
+let addHereTarget=null;
+const addHereSel=new Set();
 function quickAddHere(sid,balda,cid){
-  addPreset={shelf:sid,balda:String(balda),pos:cid};
+  addHereTarget={sid:sid,balda:String(balda),cid:cid||''};
+  addHereSel.clear();
+  const sh=shelves.find(s=>s.id===sid);
+  let lbl=(sh?sh.name:sid)+' · Balda '+balda;
+  if(cid){ const cells=baldaCellList(sid,balda); const c=cells.find(x=>x.id===cid); lbl+=' · '+(c?(c.group+' '+c.label):cid); }
+  else lbl+=' · (toda la balda)';
+  document.getElementById('ah-target').textContent=lbl;
+  document.getElementById('ah-search').value='';
+  ahRenderList();
+  openModal('modal-addhere');
+}
+function ahNew(){
+  addPreset={shelf:addHereTarget.sid,balda:addHereTarget.balda,pos:addHereTarget.cid};
+  closeModal('modal-addhere');
   openAddForm();
 }
+function ahScan(){
+  closeModal('modal-addhere');
+  openScannerFor('addhere');
+}
+function ahRenderList(){
+  const q=(document.getElementById('ah-search').value||'').toLowerCase();
+  const list=items.filter(i=>!q||[i.name,i.ref,i.brand,i.machine,i.loc].some(v=>(v||'').toLowerCase().includes(q)))
+    .slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')));
+  const cont=document.getElementById('ah-list');
+  if(!list.length){cont.innerHTML='<div class="sv2-empty" style="padding:16px;">Sin resultados</div>';updateAhBtn();return;}
+  cont.innerHTML=list.slice(0,300).map(i=>{
+    const sel=addHereSel.has(i.id);
+    const ps=posShort(i);
+    const loc=i.loc?(esc(i.loc)+(ps?' · '+esc(ps):'')):'Sin ubicación';
+    return '<label class="sel-row'+(sel?' on':'')+'" data-ahid="'+i.id+'"><input type="checkbox" '+(sel?'checked':'')+' onchange="ahToggle(\''+i.id+'\')"><div class="sel-tx"><strong>'+esc(i.name)+'</strong><span>'+loc+'</span></div><span class="sel-stk">'+i.stock+' uds.</span></label>';
+  }).join('');
+  updateAhBtn();
+}
+function ahToggle(id){
+  if(addHereSel.has(id))addHereSel.delete(id); else addHereSel.add(id);
+  const el=document.querySelector('.sel-row[data-ahid="'+id+'"]');
+  if(el)el.classList.toggle('on',addHereSel.has(id));
+  updateAhBtn();
+}
+function updateAhBtn(){
+  const b=document.getElementById('ah-place-btn');
+  if(b)b.textContent= addHereSel.size? ('Colocar aquí ('+addHereSel.size+')') : 'Colocar aquí';
+}
+async function ahPlace(){
+  if(!addHereSel.size){toast('Selecciona al menos un artículo (o usa Crear / Escanear)');return;}
+  const t=addHereTarget; const ids=[...addHereSel];
+  closeModal('modal-addhere');
+  toast('⏳ Colocando '+ids.length+' artículos...');
+  for(const id of ids){ const it=items.find(x=>x.id===id); if(!it)continue; it.loc=t.sid+'-'+t.balda; it.pos=t.cid||''; await dbPut(it); await cloudPut(it); }
+  items=await dbGetAll();
+  addHereSel.clear();
+  renderItems();
+  toast('✓ Colocados '+ids.length+' artículos');
+}
+function openScannerFor(purpose){ scanPurpose=purpose; openScanner(); }
 function svRow(i){
   const img = i.photo
     ? '<img src="'+i.photo+'">'
