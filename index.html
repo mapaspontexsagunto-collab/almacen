@@ -102,6 +102,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .mov-row .mv-meta{font-size:11.5px;color:var(--text3);margin-top:2px;line-height:1.3;}
 .mov-row .mv-diff{font-weight:700;font-family:'DM Mono',monospace;font-size:14px;flex-shrink:0;}
 .mov-row .mv-diff.in{color:#217346;}
+.mov-row .mv-compra{color:#8a5a00;font-weight:700;}
 .mov-row .mv-diff.out{color:#c00000;}
 .mov-row .mv-del{flex-shrink:0;width:34px;height:34px;border:1px solid var(--border);background:var(--surface);border-radius:9px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--text3);-webkit-tap-highlight-color:transparent;}
 .mov-row .mv-del:active{background:var(--amber-bg);color:#c00000;}
@@ -290,7 +291,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
   .labels-sheet.size-big .pl-name{font-size:9pt;margin-bottom:1mm;-webkit-line-clamp:2;}
   .labels-sheet.size-big .pl-ref{font-size:7.5pt;}
   .labels-sheet.size-big .pl-loc{font-size:11pt;margin-top:1mm;}
-  /* Tamaño pequeño: 48,5 x 25,4 mm (40 por hoja A4, 4 columnas x 10 filas) */
+  /* Tamaño pequeño: 48,5 x 25,4 mm (44 por hoja A4, 4 columnas x 11 filas) */
   .labels-sheet.size-small .print-label{width:48.5mm;height:25.4mm;padding:1.5mm;}
   .labels-sheet.size-small .pl-inner{gap:1.5mm;}
   .labels-sheet.size-small .pl-qr{width:21mm;height:21mm;flex-shrink:0;}
@@ -682,15 +683,17 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <h2 id="detail-name"></h2>
     <div class="msub" id="detail-cat"></div>
     <div class="stock-big"><div class="n" id="detail-stock">0</div><div class="u">unidades en stock</div></div>
-    <div class="fr" style="margin-bottom:16px;">
+    <div style="font-size:12px;color:var(--text2);margin-bottom:6px;">Uso / devolución — <strong>sin coste</strong></div>
+    <div class="fr" style="margin-bottom:14px;">
       <button class="btn" style="font-size:18px;padding:16px;" onclick="quickStock(-1)">− Quitar 1</button>
       <button class="btn btn-primary" style="font-size:18px;padding:16px;" onclick="quickStock(1)">+ Añadir 1</button>
     </div>
     <div class="fg">
-      <label class="fl">Ajustar cantidad concreta</label>
+      <label class="fl">Ajustar cantidad concreta (sin coste)</label>
       <div class="stepper"><button onclick="stepAdjust(-1)">−</button><div class="val" id="adjust-val">0</div><button onclick="stepAdjust(1)">+</button></div>
       <button class="btn btn-block btn-primary" style="margin-top:10px;" onclick="applyAdjust()">Guardar cantidad</button>
     </div>
+    <button class="btn btn-block" style="margin-top:12px;" onclick="openPurchase()">📦 Entrada de compra (con coste)</button>
     <div id="detail-info"></div>
     <div class="fr" style="margin-top:16px;">
       <button class="btn" onclick="showQR()">Ver QR</button>
@@ -733,6 +736,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     </div>
     <div class="msub" style="margin:-6px 0 6px;">Pon el mínimo en <strong>0</strong> si ya no quieres tener este artículo en almacén: no aparecerá como stock bajo ni sin stock.</div>
     <div class="fr">
+      <div class="fg" id="f-precio-group"><label class="fl">Precio por unidad (€) <span style="font-weight:400;color:var(--text3);">— opcional</span></label><input type="number" step="0.01" min="0" class="fi" id="f-precio" placeholder="0,00"></div>
       <div class="fg"><label class="fl">Referencia</label><input type="text" class="fi" id="f-ref" placeholder="Ej: LRD10"></div>
       <div class="fg"><label class="fl">Marca</label><input type="text" class="fi" id="f-brand" placeholder="Ej: Schneider"></div>
     </div>
@@ -810,7 +814,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <label style="font-size:12px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:0.4px;">Tamaño de etiqueta</label>
     <div class="seg" style="margin-top:6px;">
       <button id="lsize-big" class="active" onclick="setLabelSize('big')">70 × 37 mm<br><span style="font-weight:400;font-size:11px;">24 por hoja</span></button>
-      <button id="lsize-small" onclick="setLabelSize('small')">48,5 × 25,4 mm<br><span style="font-weight:400;font-size:11px;">40 por hoja</span></button>
+      <button id="lsize-small" onclick="setLabelSize('small')">48,5 × 25,4 mm<br><span style="font-weight:400;font-size:11px;">44 por hoja</span></button>
     </div>
     <div id="scale-ctrl" style="margin:4px 0 12px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
@@ -1093,6 +1097,18 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
   </div>
 </div>
 
+<!-- ENTRADA DE COMPRA (con coste) -->
+<div class="modal-bg center" id="modal-purchase">
+  <div class="modal small">
+    <h2>📦 Entrada de compra</h2>
+    <div class="msub" id="pur-name"></div>
+    <div class="fg"><label class="fl">Unidades que entran</label><input type="number" class="fi" id="pur-qty" min="1" value="1"></div>
+    <div class="fg"><label class="fl">Precio por unidad (€)</label><input type="number" step="0.01" min="0" class="fi" id="pur-price" placeholder="0,00"></div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.4;">Se suma al stock y se guarda como precio por unidad del artículo. Queda registrado como movimiento de tipo «Compra».</div>
+    <div class="fr"><button class="btn" onclick="closeModal('modal-purchase')">Cancelar</button><button class="btn btn-primary" onclick="applyPurchase()">Registrar entrada</button></div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1121,7 +1137,7 @@ function movDeleteLocal(ts,itemId){return new Promise(res=>{
   g.onerror=()=>res();
 });}
 function getTurno(date){const h=date.getHours();if(h>=6&&h<14)return'Mañana (06:00–14:00)';if(h>=14&&h<22)return'Tarde (14:00–22:00)';return'Noche (22:00–06:00)';}
-async function registrarMovimiento(item, anterior, nuevo, tipo){
+async function registrarMovimiento(item, anterior, nuevo, tipo, coste){
   const now=new Date();
   const diff=nuevo-anterior;
   const mov={
@@ -1134,6 +1150,7 @@ async function registrarMovimiento(item, anterior, nuevo, tipo){
     ts:now.getTime(),
     synced:false
   };
+  if(coste!=null)mov.coste=coste;
   const localId=await movPut(mov); // guarda local y devuelve su id
   const ok=await cloudMovPut(mov); // intenta subir a la nube
   if(ok){mov.id=localId;mov.synced=true;await movUpdate(mov);} // marcar como sincronizado
@@ -1212,7 +1229,7 @@ function withTimeout(promise, ms, label){
 // Descarga SOLO los datos (sin fotos): payload pequeño y rápido, muy fiable
 async function cloudGetMeta(){
   if(!sb)return null;
-  const cols='id,name,cat,categories,loc,pos,stock,min,ref,brand,machine,notes';
+  const cols='id,name,cat,categories,loc,pos,precio,stock,min,ref,brand,machine,notes';
   try{
     const{data,error}=await withTimeout(sb.from(WH.tblItems).select(cols).limit(10000),20000,'datos');
     if(error)throw error;cloudOK=true;return data||[];
@@ -1540,7 +1557,7 @@ function renderMovRows(list,dir){
         ${thumb}
         <div class="mv-main">
           <div class="mv-name">${esc(m.nombre||'')}</div>
-          <div class="mv-meta">${esc(m.fecha||'')} · ${esc(turnoCorto)} ${esc(m.hora||'')}${m.loc?' · '+esc(m.loc):''}${m.ref?' · '+esc(m.ref):''}</div>
+          <div class="mv-meta">${esc(m.fecha||'')} · ${esc(turnoCorto)} ${esc(m.hora||'')}${m.loc?' · '+esc(m.loc):''}${m.ref?' · '+esc(m.ref):''}${m.tipo==='Compra'?' · <span class="mv-compra">📦 Compra'+((adminUnlocked&&m.coste!=null)?' '+fmtEur(m.coste):'')+'</span>':''}</div>
         </div>
       </div>
       <div class="mv-diff ${dir}">${signo}${m.diferencia}</div>
@@ -1621,7 +1638,7 @@ function itemCardHTML(i){
   return `<div class="item-card" onclick="openDetail('${i.id}')"><div class="item-photo">${i.photo?`<img src="${i.photo}" loading="lazy">`:`<div class="ph"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.5"/><path d="M21 15l-5-5L5 21" stroke-width="1.5"/></svg></div>`}</div><div class="item-body"><div class="item-name">${esc(i.name)}</div><div class="item-meta"><span class="badge badge-loc">${i.loc}</span>${stockBadge(i)}</div></div></div>`;
 }
 function itemRowHTML(i){
-  return `<div class="detail-row" style="padding:13px 16px;cursor:pointer;align-items:center;" onclick="openDetail('${i.id}')"><div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;"><div style="width:44px;height:44px;border-radius:8px;background:var(--surface2);overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;">${i.photo?`<img src="${i.photo}" style="width:100%;height:100%;object-fit:cover;">`:`<svg width="20" height="20" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>`}</div><div style="min-width:0;"><strong style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(i.name)}</strong><span style="font-size:12px;color:var(--text2);">${esc(i.cat)} · ${i.loc}</span></div></div>${stockBadge(i)}</div>`;
+  return `<div class="detail-row" style="padding:13px 16px;cursor:pointer;align-items:center;" onclick="openDetail('${i.id}')"><div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;"><div style="width:44px;height:44px;border-radius:8px;background:var(--surface2);overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;">${i.photo?`<img src="${i.photo}" style="width:100%;height:100%;object-fit:cover;">`:`<svg width="20" height="20" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>`}</div><div style="min-width:0;"><strong style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(i.name)}</strong><span style="font-size:12px;color:var(--text2);">${esc(i.cat)} · ${i.loc}${(adminUnlocked&&i.precio!=null)?' · 💶 '+fmtEur(i.precio)+'/u':''}</span></div></div>${stockBadge(i)}</div>`;
 }
 
 function renderItems(){
@@ -1730,6 +1747,7 @@ function openDetail(id){
   // Ubicación destacada al principio
   const _pl=posLabel(i);
   info+=`<div class="loc-box"><svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" stroke-width="1.8"/><circle cx="12" cy="10" r="3" stroke-width="1.8"/></svg><div><div class="loc-label">Ubicación</div><div class="loc-value">${esc(locFull(i.loc))}${_pl?' · '+esc(_pl):''}</div></div></div>`;
+  if(adminUnlocked && i.precio!=null)info+=`<div class="detail-row"><span class="k">💶 Precio/ud</span><span class="v">${fmtEur(i.precio)}</span></div>`;
   if(i.ref)info+=`<div class="detail-row"><span class="k">Referencia</span><span class="v">${esc(i.ref)}</span></div>`;
   if(i.brand)info+=`<div class="detail-row"><span class="k">Marca</span><span class="v">${esc(i.brand)}</span></div>`;
   if(i.machine)info+=`<div class="detail-row"><span class="k">Equipo/máquina</span><span class="v">${esc(i.machine)}</span></div>`;
@@ -1742,6 +1760,34 @@ function openDetail(id){
 async function quickStock(d){if(!currentItem)return;const anterior=currentItem.stock;currentItem.stock=Math.max(0,anterior+d);await registrarMovimiento(currentItem,anterior,currentItem.stock,d>0?'Entrada':'Salida');await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;adjustValue=currentItem.stock;document.getElementById('adjust-val').textContent=adjustValue;renderAll();toast(d>0?'+1 unidad':'−1 unidad');}
 function stepAdjust(d){adjustValue=Math.max(0,adjustValue+d);document.getElementById('adjust-val').textContent=adjustValue;}
 async function applyAdjust(){if(!currentItem)return;const anterior=currentItem.stock;const nuevo=adjustValue;if(anterior===nuevo){toast('Sin cambios');return;}const tipo=nuevo>anterior?'Entrada':'Salida';currentItem.stock=nuevo;await registrarMovimiento(currentItem,anterior,nuevo,tipo);await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;renderAll();toast('Stock actualizado: '+nuevo);}
+function fmtEur(n){return (Number(n)||0).toFixed(2).replace('.',',')+' €';}
+function openPurchase(){
+  if(!currentItem)return;
+  requireAdmin(()=>{
+    document.getElementById('pur-name').textContent=currentItem.name;
+    document.getElementById('pur-qty').value='1';
+    document.getElementById('pur-price').value=(currentItem.precio!=null?currentItem.precio:'');
+    openModal('modal-purchase');
+  });
+}
+async function applyPurchase(){
+  if(!currentItem)return;
+  const qty=parseInt(document.getElementById('pur-qty').value)||0;
+  const praw=document.getElementById('pur-price').value.trim();
+  const price=praw===''?null:(parseFloat(praw.replace(',','.'))||0);
+  if(qty<1){toast('Indica cuántas unidades entran');return;}
+  const anterior=currentItem.stock;
+  currentItem.stock=anterior+qty;
+  if(price!=null)currentItem.precio=price;
+  const _coste=price!=null?+(qty*price).toFixed(2):null;
+  await registrarMovimiento(currentItem,anterior,currentItem.stock,'Compra',_coste);
+  await dbPut(currentItem);await cloudPut(currentItem);
+  closeModal('modal-purchase');
+  document.getElementById('detail-stock').textContent=currentItem.stock;
+  adjustValue=currentItem.stock;document.getElementById('adjust-val').textContent=adjustValue;
+  renderAll();
+  toast('✓ Entrada de compra: +'+qty+(price!=null?(' a '+fmtEur(price)+'/u'):''));
+}
 
 // DELETE con modal propio (confirm() fallaba en tablet)
 function askDelete(){
@@ -1760,7 +1806,7 @@ function openAddForm(){
   document.getElementById('form-title').textContent='Añadir material';
   rebuildCatSelect();buildShelfOptions();
   ['f-name','f-ref','f-brand','f-machine','f-notes','f-newcat'].forEach(id=>document.getElementById(id).value='');
-  document.getElementById('f-stock').value='';document.getElementById('f-min').value='2';
+  document.getElementById('f-stock').value='';document.getElementById('f-min').value='2';document.getElementById('f-precio').value='';document.getElementById('f-precio-group').style.display=adminUnlocked?'':'none';
   document.getElementById('f-cat').value='';
   selectedExtraCats=new Set();renderCatChips();
   if(shelves.length)document.getElementById('f-shelf').value=shelves[0].id;
@@ -1778,7 +1824,7 @@ function editCurrentItem(){
   document.getElementById('f-name').value=currentItem.name;document.getElementById('f-cat').value=currentItem.cat;
   document.getElementById('f-ref').value=currentItem.ref||'';document.getElementById('f-brand').value=currentItem.brand||'';
   document.getElementById('f-machine').value=currentItem.machine||'';document.getElementById('f-notes').value=currentItem.notes||'';
-  document.getElementById('f-stock').value=currentItem.stock;document.getElementById('f-min').value=currentItem.min;
+  document.getElementById('f-stock').value=currentItem.stock;document.getElementById('f-min').value=currentItem.min;document.getElementById('f-precio').value=(currentItem.precio!=null?currentItem.precio:'');document.getElementById('f-precio-group').style.display=adminUnlocked?'':'none';
   const sp=splitLoc(currentItem.loc);document.getElementById('f-shelf').value=sp.shelfId;updateBaldaOptions();document.getElementById('f-balda').value=sp.balda;updatePosOptions();{const _ps=document.getElementById('f-pos');if(_ps)_ps.value=currentItem.pos||'';}
   selectedExtraCats=new Set(currentItem.cats||[]);renderCatChips();
   document.getElementById('newcat-zone').style.display='none';renderPhotoZone();resetAiFillStatus();closeModal('modal-detail');openModal('modal-form');
@@ -1930,7 +1976,8 @@ async function saveItem(){
   const minRaw=document.getElementById('f-min').value.trim();
   const minVal = minRaw==='' ? 2 : (parseInt(minRaw)||0);
   const pos=getFormPos();
-  const item={id:editingId||('I'+Date.now()+Math.floor(Math.random()*1000)),name,cat,cats:extraCats,loc:shelf+'-'+balda,pos:pos,stock:parseInt(document.getElementById('f-stock').value)||0,min:minVal,ref:document.getElementById('f-ref').value.trim(),brand:document.getElementById('f-brand').value.trim(),machine:document.getElementById('f-machine').value.trim(),notes:document.getElementById('f-notes').value.trim(),photo:pendingPhoto};
+  let _precio;const _pg=document.getElementById('f-precio-group');if(_pg&&_pg.style.display==='none'){const _prev=editingId?items.find(x=>x.id===editingId):null;_precio=_prev&&_prev.precio!=null?_prev.precio:null;}else{const _precioRaw=document.getElementById('f-precio').value.trim();_precio=_precioRaw===''?null:(parseFloat(_precioRaw.replace(',','.'))||0);}
+  const item={id:editingId||('I'+Date.now()+Math.floor(Math.random()*1000)),name,cat,cats:extraCats,loc:shelf+'-'+balda,pos:pos,precio:_precio,stock:parseInt(document.getElementById('f-stock').value)||0,min:minVal,ref:document.getElementById('f-ref').value.trim(),brand:document.getElementById('f-brand').value.trim(),machine:document.getElementById('f-machine').value.trim(),notes:document.getElementById('f-notes').value.trim(),photo:pendingPhoto};
   // ¿Es un artículo ya impreso cuya etiqueta ha cambiado?
   // La etiqueta muestra nombre, referencia y ubicación: si alguno cambia, conviene reimprimir.
   let etiquetaCambiada=false;
@@ -2556,7 +2603,7 @@ let labelSize='big';       // 'big' = 70x37 (24/hoja) · 'small' = 48,5x25,4 (40
 let labelScale=100;        // % de tamaño del contenido para 70x37 (centrado en la pegatina)
 const LABEL_SIZES={
   big:{total:24,cols:3,qr:120,ecl:'M',cells:'cols-3'},
-  small:{total:40,cols:4,qr:96,ecl:'L',cells:'cols-4'}
+  small:{total:44,cols:4,qr:96,ecl:'L',cells:'cols-4'}
 };
 
 // Ajusta el % de tamaño del contenido y lo recuerda
@@ -2591,7 +2638,7 @@ function setLabelSize(s){
   document.getElementById('start-desc').textContent =
     s==='big'
       ? 'Etiquetas de 70 × 37 mm (24 por hoja A4: 3 columnas × 8 filas). Si la hoja ya tiene pegatinas usadas, elige la primera posición libre.'
-      : 'Etiquetas de 48,5 × 25,4 mm (40 por hoja A4: 4 columnas × 10 filas). Si la hoja ya tiene pegatinas usadas, elige la primera posición libre.';
+      : 'Etiquetas de 48,5 × 25,4 mm (44 por hoja A4: 4 columnas × 11 filas). Si la hoja ya tiene pegatinas usadas, elige la primera posición libre.';
   renderStartGrid();
 }
 
@@ -3014,10 +3061,12 @@ async function doExportExcel(scope){
       {key:'brand', width:16},
       {key:'maq',   width:22},
       {key:'notas', width:28},
+      {key:'precio',width:13},
+      {key:'valor', width:13},
     ];
 
     // Cabecera
-    const headerRow = ws.addRow(['Foto','Nombre','Categoría','Ubicación','Stock','Mín.','Referencia','Marca','Equipo / Máquina','Notas']);
+    const headerRow = ws.addRow(['Foto','Nombre','Categoría','Ubicación','Stock','Mín.','Referencia','Marca','Equipo / Máquina','Notas','Precio/ud (€)','Valor (€)']);
     headerRow.height = 22;
     headerRow.eachCell(cell=>{
       cell.font = {bold:true, color:{argb:'FFFFFFFF'}, size:11};
@@ -3043,6 +3092,8 @@ async function doExportExcel(scope){
         i.brand || '',
         i.machine || '',
         i.notes || '',
+        (i.precio!=null? Number(i.precio) : ''),
+        (i.precio!=null? Number((Number(i.precio)*(i.stock||0)).toFixed(2)) : ''),
       ]);
       row.height = ROW_H;
 
@@ -3088,7 +3139,7 @@ async function doExportExcel(scope){
     ws.views = [{state:'frozen', ySplit:1}];
 
     // Autofiltro en TODAS las filas (cabecera + datos) para poder filtrar por categoría, marca, etc.
-    ws.autoFilter = 'A1:J' + (all.length + 1);
+    ws.autoFilter = 'A1:L' + (all.length + 1);
 
     // Generar y descargar
     const buf = await wb.xlsx.writeBuffer();
@@ -3194,8 +3245,8 @@ async function doExportMovimientos(){
     const itemMap={};allItems.forEach(i=>itemMap[i.id]=i);
     const wb=new ExcelJS.Workbook();wb.creator=WH?WH.name:'Almacén';wb.created=new Date();
     const ws=wb.addWorksheet('Movimientos');
-    ws.columns=[{key:'foto',width:21},{key:'fecha',width:13},{key:'turno',width:24},{key:'hora',width:9},{key:'tipo',width:10},{key:'nombre',width:32},{key:'cat',width:18},{key:'loc',width:12},{key:'anterior',width:10},{key:'diferencia',width:10},{key:'nuevo',width:10},{key:'ref',width:16},{key:'brand',width:16},{key:'maq',width:22}];
-    const hRow=ws.addRow(['Foto','Fecha','Turno','Hora','Tipo','Nombre','Categoría','Ubicación','Antes','Diferencia','Después','Referencia','Marca','Equipo/Máquina']);
+    ws.columns=[{key:'foto',width:21},{key:'fecha',width:13},{key:'turno',width:24},{key:'hora',width:9},{key:'tipo',width:11},{key:'nombre',width:32},{key:'cat',width:18},{key:'loc',width:12},{key:'anterior',width:10},{key:'diferencia',width:10},{key:'nuevo',width:10},{key:'coste',width:12},{key:'ref',width:16},{key:'brand',width:16},{key:'maq',width:22}];
+    const hRow=ws.addRow(['Foto','Fecha','Turno','Hora','Tipo','Nombre','Categoría','Ubicación','Antes','Diferencia','Después','Coste (€)','Referencia','Marca','Equipo/Máquina']);
     hRow.height=22;
     hRow.eachCell(cell=>{cell.font={bold:true,color:{argb:'FFFFFFFF'},size:11};cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF1A1916'}};cell.alignment={vertical:'middle',horizontal:'center',wrapText:true};cell.border={bottom:{style:'thin',color:{argb:'FF444444'}}}; });
     const sorted=[...movs].sort((a,b)=>b.ts-a.ts);
@@ -3203,17 +3254,19 @@ async function doExportMovimientos(){
     for(let idx=0;idx<sorted.length;idx++){
       const m=sorted[idx];const rowNum=idx+2;
       const diff=m.diferencia;const esEntrada=diff>0;
-      const row=ws.addRow(['',(m.fecha||''),(m.turno||''),(m.hora||''),(m.tipo||''),(m.nombre||''),(m.cat||''),(m.loc||''),(m.anterior??''),(diff>0?'+':'')+diff,(m.nuevo??''),(m.ref||''),(m.brand||''),(m.machine||m.maq||'')]);
+      const row=ws.addRow(['',(m.fecha||''),(m.turno||''),(m.hora||''),(m.tipo||''),(m.nombre||''),(m.cat||''),(m.loc||''),(m.anterior??''),(diff>0?'+':'')+diff,(m.nuevo??''),(m.coste!=null?Number(m.coste):''),(m.ref||''),(m.brand||''),(m.machine||m.maq||'')]);
       row.height=ROW_H;
       const bg=idx%2===0?'FFFFFFFF':'FFF5F4F0';
       row.eachCell({includeEmpty:true},(cell,colNum)=>{cell.alignment={vertical:'middle',horizontal:colNum===6?'left':'center',wrapText:true};cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:bg}};cell.font={size:11};cell.border={bottom:{style:'hair',color:{argb:'FFDDDDDD'}}};});
       row.getCell(10).font={size:11,bold:true,color:{argb:esEntrada?'FF217346':'FFC00000'}};
-      row.getCell(5).font={size:11,bold:true,color:{argb:esEntrada?'FF217346':'FFC00000'}};
+      const esCompra=(m.tipo==='Compra');
+      row.getCell(5).font={size:11,bold:true,color:{argb:esCompra?'FF8A5A00':(esEntrada?'FF217346':'FFC00000')}};
+      if(esCompra){row.getCell(5).fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFFFF3C4'}};row.getCell(12).font={size:11,bold:true,color:{argb:'FF8A5A00'}};}
       const itemActual=itemMap[m.itemId];const foto=itemActual?.photo||m.photo||null;
       if(foto){try{const parts=foto.split(',');const mimeMatch=parts[0].match(/image\/(jpeg|jpg|png|gif|webp)/i);const ext=mimeMatch?(mimeMatch[1]==='jpg'?'jpeg':mimeMatch[1]):'jpeg';const b64=parts[1];const imgId=wb.addImage({base64:b64,extension:ext});const dims=await imgDims(foto);const BOX=100;let pw=BOX,ph=BOX;if(dims&&dims.w&&dims.h){const r=Math.min(BOX/dims.w,BOX/dims.h);pw=Math.round(dims.w*r);ph=Math.round(dims.h*r);}ws.addImage(imgId,{tl:{col:0.08,row:(rowNum-1)+0.06},ext:{width:pw,height:ph},editAs:'oneCell'});}catch(e){console.warn('Imagen no incrustada',e);}}
     }
     ws.views=[{state:'frozen',ySplit:1}];
-    ws.autoFilter='A1:N'+(sorted.length+1);
+    ws.autoFilter='A1:O'+(sorted.length+1);
     const buf=await wb.xlsx.writeBuffer();
     const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
     const a=document.createElement('a');a.href=URL.createObjectURL(blob);const sufF=movRangeMode==='range'?(document.getElementById('mov-from').value+'_a_'+document.getElementById('mov-to').value):new Date().toISOString().slice(0,10);a.download='movimientos_'+(WH?WH.key+'_':'')+sufF+'.xlsx';a.click();
@@ -3647,7 +3700,7 @@ function svRow(i){
     ? '<img src="'+i.photo+'">'
     : '<svg width="20" height="20" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>';
   const pl = posLabel(i);
-  const sub = esc(i.cat||'')+' · '+esc(i.loc||'')+(pl?' · '+esc(pl):'');
+  const sub = esc(i.cat||'')+' · '+esc(i.loc||'')+(pl?' · '+esc(pl):'')+((adminUnlocked&&i.precio!=null)?' · 💶 '+fmtEur(i.precio)+'/u':'');
   return '<div class="sv2-row" onclick="openDetail(\''+i.id+'\')"><div class="sv2-row-img">'+img+'</div><div class="sv2-row-tx"><strong class="sv2-row-nm">'+esc(i.name)+'</strong><span class="sv2-row-sub">'+sub+'</span></div>'+stockBadge(i)+'</div>';
 }
 
