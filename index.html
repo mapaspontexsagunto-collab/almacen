@@ -508,6 +508,8 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
   <div class="page active" id="page-inicio">
     <div class="page-title">Inicio</div>
     <div class="page-sub">Resumen del almacén</div>
+    <div id="home-sync-warn" style="display:none;background:var(--orange-bg,#fff3e0);color:var(--orange-text,#b06000);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:12px;">⚠️ No se ha podido conectar con la nube. Lo que ves puede no incluir movimientos hechos desde otros dispositivos.</div>
+    <button class="btn btn-block" style="margin-bottom:12px;" onclick="syncAndRenderHome()">🔄 Sincronizar ahora</button>
     <div class="stats">
       <div class="stat"><div class="l">Referencias</div><div class="v" id="s-total">0</div></div>
       <div class="stat"><div class="l">Ubicaciones usadas</div><div class="v" id="s-locs">0</div></div>
@@ -682,6 +684,8 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
       <div><div class="page-title">Costes</div><div class="page-sub">Valor del almacén y gasto mensual</div></div>
       <button class="btn btn-sm" onclick="showPage('ajustes')">← Volver</button>
     </div>
+    <div id="cos-sync-warn" style="display:none;background:var(--orange-bg,#fff3e0);color:var(--orange-text,#b06000);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:12px;">⚠️ No se ha podido conectar con la nube. Lo que ves puede no incluir movimientos hechos desde otros dispositivos.</div>
+    <button class="btn btn-block" style="margin-bottom:12px;" onclick="syncAndRenderCostes()">🔄 Sincronizar ahora</button>
     <div class="search-bar">
       <select class="lf-sel" id="cos-month" onchange="renderCostes()" style="flex:1;"></select>
       <select class="lf-sel" id="cos-year" onchange="renderCostes()"></select>
@@ -1413,6 +1417,12 @@ async function init(){
   renderHomeMovements();
   // Sincronizar desde la nube
   await syncFromCloud();
+  // Tras sincronizar, refrescamos lo que esté visible para que aparezcan
+  // los movimientos/datos metidos desde otros dispositivos (PC, otro móvil, etc.)
+  renderAll();
+  const wHome=document.getElementById('home-sync-warn'); if(wHome)wHome.style.display=(sb&&cloudOK)?'none':'';
+  if(document.getElementById('page-inicio')?.classList.contains('active'))renderHomeMovements();
+  if(document.getElementById('page-costes')?.classList.contains('active'))renderCostes();
 }
 
 // Trae todo desde Supabase. Estrategia rápida y fiable:
@@ -1491,6 +1501,10 @@ async function manualSync(){
   if(!sb){toast('Sin conexión a la nube');return;}
   toast('⏳ Descargando...');
   await syncFromCloud(true); // refresca también las fotos en segundo plano
+  const wHome=document.getElementById('home-sync-warn'); if(wHome)wHome.style.display=(sb&&cloudOK)?'none':'';
+  const wCos=document.getElementById('cos-sync-warn'); if(wCos)wCos.style.display=(sb&&cloudOK)?'none':'';
+  if(document.getElementById('page-inicio')?.classList.contains('active'))renderHomeMovements();
+  if(document.getElementById('page-costes')?.classList.contains('active'))renderCostes();
   toast(cloudOK?'✓ Datos actualizados (las fotos siguen cargando)':'No se pudo conectar');
 }
 
@@ -1558,7 +1572,7 @@ async function showPage(id){
   document.querySelectorAll('.navbtn').forEach(n=>n.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
   const nav=document.getElementById('nav-'+id);if(nav)nav.classList.add('active');
-  if(id==='inicio'){updateStats();renderHomeMovements();}
+  if(id==='inicio'){updateStats();renderHomeMovements();const w=document.getElementById('home-sync-warn');if(w)w.style.display=(sb&&cloudOK)?'none':'';}
   if(id==='buscar'){
     if(!cameFromShelf){document.getElementById('search-input').value='';currentCat='';expandedShelf=null;}
     cameFromShelf=false;
@@ -1567,7 +1581,7 @@ async function showPage(id){
   if(id==='mapa')renderMap();
   if(id==='labels')renderLabels();
   if(id==='ajustes'){renderCatManage();renderShelfSummary();setCloudStatus(cloudOK);}
-  if(id==='costes'){items=await dbGetAll();initCostesSelectors();renderCostes();}
+  if(id==='costes'){items=await dbGetAll();initCostesSelectors();await syncAndRenderCostes();}
   window.scrollTo(0,0);
 }
 
@@ -1618,6 +1632,15 @@ function renderAlerts(){
 let homeMovsCache=[];      // movimientos cargados para inicio
 let pendingMovDel=null;    // {ts,itemId,name} pendiente de borrar
 
+// Fuerza una sincronización con la nube antes de pintar Inicio,
+// así nos asegura ver también lo metido desde otros dispositivos.
+async function syncAndRenderHome(){
+  if(sb){await syncFromCloud();}
+  const w=document.getElementById('home-sync-warn');
+  if(w)w.style.display=(sb&&cloudOK)?'none':'';
+  updateStats();
+  await renderHomeMovements();
+}
 async function renderHomeMovements(){
   const cont1=document.getElementById('home-entradas');
   const cont2=document.getElementById('home-salidas');
@@ -1918,6 +1941,14 @@ function valorAlmacenActual(){
   return items.reduce((s,i)=>s+(i.precio!=null?Number(i.precio)*(i.stock||0):0),0);
 }
 let lastCostesCalc=null;
+// Fuerza una sincronización con la nube antes de calcular/pintar los costes,
+// así nos asegura ver también lo metido desde otros dispositivos.
+async function syncAndRenderCostes(){
+  if(sb){await syncFromCloud();}
+  const warn=document.getElementById('cos-sync-warn');
+  if(warn)warn.style.display=(sb&&cloudOK)?'none':'';
+  await renderCostes();
+}
 async function renderCostes(){
   const {valIn,valOut,valCompras,porCat,movs}=await calcCostesMes();
   lastCostesCalc={valIn,valOut,valCompras,porCat};
