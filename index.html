@@ -690,10 +690,15 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
       <div class="stat"><div class="l">Entradas del mes</div><div class="v" id="cos-in">0,00 €</div></div>
       <div class="stat"><div class="l">Salidas del mes</div><div class="v" id="cos-out">0,00 €</div></div>
       <div class="stat"><div class="l">Compras del mes</div><div class="v" id="cos-compras">0,00 €</div></div>
-      <div class="stat"><div class="l">Valor actual almacén</div><div class="v" id="cos-total">0,00 €</div></div>
+      <div class="stat"><div class="l">Valor actual almacén</div><div class="v" id="cos-total">0,00 €</div><div style="font-size:11px;color:var(--text3);margin-top:4px;" id="cos-total-sub"></div></div>
     </div>
-    <div class="card"><div class="card-h">Detalle por categoría (mes seleccionado)</div>
-      <div id="cos-cats" style="padding:4px 0;"></div>
+    <div class="card">
+      <div class="card-h">Entradas del mes</div>
+      <div id="cos-entradas" class="mov-home-list"></div>
+    </div>
+    <div class="card">
+      <div class="card-h">Salidas del mes</div>
+      <div id="cos-salidas" class="mov-home-list"></div>
     </div>
     <button class="btn btn-block btn-primary" style="margin-top:6px;margin-bottom:14px;" onclick="exportCostesPDF()" id="btn-costes-pdf">
       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke-width="1.7" stroke-linejoin="round"/><path d="M14 2v6h6" stroke-width="1.7" stroke-linejoin="round"/></svg>
@@ -726,13 +731,13 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <h2 id="detail-name"></h2>
     <div class="msub" id="detail-cat"></div>
     <div class="stock-big"><div class="n" id="detail-stock">0</div><div class="u">unidades en stock</div></div>
-    <div style="font-size:12px;color:var(--text2);margin-bottom:6px;">Uso / devolución — <strong>sin coste</strong></div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:6px;">Uso / devolución <strong>— se valora con el precio actual del artículo</strong></div>
     <div class="fr" style="margin-bottom:14px;">
       <button class="btn" style="font-size:18px;padding:16px;" onclick="quickStock(-1)">− Quitar 1</button>
       <button class="btn btn-primary" style="font-size:18px;padding:16px;" onclick="quickStock(1)">+ Añadir 1</button>
     </div>
-    <div class="fg">
-      <label class="fl">Ajustar cantidad concreta (sin coste)</label>
+    <div class="fg" id="adjust-qty-group">
+      <label class="fl">Ajustar cantidad concreta</label>
       <div class="stepper"><button onclick="stepAdjust(-1)">−</button><div class="val" id="adjust-val">0</div><button onclick="stepAdjust(1)">+</button></div>
       <button class="btn btn-block btn-primary" style="margin-top:10px;" onclick="applyAdjust()">Guardar cantidad</button>
     </div>
@@ -1547,7 +1552,7 @@ async function pushToCloud(){
 }
 function renderAll(){updateStats();renderCats();renderItems();renderMap();renderCatManage();renderShelfSummary();}
 
-function showPage(id){
+async function showPage(id){
   if(id!=='buscar' && typeof selectMode!=='undefined' && selectMode){ selectMode=false; selectedIds.clear(); const _b=document.getElementById('btn-select-mode'); if(_b){_b.textContent='Seleccionar varios';_b.classList.remove('btn-primary');} updateSelBar(); }
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.navbtn').forEach(n=>n.classList.remove('active'));
@@ -1562,7 +1567,7 @@ function showPage(id){
   if(id==='mapa')renderMap();
   if(id==='labels')renderLabels();
   if(id==='ajustes'){renderCatManage();renderShelfSummary();setCloudStatus(cloudOK);}
-  if(id==='costes'){initCostesSelectors();renderCostes();}
+  if(id==='costes'){items=await dbGetAll();initCostesSelectors();renderCostes();}
   window.scrollTo(0,0);
 }
 
@@ -1657,8 +1662,8 @@ function askDeleteMov(ts,itemId){
     pendingMovDel={ts,itemId};
     document.getElementById('confirm-title').textContent='Borrar línea';
     document.getElementById('confirm-msg').textContent = m
-      ? `Vas a borrar la línea de "${m.nombre}" (${m.fecha} ${m.hora}, ${m.diferencia>0?'+':''}${m.diferencia}). ¿Continuar?`
-      : '¿Borrar esta línea de movimiento?';
+      ? `Vas a borrar la línea de "${m.nombre}" (${m.fecha} ${m.hora}, ${m.diferencia>0?'+':''}${m.diferencia}). Solo se borra el registro del movimiento; el stock actual del artículo no se modifica. ¿Continuar?`
+      : '¿Borrar esta línea de movimiento? Solo se borra el registro; el stock actual no se modifica.';
     document.getElementById('confirm-ok').onclick=()=>{closeModal('modal-confirm');confirmDeleteMov();};
     openModal('modal-confirm');
   });
@@ -1671,7 +1676,12 @@ async function confirmDeleteMov(){
   await cloudMovDelete(ts,itemId);
   await movDeleteLocal(ts,itemId);
   pendingMovDel=null;
-  await renderHomeMovements();
+  // Refrescar la lista visible: la de Inicio o la de Costes, según dónde estemos
+  if(document.getElementById('page-costes')?.classList.contains('active')){
+    await renderCostes();
+  }else{
+    await renderHomeMovements();
+  }
   toast('Línea borrada');
 }
 
@@ -1828,6 +1838,7 @@ function openDetail(id){
   document.getElementById('detail-cat').innerHTML=`<span class="badge badge-cat">${esc(i.cat)}</span>${(i.cats||[]).map(c=>`<span class="badge badge-cat2">${esc(c)}</span>`).join('')}`;
   document.getElementById('detail-stock').textContent=i.stock;
   adjustValue=i.stock;document.getElementById('adjust-val').textContent=adjustValue;
+  const _aqg=document.getElementById('adjust-qty-group'); if(_aqg)_aqg.style.display=adminUnlocked?'':'none';
   let info='';
   // Ubicación destacada al principio
   const _pl=posLabel(i);
@@ -1908,19 +1919,20 @@ function valorAlmacenActual(){
 }
 let lastCostesCalc=null;
 async function renderCostes(){
-  const {valIn,valOut,valCompras,porCat}=await calcCostesMes();
+  const {valIn,valOut,valCompras,porCat,movs}=await calcCostesMes();
   lastCostesCalc={valIn,valOut,valCompras,porCat};
   document.getElementById('cos-in').textContent=fmtEur(valIn);
   document.getElementById('cos-out').textContent=fmtEur(valOut);
   document.getElementById('cos-compras').textContent=fmtEur(valCompras);
   document.getElementById('cos-total').textContent=fmtEur(valorAlmacenActual());
-  const cont=document.getElementById('cos-cats');
-  const cats=Object.keys(porCat).sort();
-  if(!cats.length){cont.innerHTML='<div class="mov-empty">Sin movimientos con coste en este mes</div>';return;}
-  cont.innerHTML=cats.map(c=>{
-    const d=porCat[c];
-    return '<div class="detail-row"><span class="k">'+esc(c)+'</span><span class="v">+'+fmtEur(d.in)+' / −'+fmtEur(d.out)+'</span></div>';
-  }).join('');
+  const _conPrecio=items.filter(i=>i.precio!=null).length;
+  document.getElementById('cos-total-sub').textContent=_conPrecio+' de '+items.length+' artículos con precio asignado';
+  // Reutilizamos la misma caché y la misma función de pintado que en Inicio,
+  // así el botón de borrar línea funciona igual aquí y revierte el stock.
+  homeMovsCache=movs;
+  const sorted=[...movs].sort((a,b)=>b.ts-a.ts);
+  document.getElementById('cos-entradas').innerHTML=renderMovRows(sorted.filter(m=>m.diferencia>0),'in');
+  document.getElementById('cos-salidas').innerHTML=renderMovRows(sorted.filter(m=>m.diferencia<0),'out');
 }
 // Exporta el informe de costes del mes seleccionado en PDF (jsPDF, se genera en el propio dispositivo)
 async function exportCostesPDF(){
@@ -1979,15 +1991,28 @@ async function exportCostesPDF(){
       doc.setFont('helvetica','normal');doc.setFontSize(10);
       rows.forEach(r=>{ y2+=18; doc.text(r[0]+' — In: '+r[1]+' / Out: '+r[2]+' / Compras: '+r[3],40,y2); });
     }
+    // Listado de movimientos del mes (igual que se ve en pantalla)
+    const movRows=[...homeMovsCache].sort((a,b)=>b.ts-a.ts).map(mv=>[
+      mv.fecha||'', mv.nombre||'', mv.tipo||'', (mv.diferencia>0?'+':'')+mv.diferencia, mv.coste!=null?fmtEur(Number(mv.coste)):'—'
+    ]);
+    if(doc.autoTable){
+      doc.autoTable({
+        margin:{left:40,right:40},
+        head:[['Fecha','Artículo','Tipo','Cant.','Coste']],
+        body:movRows.length?movRows:[['Sin movimientos este mes','','','','']],
+        styles:{fontSize:9,cellPadding:5},
+        headStyles:{fillColor:[26,25,22],textColor:255}
+      });
+    }
     doc.save('costes_'+(WH?WH.key:'almacen')+'_'+y+'-'+String(m+1).padStart(2,'0')+'.pdf');
   }catch(e){
     console.error(e);toast('Error generando el PDF');
   }
   if(btn){btn.disabled=false;btn.style.opacity='1';}
 }
-async function quickStock(d){if(!currentItem)return;const anterior=currentItem.stock;currentItem.stock=Math.max(0,anterior+d);await registrarMovimiento(currentItem,anterior,currentItem.stock,d>0?'Entrada':'Salida');await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;adjustValue=currentItem.stock;document.getElementById('adjust-val').textContent=adjustValue;renderAll();toast(d>0?'+1 unidad':'−1 unidad');}
+async function quickStock(d){if(!currentItem)return;const anterior=currentItem.stock;currentItem.stock=Math.max(0,anterior+d);const _diff=currentItem.stock-anterior;const _coste=(currentItem.precio!=null&&_diff!==0)?+(Math.abs(_diff)*currentItem.precio).toFixed(2):null;await registrarMovimiento(currentItem,anterior,currentItem.stock,d>0?'Entrada':'Salida',_coste);await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;adjustValue=currentItem.stock;document.getElementById('adjust-val').textContent=adjustValue;renderAll();toast(d>0?'+1 unidad':'−1 unidad');}
 function stepAdjust(d){adjustValue=Math.max(0,adjustValue+d);document.getElementById('adjust-val').textContent=adjustValue;}
-async function applyAdjust(){if(!currentItem)return;const anterior=currentItem.stock;const nuevo=adjustValue;if(anterior===nuevo){toast('Sin cambios');return;}const tipo=nuevo>anterior?'Entrada':'Salida';currentItem.stock=nuevo;await registrarMovimiento(currentItem,anterior,nuevo,tipo);await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;renderAll();toast('Stock actualizado: '+nuevo);}
+async function applyAdjust(){if(!currentItem)return;const anterior=currentItem.stock;const nuevo=adjustValue;if(anterior===nuevo){toast('Sin cambios');return;}const tipo=nuevo>anterior?'Entrada':'Salida';const _coste=(currentItem.precio!=null)?+(Math.abs(nuevo-anterior)*currentItem.precio).toFixed(2):null;currentItem.stock=nuevo;await registrarMovimiento(currentItem,anterior,nuevo,tipo,_coste);await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;renderAll();toast('Stock actualizado: '+nuevo);}
 function fmtEur(n){return (Number(n)||0).toFixed(2).replace('.',',')+' €';}
 function openPurchase(){
   if(!currentItem)return;
