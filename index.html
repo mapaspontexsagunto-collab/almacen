@@ -9,6 +9,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -187,6 +189,14 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .detail-row{display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--border);font-size:14px;}
 .detail-row .k{color:var(--text2);}
 .detail-row .v{font-weight:600;text-align:right;}
+.price-hist{background:var(--surface2);border-radius:12px;padding:14px 16px;margin-top:6px;margin-bottom:8px;}
+.price-hist-h{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text2);margin-bottom:10px;}
+.price-hist-avg{display:flex;justify-content:space-between;font-size:14px;padding-bottom:10px;margin-bottom:10px;border-bottom:1px solid var(--border2);}
+.price-hist-avg .v{font-weight:700;font-family:'DM Mono',monospace;}
+.price-hist-row{display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px;padding:5px 0;color:var(--text2);}
+.price-hist-row .ph-price{font-weight:700;color:var(--text);font-family:'DM Mono',monospace;}
+.price-hist-row .ph-meta{text-align:right;}
+.price-hist-empty{font-size:12.5px;color:var(--text3);}
 .stepper{display:flex;align-items:center;border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;}
 .stepper button{width:52px;height:52px;border:none;background:var(--surface2);font-size:24px;cursor:pointer;color:var(--text);}
 .stepper button:active{background:var(--border);}
@@ -588,6 +598,15 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
         </button>
       </div>
     </div>
+    <div class="card"><div class="card-h">Costes y valorización</div>
+      <div style="padding:16px;">
+        <p style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.5;">Consulta el valor del almacén y el gasto mensual en entradas y salidas de material, y exporta un informe en PDF.</p>
+        <button class="btn btn-block btn-primary" onclick="goCostes()">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" stroke-width="1.8" stroke-linecap="round"/></svg>
+          Ver costes del almacén
+        </button>
+      </div>
+    </div>
     <div class="card"><div class="card-h">Etiquetas QR</div>
       <div style="padding:16px;">
         <p style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.5;">Imprime etiquetas adhesivas con el QR, nombre, referencia y ubicación de cada material, en hojas A4 de pegatinas.</p>
@@ -658,6 +677,30 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     </div>
   </div>
 
+  <div class="page" id="page-costes">
+    <div class="page-head-row">
+      <div><div class="page-title">Costes</div><div class="page-sub">Valor del almacén y gasto mensual</div></div>
+      <button class="btn btn-sm" onclick="showPage('ajustes')">← Volver</button>
+    </div>
+    <div class="search-bar">
+      <select class="lf-sel" id="cos-month" onchange="renderCostes()" style="flex:1;"></select>
+      <select class="lf-sel" id="cos-year" onchange="renderCostes()"></select>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="l">Entradas del mes</div><div class="v" id="cos-in">0,00 €</div></div>
+      <div class="stat"><div class="l">Salidas del mes</div><div class="v" id="cos-out">0,00 €</div></div>
+      <div class="stat"><div class="l">Compras del mes</div><div class="v" id="cos-compras">0,00 €</div></div>
+      <div class="stat"><div class="l">Valor actual almacén</div><div class="v" id="cos-total">0,00 €</div></div>
+    </div>
+    <div class="card"><div class="card-h">Detalle por categoría (mes seleccionado)</div>
+      <div id="cos-cats" style="padding:4px 0;"></div>
+    </div>
+    <button class="btn btn-block btn-primary" style="margin-top:6px;margin-bottom:14px;" onclick="exportCostesPDF()" id="btn-costes-pdf">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke-width="1.7" stroke-linejoin="round"/><path d="M14 2v6h6" stroke-width="1.7" stroke-linejoin="round"/></svg>
+      Exportar informe en PDF
+    </button>
+  </div>
+
   <div class="bottomnav">
     <button class="navbtn active" id="nav-inicio" onclick="showPage('inicio')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Inicio</span></button>
     <button class="navbtn" id="nav-buscar" onclick="showPage('buscar')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" stroke-width="1.8"/><path d="m20 20-3-3" stroke-width="1.8" stroke-linecap="round"/></svg><span>Buscar</span></button>
@@ -695,6 +738,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     </div>
     <button class="btn btn-block" style="margin-top:12px;" onclick="openPurchase()">📦 Entrada de compra (con coste)</button>
     <div id="detail-info"></div>
+    <div id="price-history-box"></div>
     <div class="fr" style="margin-top:16px;">
       <button class="btn" onclick="showQR()">Ver QR</button>
       <button class="btn" onclick="editCurrentItem()">Editar</button>
@@ -1104,7 +1148,9 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div class="msub" id="pur-name"></div>
     <div class="fg"><label class="fl">Unidades que entran</label><input type="number" class="fi" id="pur-qty" min="1" value="1"></div>
     <div class="fg"><label class="fl">Precio por unidad (€)</label><input type="number" step="0.01" min="0" class="fi" id="pur-price" placeholder="0,00"></div>
-    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.4;">Se suma al stock y se guarda como precio por unidad del artículo. Queda registrado como movimiento de tipo «Compra».</div>
+    <div class="fg"><label class="fl">Proveedor <span style="font-weight:400;color:var(--text3);">— opcional</span></label><input type="text" class="fi" id="pur-provider" list="provider-list" placeholder="Nombre del proveedor" autocomplete="off"></div>
+    <datalist id="provider-list"></datalist>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.4;">Se suma al stock y se guarda como precio por unidad del artículo. Queda registrado como movimiento de tipo «Compra» y en el histórico de precios.</div>
     <div class="fr"><button class="btn" onclick="closeModal('modal-purchase')">Cancelar</button><button class="btn btn-primary" onclick="applyPurchase()">Registrar entrada</button></div>
   </div>
 </div>
@@ -1137,7 +1183,7 @@ function movDeleteLocal(ts,itemId){return new Promise(res=>{
   g.onerror=()=>res();
 });}
 function getTurno(date){const h=date.getHours();if(h>=6&&h<14)return'Mañana (06:00–14:00)';if(h>=14&&h<22)return'Tarde (14:00–22:00)';return'Noche (22:00–06:00)';}
-async function registrarMovimiento(item, anterior, nuevo, tipo, coste){
+async function registrarMovimiento(item, anterior, nuevo, tipo, coste, provider){
   const now=new Date();
   const diff=nuevo-anterior;
   const mov={
@@ -1151,6 +1197,7 @@ async function registrarMovimiento(item, anterior, nuevo, tipo, coste){
     synced:false
   };
   if(coste!=null)mov.coste=coste;
+  if(provider)mov.provider=provider;
   const localId=await movPut(mov); // guarda local y devuelve su id
   const ok=await cloudMovPut(mov); // intenta subir a la nube
   if(ok){mov.id=localId;mov.synced=true;await movUpdate(mov);} // marcar como sincronizado
@@ -1285,6 +1332,28 @@ async function cloudMovDelete(ts,itemId){
   try{const{error}=await sb.from(WH.tblMov).delete().eq('ts',ts).eq('itemId',itemId);if(error)throw error;}
   catch(e){console.warn('cloudMovDelete error',e);}
 }
+// Histórico de precios (tabla aparte: price_history / price_history_mec)
+async function cloudPriceAdd(entry){
+  if(!sb||!WH?.tblPrice)return false;
+  try{const{error}=await sb.from(WH.tblPrice).insert(entry);if(error)throw error;return true;}
+  catch(e){console.warn('cloudPriceAdd error',e);return false;}
+}
+async function cloudPriceGetForItem(itemId,limit){
+  if(!sb||!WH?.tblPrice)return[];
+  try{
+    const{data,error}=await sb.from(WH.tblPrice).select('*').eq('item_id',itemId).order('ts',{ascending:false}).limit(limit||3);
+    if(error)throw error;return data||[];
+  }catch(e){console.warn('cloudPriceGetForItem error',e);return[];}
+}
+async function cloudPriceGetAll(desdeTs,hastaTs){
+  if(!sb||!WH?.tblPrice)return[];
+  try{
+    let q=sb.from(WH.tblPrice).select('*').order('ts',{ascending:false});
+    if(desdeTs!=null)q=q.gte('ts',desdeTs);
+    if(hastaTs!=null)q=q.lte('ts',hastaTs);
+    const{data,error}=await q;if(error)throw error;return data||[];
+  }catch(e){console.warn('cloudPriceGetAll error',e);return[];}
+}
 function setCloudStatus(ok){
   cloudOK=ok;
   const el=document.getElementById('cloud-status');
@@ -1302,17 +1371,30 @@ function updateSyncBadge(state){
   t.textContent = state==='ok'?'Sincronizado' : state==='syncing'?'Sincronizando…' : 'Sin conexión';
 }
 
-let items=[],categories=[],shelves=[],currentView='gallery',currentCat='',currentItem=null,pendingPhoto=null,adjustValue=0,editingId=null,scanner=null,shelfDraft=[],scanPurpose=null;
+let items=[],categories=[],providers=[],shelves=[],currentView='gallery',currentCat='',currentItem=null,pendingPhoto=null,adjustValue=0,editingId=null,scanner=null,shelfDraft=[],scanPurpose=null;
 let lastAIIdent=null; // última identificación cruda de la IA (para buscar en internet)
 
 // shelves model: [{id:'01', name:'Estantería 01', baldas:5}, ...]
 function defaultShelves(){const a=[];for(let i=1;i<=26;i++){const n=String(i).padStart(2,'0');a.push({id:n,name:'Estantería '+n,baldas:5});}return a;}
+// Registra un proveedor nuevo (si no existía) para que aparezca en el autocompletado
+async function addProvider(name){
+  const n=(name||'').trim();
+  if(!n||providers.includes(n))return;
+  providers.push(n);
+  await cfgPut('providers',providers);
+  await cloudCfgPut('providers',providers);
+}
+function renderProviderList(){
+  const dl=document.getElementById('provider-list');
+  if(dl)dl.innerHTML=providers.map(p=>'<option value="'+esc(p)+'">').join('');
+}
 
 async function init(){
   await openDB();
   initSupabase();
   // Cargar primero lo local (rápido), luego intentar la nube
   categories=await cfgGet('categories')||[];
+  providers=await cfgGet('providers')||[];
   shelves=await cfgGet('shelves');
   aisles=await cfgGet('aisles')||[];
   mapSize=await cfgGet('mapSize')||{...DEFAULT_MAP_SIZE};
@@ -1358,6 +1440,7 @@ async function syncFromCloud(refrescarTodasFotos=false){
 
   // Config desde la nube
   const cCats=await cloudCfgGet('categories');
+  const cProviders=await cloudCfgGet('providers');
   const cShelves=await cloudCfgGet('shelves');
   const cAisles=await cloudCfgGet('aisles');
   const cMapSize=await cloudCfgGet('mapSize');
@@ -1366,6 +1449,7 @@ async function syncFromCloud(refrescarTodasFotos=false){
   const cModified=await cloudCfgGet('modifiedIds');
   if(cModified){modifiedIds=new Set(cModified);await cfgPut('modifiedIds',cModified);}
   if(cCats){categories=cCats;await cfgPut('categories',categories);}
+  if(cProviders){providers=cProviders;await cfgPut('providers',providers);}
   if(cShelves&&cShelves.length){shelves=cShelves;await cfgPut('shelves',shelves);}
   else{await cloudCfgPut('shelves',shelves);}
   if(cAisles){aisles=cAisles;await cfgPut('aisles',aisles);}
@@ -1478,6 +1562,7 @@ function showPage(id){
   if(id==='mapa')renderMap();
   if(id==='labels')renderLabels();
   if(id==='ajustes'){renderCatManage();renderShelfSummary();setCloudStatus(cloudOK);}
+  if(id==='costes'){initCostesSelectors();renderCostes();}
   window.scrollTo(0,0);
 }
 
@@ -1754,8 +1839,151 @@ function openDetail(id){
   info+=`<div class="detail-row"><span class="k">Stock mínimo</span><span class="v">${i.min}</span></div>`;
   if(i.notes)info+=`<div class="detail-row"><span class="k">Notas</span><span class="v">${esc(i.notes)}</span></div>`;
   document.getElementById('detail-info').innerHTML=info;
+  document.getElementById('price-history-box').innerHTML='';
+  if(adminUnlocked)renderPriceHistory(i.id);
   const _other=otherWarehouse();const _mb=document.getElementById('btn-move-wh');if(_mb&&_other)_mb.textContent='Mover a '+_other.name;
   openModal('modal-detail');
+}
+async function renderPriceHistory(itemId){
+  const box=document.getElementById('price-history-box');
+  if(!box)return;
+  if(!sb){box.innerHTML='';return;}
+  const hist=await cloudPriceGetForItem(itemId,3);
+  if(!hist.length){box.innerHTML='';return;}
+  const avg=hist.reduce((s,h)=>s+Number(h.price||0),0)/hist.length;
+  let h='<div class="price-hist"><div class="price-hist-h">Histórico de precios</div>';
+  h+='<div class="price-hist-avg"><span class="k">Precio medio (últimas '+hist.length+')</span><span class="v">'+fmtEur(avg)+'</span></div>';
+  h+=hist.map(p=>'<div class="price-hist-row"><span class="ph-price">'+fmtEur(Number(p.price))+'/u</span><span class="ph-meta">'+esc(p.fecha||'')+(p.provider?' · '+esc(p.provider):'')+' · '+(p.qty||0)+' uds.</span></div>').join('');
+  h+='</div>';
+  box.innerHTML=h;
+}
+
+// ===== PÁGINA DE COSTES =====
+const MESES_ES=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+function initCostesSelectors(){
+  const mSel=document.getElementById('cos-month'), ySel=document.getElementById('cos-year');
+  if(!mSel.options.length){
+    mSel.innerHTML=MESES_ES.map((m,idx)=>'<option value="'+idx+'">'+m+'</option>').join('');
+  }
+  if(!ySel.options.length){
+    const now=new Date(); const cy=now.getFullYear();
+    let h=''; for(let y=cy;y>=cy-4;y--)h+='<option value="'+y+'">'+y+'</option>';
+    ySel.innerHTML=h;
+    mSel.value=now.getMonth();
+    ySel.value=cy;
+  }
+}
+// Devuelve {desdeTs,hastaTs} del mes/año seleccionados
+function costesRango(){
+  const m=parseInt(document.getElementById('cos-month').value);
+  const y=parseInt(document.getElementById('cos-year').value);
+  const desde=new Date(y,m,1,0,0,0,0);
+  const hasta=new Date(y,m+1,0,23,59,59,999);
+  return {desdeTs:desde.getTime(), hastaTs:hasta.getTime(), m, y};
+}
+// Calcula entradas/salidas/compras valorizadas del mes, y desglose por categoría
+async function calcCostesMes(){
+  const {desdeTs,hastaTs}=costesRango();
+  await pushPendingMovements();
+  let movs=await getMergedMovements();
+  movs=movs.filter(m=>m.ts>=desdeTs&&m.ts<=hastaTs);
+  let valIn=0, valOut=0, valCompras=0;
+  const porCat={}; // cat -> {in:0,out:0,compras:0}
+  movs.forEach(m=>{
+    const diff=m.diferencia||0;
+    const coste=m.coste!=null?Number(m.coste):null;
+    const cat=m.cat||'Sin categoría';
+    if(!porCat[cat])porCat[cat]={in:0,out:0,compras:0};
+    if(m.tipo==='Compra'){
+      if(coste!=null){valCompras+=coste; valIn+=coste; porCat[cat].compras+=coste; porCat[cat].in+=coste;}
+    }else if(coste!=null){
+      if(diff>0){valIn+=coste; porCat[cat].in+=coste;}
+      else if(diff<0){valOut+=coste; porCat[cat].out+=coste;}
+    }
+  });
+  return {valIn,valOut,valCompras,porCat,movs};
+}
+function valorAlmacenActual(){
+  return items.reduce((s,i)=>s+(i.precio!=null?Number(i.precio)*(i.stock||0):0),0);
+}
+let lastCostesCalc=null;
+async function renderCostes(){
+  const {valIn,valOut,valCompras,porCat}=await calcCostesMes();
+  lastCostesCalc={valIn,valOut,valCompras,porCat};
+  document.getElementById('cos-in').textContent=fmtEur(valIn);
+  document.getElementById('cos-out').textContent=fmtEur(valOut);
+  document.getElementById('cos-compras').textContent=fmtEur(valCompras);
+  document.getElementById('cos-total').textContent=fmtEur(valorAlmacenActual());
+  const cont=document.getElementById('cos-cats');
+  const cats=Object.keys(porCat).sort();
+  if(!cats.length){cont.innerHTML='<div class="mov-empty">Sin movimientos con coste en este mes</div>';return;}
+  cont.innerHTML=cats.map(c=>{
+    const d=porCat[c];
+    return '<div class="detail-row"><span class="k">'+esc(c)+'</span><span class="v">+'+fmtEur(d.in)+' / −'+fmtEur(d.out)+'</span></div>';
+  }).join('');
+}
+// Exporta el informe de costes del mes seleccionado en PDF (jsPDF, se genera en el propio dispositivo)
+async function exportCostesPDF(){
+  if(!lastCostesCalc){await renderCostes();}
+  const {valIn,valOut,valCompras,porCat}=lastCostesCalc;
+  const {m,y}=costesRango();
+  const btn=document.getElementById('btn-costes-pdf');
+  if(btn){btn.disabled=true;btn.style.opacity='0.6';}
+  try{
+    const {jsPDF}=window.jspdf;
+    const doc=new jsPDF({unit:'pt',format:'a4'});
+    const pageW=doc.internal.pageSize.getWidth();
+    let y2=50;
+    doc.setFont('helvetica','bold');doc.setFontSize(18);
+    doc.text((WH?WH.name:'Almacén')+' — Informe de costes',40,y2);
+    y2+=22;
+    doc.setFont('helvetica','normal');doc.setFontSize(11);
+    doc.setTextColor(100);
+    doc.text('Periodo: '+MESES_ES[m]+' '+y,40,y2);
+    doc.setTextColor(0);
+    y2+=30;
+    // Tarjetas resumen
+    const cards=[
+      ['Entradas del mes', fmtEur(valIn)],
+      ['Salidas del mes', fmtEur(valOut)],
+      ['Compras del mes', fmtEur(valCompras)],
+      ['Valor actual del almacén', fmtEur(valorAlmacenActual())]
+    ];
+    const cw=(pageW-80-30)/2;
+    cards.forEach((c,idx)=>{
+      const col=idx%2, row=Math.floor(idx/2);
+      const x=40+col*(cw+30), yy=y2+row*60;
+      doc.setDrawColor(216,213,207); doc.setFillColor(245,244,240);
+      doc.roundedRect(x,yy,cw,50,6,6,'FD');
+      doc.setFontSize(9);doc.setTextColor(107,103,96);
+      doc.text(c[0].toUpperCase(),x+12,yy+18);
+      doc.setFontSize(15);doc.setTextColor(26,25,22);doc.setFont('helvetica','bold');
+      doc.text(c[1],x+12,yy+38);
+      doc.setFont('helvetica','normal');
+    });
+    y2+=2*60+30;
+    // Tabla por categoría
+    doc.setFontSize(13);doc.setFont('helvetica','bold');
+    doc.text('Detalle por categoría',40,y2);
+    y2+=10;
+    const rows=Object.keys(porCat).sort().map(c=>[c, fmtEur(porCat[c].in), fmtEur(porCat[c].out), fmtEur(porCat[c].compras)]);
+    if(doc.autoTable){
+      doc.autoTable({
+        startY:y2+10, margin:{left:40,right:40},
+        head:[['Categoría','Entradas (€)','Salidas (€)','Compras (€)']],
+        body:rows.length?rows:[['Sin movimientos con coste este mes','','','']],
+        styles:{fontSize:10,cellPadding:6},
+        headStyles:{fillColor:[26,25,22],textColor:255}
+      });
+    }else{
+      doc.setFont('helvetica','normal');doc.setFontSize(10);
+      rows.forEach(r=>{ y2+=18; doc.text(r[0]+' — In: '+r[1]+' / Out: '+r[2]+' / Compras: '+r[3],40,y2); });
+    }
+    doc.save('costes_'+(WH?WH.key:'almacen')+'_'+y+'-'+String(m+1).padStart(2,'0')+'.pdf');
+  }catch(e){
+    console.error(e);toast('Error generando el PDF');
+  }
+  if(btn){btn.disabled=false;btn.style.opacity='1';}
 }
 async function quickStock(d){if(!currentItem)return;const anterior=currentItem.stock;currentItem.stock=Math.max(0,anterior+d);await registrarMovimiento(currentItem,anterior,currentItem.stock,d>0?'Entrada':'Salida');await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;adjustValue=currentItem.stock;document.getElementById('adjust-val').textContent=adjustValue;renderAll();toast(d>0?'+1 unidad':'−1 unidad');}
 function stepAdjust(d){adjustValue=Math.max(0,adjustValue+d);document.getElementById('adjust-val').textContent=adjustValue;}
@@ -1767,6 +1995,8 @@ function openPurchase(){
     document.getElementById('pur-name').textContent=currentItem.name;
     document.getElementById('pur-qty').value='1';
     document.getElementById('pur-price').value=(currentItem.precio!=null?currentItem.precio:'');
+    document.getElementById('pur-provider').value='';
+    renderProviderList();
     openModal('modal-purchase');
   });
 }
@@ -1775,17 +2005,26 @@ async function applyPurchase(){
   const qty=parseInt(document.getElementById('pur-qty').value)||0;
   const praw=document.getElementById('pur-price').value.trim();
   const price=praw===''?null:(parseFloat(praw.replace(',','.'))||0);
+  const provider=document.getElementById('pur-provider').value.trim();
   if(qty<1){toast('Indica cuántas unidades entran');return;}
   const anterior=currentItem.stock;
+  const precioAnterior=currentItem.precio!=null?currentItem.precio:null;
   currentItem.stock=anterior+qty;
   if(price!=null)currentItem.precio=price;
   const _coste=price!=null?+(qty*price).toFixed(2):null;
-  await registrarMovimiento(currentItem,anterior,currentItem.stock,'Compra',_coste);
+  await registrarMovimiento(currentItem,anterior,currentItem.stock,'Compra',_coste,provider);
   await dbPut(currentItem);await cloudPut(currentItem);
+  if(price!=null){
+    const now=new Date();
+    const entry={item_id:currentItem.id, price, previous_price:precioAnterior, qty, provider:provider||null, fecha:now.toLocaleDateString('es-ES'), ts:now.getTime()};
+    await cloudPriceAdd(entry);
+  }
+  if(provider)await addProvider(provider);
   closeModal('modal-purchase');
   document.getElementById('detail-stock').textContent=currentItem.stock;
   adjustValue=currentItem.stock;document.getElementById('adjust-val').textContent=adjustValue;
   renderAll();
+  if(document.getElementById('modal-detail').classList.contains('open'))renderPriceHistory(currentItem.id);
   toast('✓ Entrada de compra: +'+qty+(price!=null?(' a '+fmtEur(price)+'/u'):''));
 }
 
@@ -3303,6 +3542,33 @@ function stockBadge(i){if(isOut(i))return'<span class="badge badge-out">Sin stoc
 function esc(s){return(s||'').toString().replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
+// Cerrar el modal abierto con la tecla ESC (PC)
+document.addEventListener('keydown',function(e){
+  if(e.key!=='Escape')return;
+  const open=[...document.querySelectorAll('.modal-bg.open')];
+  if(!open.length)return;
+  const top=open[open.length-1];
+  closeModal(top.id);
+});
+// Cerrar el modal con un deslizamiento de izquierda a derecha (móvil)
+(function(){
+  let sx=0,sy=0,st=0,active=null;
+  document.addEventListener('touchstart',function(e){
+    const bg=e.target.closest('.modal-bg.open');
+    if(!bg)return;
+    active=bg;
+    sx=e.touches[0].clientX;
+    sy=e.touches[0].clientY;
+    st=Date.now();
+  },{passive:true});
+  document.addEventListener('touchend',function(e){
+    if(!active)return;
+    const t=e.changedTouches[0];
+    const dx=t.clientX-sx, dy=t.clientY-sy, dt=Date.now()-st;
+    if(dx>70 && Math.abs(dy)<60 && dt<700)closeModal(active.id);
+    active=null;
+  },{passive:true});
+})();
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}
 // Las ventanas NO se cierran al tocar fuera: solo se cierran con su botón,
 // para que no se cierren por accidente mientras consultas o añades.
@@ -3311,8 +3577,8 @@ function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t
 // ===== ALMACENES (bases de datos separadas) =====
 const AUTH_USER='manteni';
 const WAREHOUSES={
-  electrico:{key:'electrico',name:'Almacén Eléctrico',icon:'⚡',pass:'Electrico',db:'almacen_db',    tblItems:'items',    tblCfg:'config',     tblMov:'movements',     sesKey:'almacen_sesion_electrico'},
-  mecanico: {key:'mecanico', name:'Almacén Mecánico', icon:'🔧',pass:'Mecanico', db:'almacen_mec_db',tblItems:'items_mec',tblCfg:'config_mec', tblMov:'movements_mec', sesKey:'almacen_sesion_mecanico'}
+  electrico:{key:'electrico',name:'Almacén Eléctrico',icon:'⚡',pass:'Electrico',db:'almacen_db',    tblItems:'items',    tblCfg:'config',     tblMov:'movements',     tblPrice:'price_history',     sesKey:'almacen_sesion_electrico'},
+  mecanico: {key:'mecanico', name:'Almacén Mecánico', icon:'🔧',pass:'Mecanico', db:'almacen_mec_db',tblItems:'items_mec',tblCfg:'config_mec', tblMov:'movements_mec', tblPrice:'price_history_mec', sesKey:'almacen_sesion_mecanico'}
 };
 let WH=null;            // almacén activo
 let appStarted=false;
@@ -3405,6 +3671,7 @@ function lockAdmin(){
   showPage('inicio');
 }
 function goAjustes(){ requireAdmin(()=>showPage('ajustes')); }
+function goCostes(){ requireAdmin(()=>showPage('costes')); }
 
 // Cambiar la contraseña única de Ajustes
 function openChangePass(){
