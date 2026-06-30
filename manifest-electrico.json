@@ -1,0 +1,16 @@
+{
+  "name": "Almacén Eléctrico",
+  "short_name": "A. Eléctrico",
+  "description": "Gestión de inventario del almacén eléctrico",
+  "start_url": "./index.html?wh=electrico",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#1a1916",
+  "theme_color": "#1a1916",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
