@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Almacenes — Selección</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{font-family:'DM Sans',sans-serif;background:#f5f4f0;color:#1a1916;min-height:100vh;font-size:16px;}
+  body{display:flex;align-items:center;justify-content:center;padding:24px;}
+  .wrap{width:100%;max-width:420px;}
+  .title{font-size:22px;font-weight:700;text-align:center;margin-bottom:6px;}
+  .sub{font-size:14px;color:#6b6760;text-align:center;margin-bottom:32px;}
+  .opt{display:flex;align-items:center;gap:16px;background:#fff;border:1px solid #d8d5cf;border-radius:16px;padding:20px;margin-bottom:14px;text-decoration:none;color:#1a1916;transition:border-color .15s,transform .1s;}
+  .opt:active{transform:scale(0.98);}
+  .opt:hover{border-color:#1a1916;}
+  .opt .ic{width:52px;height:52px;border-radius:14px;background:#1a1916;color:#f5f4f0;display:flex;align-items:center;justify-content:center;font-size:26px;flex-shrink:0;}
+  .opt .tx .n{font-size:17px;font-weight:600;}
+  .opt .tx .d{font-size:13px;color:#6b6760;margin-top:2px;}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">Selecciona tu almacén</div>
+    <div class="sub">Pulsa sobre el almacén con el que quieras trabajar</div>
+    <a class="opt" href="almacen-electrico/index.html">
+      <div class="ic">⚡</div>
+      <div class="tx"><div class="n">Almacén Eléctrico</div><div class="d">Inventario y gestión eléctrica</div></div>
+    </a>
+    <a class="opt" href="almacen-mecanico/index.html">
+      <div class="ic">🔧</div>
+      <div class="tx"><div class="n">Almacén Mecánico</div><div class="d">Inventario y gestión mecánica</div></div>
+    </a>
+  </div>
+</body>
+</html>
