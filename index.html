@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Almacén">
+<meta name="theme-color" content="#1a1916">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
 <title>Almacén Eléctrico</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
@@ -509,6 +515,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div class="page-title">Inicio</div>
     <div class="page-sub">Resumen del almacén</div>
     <div id="home-sync-warn" style="display:none;background:var(--orange-bg,#fff3e0);color:var(--orange-text,#b06000);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:12px;">⚠️ No se ha podido conectar con la nube. Lo que ves puede no incluir movimientos hechos desde otros dispositivos.</div>
+    <div id="home-pending-warn" style="display:none;background:var(--orange-bg,#fff3e0);color:var(--orange-text,#b06000);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:12px;"></div>
     <button class="btn btn-block" style="margin-bottom:12px;" onclick="syncAndRenderHome()">🔄 Sincronizar ahora</button>
     <div class="stats">
       <div class="stat"><div class="l">Referencias</div><div class="v" id="s-total">0</div></div>
@@ -1324,12 +1331,27 @@ async function cloudCfgGet(key){
 }
 async function cloudMovPut(mov){
   if(!sb||!WH?.tblMov)return false;
+  const{photo,synced,id,...m}=mov; // quitar campos que no van a la nube
   try{
-    const{photo,synced,id,...m}=mov; // quitar campos que no van a la nube
     const{error}=await sb.from(WH.tblMov).insert(m);
     if(error)throw error;
     return true;
-  }catch(e){console.warn('cloudMovPut error',e);return false;}
+  }catch(e){
+    console.warn('cloudMovPut error',e, 'payload:', m);
+    // Si el fallo es porque la columna "provider" no existe en la tabla (instalación
+    // antigua de Supabase donde no se ejecutó el ALTER TABLE), reintentamos sin ella
+    // para no perder el resto del movimiento.
+    if(m.provider!=null){
+      try{
+        const{provider,...m2}=m;
+        const{error:error2}=await sb.from(WH.tblMov).insert(m2);
+        if(error2)throw error2;
+        console.warn('cloudMovPut: se subió sin el campo "provider" (revisa que la columna exista en Supabase)');
+        return true;
+      }catch(e2){console.warn('cloudMovPut error (reintento sin provider)',e2);}
+    }
+    return false;
+  }
 }
 async function cloudMovGetAll(){
   if(!sb||!WH?.tblMov)return[];
@@ -1641,12 +1663,29 @@ async function syncAndRenderHome(){
   updateStats();
   await renderHomeMovements();
 }
+// Comprueba si hay movimientos hechos en ESTE dispositivo que no han
+// conseguido subirse a la nube, y lo avisa para poder detectarlo a simple vista.
+async function checkPendingMovs(){
+  const w=document.getElementById('home-pending-warn');
+  if(!w)return;
+  if(!sb){w.style.display='none';return;}
+  await pushPendingMovements(); // reintenta subir antes de avisar
+  const all=await movGetAll();
+  const pend=all.filter(m=>m.synced!==true);
+  if(pend.length){
+    w.textContent='⚠️ '+pend.length+' movimiento(s) de este dispositivo no se han podido subir a la nube. Revisa la conexión o que la tabla de movimientos en Supabase tenga todas las columnas (incluida "provider").';
+    w.style.display='';
+  }else{
+    w.style.display='none';
+  }
+}
 async function renderHomeMovements(){
   const cont1=document.getElementById('home-entradas');
   const cont2=document.getElementById('home-salidas');
   if(!cont1||!cont2)return;
   cont1.innerHTML='<div class="mov-empty">Cargando...</div>';
   cont2.innerHTML='<div class="mov-empty">Cargando...</div>';
+  await checkPendingMovs();
   // Combinar nube + local (para ver siempre los propios aunque aún no hayan subido)
   let movs=await getMergedMovements();
   const limite=Date.now()-(90*24*60*60*1000); // 3 meses aprox.
@@ -4439,6 +4478,14 @@ function bulkMove(){
 }
 // Al abrir, siempre se elige primero el almacén
 showWarehouseSelector();
+
+// Registro del Service Worker (PWA): permite instalar la app en el móvil
+// con icono propio y pantalla completa. No afecta si falla (navegador sin soporte).
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('sw.js').catch(e=>console.warn('SW no registrado',e));
+  });
+}
 
 </script>
 </body>
