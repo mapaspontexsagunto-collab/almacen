@@ -8,7 +8,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Almacén">
 <meta name="theme-color" content="#1a1916">
-<link rel="manifest" href="manifest.json">
+<link rel="manifest" href="manifest.json" id="manifest-link">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <title>Almacén Eléctrico</title>
@@ -3684,6 +3684,8 @@ function applyBranding(){
   document.getElementById('login-title').textContent=WH.name;
   document.getElementById('topbar-logo').textContent=WH.icon+' '+WH.name;
   document.title=WH.name;
+  const _ml=document.getElementById('manifest-link');
+  if(_ml)_ml.setAttribute('href','manifest-'+WH.key+'.json');
 }
 
 function showWarehouseSelector(){
@@ -4476,8 +4478,18 @@ function bulkMove(){
     openModal('modal-confirm');
   });
 }
-// Al abrir, siempre se elige primero el almacén
-showWarehouseSelector();
+// Si la app se abrió con ?wh=electrico o ?wh=mecanico (como hacen los accesos
+// directos instalados en el móvil, cada uno con su propio icono), cambiamos
+// el manifest activo y entramos directo a ese almacén sin pasar por el selector.
+const _whParam=new URLSearchParams(location.search).get('wh');
+if(_whParam==='electrico'||_whParam==='mecanico'){
+  const _ml=document.getElementById('manifest-link');
+  if(_ml)_ml.setAttribute('href','manifest-'+_whParam+'.json');
+  selectWarehouse(_whParam);
+}else{
+  // Al abrir sin parámetro, siempre se elige primero el almacén
+  showWarehouseSelector();
+}
 
 // Registro del Service Worker (PWA): permite instalar la app en el móvil
 // con icono propio y pantalla completa. No afecta si falla (navegador sin soporte).
