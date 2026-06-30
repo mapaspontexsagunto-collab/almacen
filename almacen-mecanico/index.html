@@ -490,7 +490,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div class="login-fg"><label>Contraseña</label><input type="password" id="login-pass" autocomplete="current-password" placeholder="Contraseña" onkeydown="if(event.key==='Enter')doLogin()"></div>
     <div id="login-error" class="login-error"></div>
     <button class="login-btn" onclick="doLogin()">Entrar</button>
-    <button class="login-back" onclick="backToWarehouse()">← Cambiar de almacén</button>
+    <!-- Esta copia de la app es exclusiva del Almacén Mecánico; no se permite cambiar de almacén -->
   </div>
 </div>
 <div class="app" id="app-root" style="display:none;">
@@ -4476,16 +4476,9 @@ function bulkMove(){
     openModal('modal-confirm');
   });
 }
-// Si la app se abrió con ?wh=electrico o ?wh=mecanico (como hacen los accesos
-// directos instalados en el móvil, cada uno con su propio icono), cambiamos
-// el manifest activo y entramos directo a ese almacén sin pasar por el selector.
-const _whParam=new URLSearchParams(location.search).get('wh');
-if(_whParam==='electrico'||_whParam==='mecanico'){
-  selectWarehouse(_whParam);
-}else{
-  // Al abrir sin parámetro, siempre se elige primero el almacén
-  showWarehouseSelector();
-}
+// Esta copia de la app es exclusiva del Almacén Mecánico:
+// entra siempre directo a él, sin mostrar selector ni opción de cambiar.
+selectWarehouse('mecanico');
 
 // Registro del Service Worker (PWA): permite instalar la app en el móvil
 // con icono propio y pantalla completa. No afecta si falla (navegador sin soporte).
