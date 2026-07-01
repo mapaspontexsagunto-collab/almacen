@@ -1251,6 +1251,9 @@ async function getMergedMovements(){
 // ===== SUPABASE (sincronización en la nube) =====
 const SUPABASE_URL='https://pttopgjtndbhtvrkuppk.supabase.co';
 const SUPABASE_KEY='sb_publishable_x2BxA94JGgKWqNR1tYXYPA_2s-C_wEy';
+// URL de la Edge Function de Supabase que sustituye a la función de Netlify.
+// Hace de intermediaria para Gemini (IA) y Brave (búsqueda web).
+const EDGE_URL=SUPABASE_URL+'/functions/v1/bright-worker';
 let sb=null, cloudOK=false;
 function initSupabase(){
   try{
@@ -2194,10 +2197,10 @@ function aiErrorMsg(err){
   if(s===502||s===503||s===504||s===500) return 'El servidor de IA está saturado o ha dado un error ('+s+'). Espera unos segundos e inténtalo otra vez.';
   if(s===429||s===529) return 'La IA está recibiendo muchas peticiones ahora mismo ('+s+'). Espera unos segundos y reintenta.';
   if(s===401||s===403) return 'La IA rechazó la petición ('+s+'). Puede ser un problema con la clave o el saldo de la API.';
-  return 'No se pudo analizar la imagen. Si lo pruebas dentro de Claude es normal: la IA solo funciona en la versión publicada en Netlify y con conexión.';
+  return 'No se pudo analizar la imagen. Si lo pruebas dentro de Claude es normal: la IA solo funciona en la versión publicada (GitHub) y con conexión.';
 }
 
-// Llama a la función de IA de Netlify con reintento automático.
+// Llama a la función de IA (Edge Function de Supabase) con reintento automático.
 // Reintenta ante errores típicos de saturación o límite (429/500/502/503/504/529).
 // Devuelve {data} si va bien, o lanza un error con {status} para mostrar un mensaje claro.
 async function aiBuscar(b64, prompt){
@@ -2208,9 +2211,9 @@ async function aiBuscar(b64, prompt){
   for(let intento=1; intento<=3; intento++){
     let resp;
     try{
-      resp=await fetch('/.netlify/functions/buscar',{
+      resp=await fetch(EDGE_URL,{
         method:'POST',
-        headers:{'Content-Type':'application/json'},
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+SUPABASE_KEY,'apikey':SUPABASE_KEY},
         body:JSON.stringify({image:b64, prompt})
       });
     }catch(e){
@@ -3274,16 +3277,16 @@ function buildWebBase(){
   return base.trim();
 }
 
-// Una llamada a Brave (a trav\u00e9s de Netlify) para una consulta concreta
+// Una llamada a Brave (a trav\u00e9s de la Edge Function de Supabase) para una consulta concreta
 async function braveSearch(query,num){
   const reintentables=[500,502,503,504];
   let ultimoEstado=0;
   for(let intento=1;intento<=3;intento++){
     let resp;
     try{
-      resp=await fetch('/.netlify/functions/buscar',{
+      resp=await fetch(EDGE_URL,{
         method:'POST',
-        headers:{'Content-Type':'application/json'},
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+SUPABASE_KEY,'apikey':SUPABASE_KEY},
         body:JSON.stringify({mode:'web', query, num:num||4})
       });
     }catch(e){
