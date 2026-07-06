@@ -744,8 +744,15 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div class="stock-big"><div class="n" id="detail-stock">0</div><div class="u">unidades en stock</div></div>
     <div style="font-size:12px;color:var(--text2);margin-bottom:6px;">Uso / devolución <strong>— se valora con el precio actual del artículo</strong></div>
     <div class="fr" style="margin-bottom:14px;">
-      <button class="btn" style="font-size:18px;padding:16px;" onclick="quickStock(-1)">− Quitar 1</button>
-      <button class="btn btn-primary" style="font-size:18px;padding:16px;" onclick="quickStock(1)">+ Añadir 1</button>
+      <button class="btn" style="font-size:18px;padding:16px;" onclick="stepPending(-1)">− Quitar 1</button>
+      <button class="btn btn-primary" style="font-size:18px;padding:16px;" onclick="stepPending(1)">+ Añadir 1</button>
+    </div>
+    <div id="pending-box" style="display:none;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;margin-bottom:14px;">
+      <div style="font-size:15px;line-height:1.45;">Vas a <strong id="pending-verb"></strong> <strong id="pending-qty"></strong> · quedarán <strong id="pending-result"></strong></div>
+      <div class="fr" style="margin-top:10px;">
+        <button class="btn" onclick="cancelPending()">Cancelar</button>
+        <button class="btn btn-primary" id="pending-confirm-btn" onclick="confirmPending()">Confirmar movimiento</button>
+      </div>
     </div>
     <div class="fg" id="adjust-qty-group">
       <label class="fl">Ajustar cantidad concreta</label>
@@ -1407,7 +1414,7 @@ function updateSyncBadge(state){
   t.textContent = state==='ok'?'Sincronizado' : state==='syncing'?'Sincronizando…' : 'Sin conexión';
 }
 
-let items=[],categories=[],providers=[],shelves=[],currentView='gallery',currentCat='',currentItem=null,pendingPhoto=null,adjustValue=0,editingId=null,scanner=null,shelfDraft=[],scanPurpose=null;
+let items=[],categories=[],providers=[],shelves=[],currentView='gallery',currentCat='',currentItem=null,pendingPhoto=null,adjustValue=0,editingId=null,scanner=null,shelfDraft=[],scanPurpose=null,pendingDelta=0;
 let lastAIIdent=null; // última identificación cruda de la IA (para buscar en internet)
 
 // shelves model: [{id:'01', name:'Estantería 01', baldas:5}, ...]
@@ -1905,6 +1912,7 @@ function openDetail(id){
   document.getElementById('detail-cat').innerHTML=`<span class="badge badge-cat">${esc(i.cat)}</span>${(i.cats||[]).map(c=>`<span class="badge badge-cat2">${esc(c)}</span>`).join('')}`;
   document.getElementById('detail-stock').textContent=i.stock;
   adjustValue=i.stock;document.getElementById('adjust-val').textContent=adjustValue;
+  pendingDelta=0;renderPending();
   const _aqg=document.getElementById('adjust-qty-group'); if(_aqg)_aqg.style.display=adminUnlocked?'':'none';
   let info='';
   // Ubicación destacada al principio
@@ -2085,7 +2093,54 @@ async function exportCostesPDF(){
   }
   if(btn){btn.disabled=false;btn.style.opacity='1';}
 }
-async function quickStock(d){if(!currentItem)return;const anterior=currentItem.stock;currentItem.stock=Math.max(0,anterior+d);const _diff=currentItem.stock-anterior;const _coste=(currentItem.precio!=null&&_diff!==0)?+(Math.abs(_diff)*currentItem.precio).toFixed(2):null;await registrarMovimiento(currentItem,anterior,currentItem.stock,d>0?'Entrada':'Salida',_coste);await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;adjustValue=currentItem.stock;document.getElementById('adjust-val').textContent=adjustValue;renderAll();toast(d>0?'+1 unidad':'−1 unidad');}
+// Contador local: los +/- solo ajustan la cantidad pendiente en pantalla (sin red).
+// La escritura a la nube ocurre UNA sola vez al pulsar "Confirmar movimiento".
+function stepPending(d){
+  if(!currentItem)return;
+  let nd=pendingDelta+d;
+  if(currentItem.stock+nd<0) nd=-currentItem.stock; // no bajar de 0
+  pendingDelta=nd;
+  renderPending();
+}
+function renderPending(){
+  const box=document.getElementById('pending-box');
+  if(!box)return;
+  if(pendingDelta===0){box.style.display='none';return;}
+  box.style.display='';
+  const result=Math.max(0,currentItem.stock+pendingDelta);
+  const n=Math.abs(pendingDelta);
+  document.getElementById('pending-verb').textContent=pendingDelta>0?'añadir':'quitar';
+  document.getElementById('pending-qty').textContent=n+' ud'+(n===1?'':'s');
+  document.getElementById('pending-result').textContent=result+' ud'+(result===1?'':'s');
+}
+function cancelPending(){pendingDelta=0;renderPending();}
+async function confirmPending(){
+  if(!currentItem||pendingDelta===0)return;
+  const btn=document.getElementById('pending-confirm-btn');
+  const anterior=currentItem.stock;
+  const nuevo=Math.max(0,anterior+pendingDelta);
+  const diff=nuevo-anterior;
+  if(diff===0){cancelPending();return;}
+  const tipo=diff>0?'Entrada':'Salida';
+  const _coste=(currentItem.precio!=null)?+(Math.abs(diff)*currentItem.precio).toFixed(2):null;
+  const _txt=btn?btn.innerHTML:'';
+  if(btn){btn.disabled=true;btn.innerHTML='Guardando…';}
+  try{
+    currentItem.stock=nuevo;
+    await registrarMovimiento(currentItem,anterior,nuevo,tipo,_coste);
+    await dbPut(currentItem);
+    await cloudPut(currentItem);
+    document.getElementById('detail-stock').textContent=currentItem.stock;
+    adjustValue=currentItem.stock;
+    const _av=document.getElementById('adjust-val'); if(_av)_av.textContent=adjustValue;
+    renderAll();
+    toast((diff>0?'+':'−')+Math.abs(diff)+' ud'+(Math.abs(diff)===1?'':'s')+' · stock: '+nuevo);
+  }finally{
+    pendingDelta=0;
+    if(btn){btn.disabled=false;btn.innerHTML=_txt;}
+    renderPending();
+  }
+}
 function stepAdjust(d){adjustValue=Math.max(0,adjustValue+d);document.getElementById('adjust-val').textContent=adjustValue;}
 async function applyAdjust(){if(!currentItem)return;const anterior=currentItem.stock;const nuevo=adjustValue;if(anterior===nuevo){toast('Sin cambios');return;}const tipo=nuevo>anterior?'Entrada':'Salida';const _coste=(currentItem.precio!=null)?+(Math.abs(nuevo-anterior)*currentItem.precio).toFixed(2):null;currentItem.stock=nuevo;await registrarMovimiento(currentItem,anterior,nuevo,tipo,_coste);await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;renderAll();toast('Stock actualizado: '+nuevo);}
 function fmtEur(n){return (Number(n)||0).toFixed(2).replace('.',',')+' €';}
