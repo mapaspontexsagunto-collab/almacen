@@ -490,7 +490,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
     <div class="login-fg"><label>Contraseña</label><input type="password" id="login-pass" autocomplete="current-password" placeholder="Contraseña" onkeydown="if(event.key==='Enter')doLogin()"></div>
     <div id="login-error" class="login-error"></div>
     <button class="login-btn" onclick="doLogin()">Entrar</button>
-    <!-- Esta copia de la app es exclusiva del Almacén Mecánico; no se permite cambiar de almacén -->
+    <!-- Esta copia de la app es exclusiva del Almacén Eléctrico; no se permite cambiar de almacén -->
   </div>
 </div>
 <div class="app" id="app-root" style="display:none;">
@@ -4147,7 +4147,6 @@ function svRow(i){
 
 function toggleOrganize(sid){
   if(organizeShelf){
-    // Salir del modo organizar
     organizeShelf=null;
     svSelectedId=null;
     updateOrganizeBanner();
@@ -4633,9 +4632,9 @@ function bulkMove(){
     openModal('modal-confirm');
   });
 }
-// Esta copia de la app es exclusiva del Almacén Mecánico:
+// Esta copia de la app es exclusiva del Almacén Eléctrico:
 // entra siempre directo a él, sin mostrar selector ni opción de cambiar.
-selectWarehouse('mecanico');
+selectWarehouse('electrico');
 
 // Registro del Service Worker (PWA): permite instalar la app en el móvil
 // con icono propio y pantalla completa. No afecta si falla (navegador sin soporte).
