@@ -199,6 +199,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .price-hist-h{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text2);margin-bottom:10px;}
 .price-hist-avg{display:flex;justify-content:space-between;font-size:14px;padding-bottom:10px;margin-bottom:10px;border-bottom:1px solid var(--border2);}
 .price-hist-avg .v{font-weight:700;font-family:'DM Mono',monospace;}
+.price-hist-rows{max-height:220px;overflow-y:auto;}
 .price-hist-row{display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px;padding:5px 0;color:var(--text2);}
 .price-hist-row .ph-price{font-weight:700;color:var(--text);font-family:'DM Mono',monospace;}
 .price-hist-row .ph-meta{text-align:right;}
@@ -1381,10 +1382,13 @@ async function cloudPriceAdd(entry){
   try{const{error}=await sb.from(WH.tblPrice).insert(entry);if(error)throw error;return true;}
   catch(e){console.warn('cloudPriceAdd error',e);return false;}
 }
-async function cloudPriceGetForItem(itemId,limit){
+async function cloudPriceGetForItem(itemId,limit,desdeTs){
   if(!sb||!WH?.tblPrice)return[];
   try{
-    const{data,error}=await sb.from(WH.tblPrice).select('*').eq('item_id',itemId).order('ts',{ascending:false}).limit(limit||3);
+    let q=sb.from(WH.tblPrice).select('*').eq('item_id',itemId).order('ts',{ascending:false});
+    if(desdeTs!=null)q=q.gte('ts',desdeTs);
+    q=q.limit(limit||500);
+    const{data,error}=await q;
     if(error)throw error;return data||[];
   }catch(e){console.warn('cloudPriceGetForItem error',e);return[];}
 }
@@ -1936,13 +1940,15 @@ async function renderPriceHistory(itemId){
   const box=document.getElementById('price-history-box');
   if(!box)return;
   if(!sb){box.innerHTML='';return;}
-  const hist=await cloudPriceGetForItem(itemId,3);
+  const hace3anios=Date.now()-(3*365*24*60*60*1000);
+  const hist=await cloudPriceGetForItem(itemId,500,hace3anios);
   if(!hist.length){box.innerHTML='';return;}
   const avg=hist.reduce((s,h)=>s+Number(h.price||0),0)/hist.length;
   let h='<div class="price-hist"><div class="price-hist-h">Histórico de precios</div>';
-  h+='<div class="price-hist-avg"><span class="k">Precio medio (últimas '+hist.length+')</span><span class="v">'+fmtEur(avg)+'</span></div>';
+  h+='<div class="price-hist-avg"><span class="k">Precio medio ('+hist.length+' compra'+(hist.length!==1?'s':'')+' · últimos 3 años)</span><span class="v">'+fmtEur(avg)+'</span></div>';
+  h+='<div class="price-hist-rows">';
   h+=hist.map(p=>'<div class="price-hist-row"><span class="ph-price">'+fmtEur(Number(p.price))+'/u</span><span class="ph-meta">'+esc(p.fecha||'')+(p.provider?' · '+esc(p.provider):'')+' · '+(p.qty||0)+' uds.</span></div>').join('');
-  h+='</div>';
+  h+='</div></div>';
   box.innerHTML=h;
 }
 
