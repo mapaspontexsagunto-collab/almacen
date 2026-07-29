@@ -1339,7 +1339,7 @@ async function cloudCfgPut(key,value){
 async function cloudCfgGet(key){
   if(!sb)return null;
   try{const{data,error}=await sb.from(WH.tblCfg).select('value').eq('key',key).maybeSingle();if(error)throw error;return data?data.value:null;}
-  catch(e){console.warn('cloudCfgGet error',e);return null;}
+  catch(e){console.warn('cloudCfgGet error',e);return undefined;} // undefined=error de red; null=clave no encontrada
 }
 async function cloudMovPut(mov){
   if(!sb||!WH?.tblMov)return false;
@@ -1500,7 +1500,8 @@ async function syncFromCloud(refrescarTodasFotos=false){
   if(cCats){categories=cCats;await cfgPut('categories',categories);}
   if(cProviders){providers=cProviders;await cfgPut('providers',providers);}
   if(cShelves&&cShelves.length){shelves=cShelves;await cfgPut('shelves',shelves);}
-  else{await cloudCfgPut('shelves',shelves);}
+  else if(cShelves===null&&shelves.length){await cloudCfgPut('shelves',shelves);}
+  // Si cShelves===undefined hubo error de red: mantenemos datos locales y NO sobreescribimos la nube
   if(cAisles){aisles=cAisles;await cfgPut('aisles',aisles);}
   if(cMapSize&&cMapSize.w&&cMapSize.h){mapSize=cMapSize;await cfgPut('mapSize',mapSize);}
   const cAdmin=await cloudCfgGet('adminPass'); if(cAdmin){adminPass=cAdmin;await cfgPut('adminPass',cAdmin);}
@@ -2630,18 +2631,12 @@ function delMapNode(type,idx){
   if(type==='shelf'){
     const s=mapDraftShelves[idx];
     const used=items.filter(i=>i.loc&&i.loc.startsWith(s.id+'-')).length;
-    document.getElementById('confirm-title').textContent=used>0?'Estantería con material':'Eliminar estantería del mapa';
-    document.getElementById('confirm-msg').textContent=used>0
-      ?`"${s.name}" tiene ${used} artículo(s) asignados. Si la eliminas quedarán sin ubicación válida. Esta acción no se puede deshacer.`
-      :`¿Eliminar la estantería "${s.name}" del mapa? Esta acción no se puede deshacer.`;
-    document.getElementById('confirm-ok').onclick=()=>{mapDraftShelves.splice(idx,1);closeModal('modal-confirm');renderMap();};
-    openModal('modal-confirm');
+    if(used>0&&!confirm(`"${s.name}" tiene ${used} artículo(s). Si la eliminas quedarán sin ubicación válida. ¿Eliminar?`))return;
+    mapDraftShelves.splice(idx,1);
   }else{
-    document.getElementById('confirm-title').textContent='Eliminar pasillo del mapa';
-    document.getElementById('confirm-msg').textContent='¿Eliminar este pasillo del mapa? Esta acción no se puede deshacer.';
-    document.getElementById('confirm-ok').onclick=()=>{mapDraftAisles.splice(idx,1);closeModal('modal-confirm');renderMap();};
-    openModal('modal-confirm');
+    mapDraftAisles.splice(idx,1);
   }
+  renderMap();
 }
 let editShelfIdx=null;
 function editMapShelf(idx){
@@ -2705,10 +2700,9 @@ async function saveEditShelf(){
 
   closeModal('modal-edit-shelf');
   editShelfIdx=null;
-  renderMap();
+  items=await dbGetAll(); // Refrescar siempre para que la UI refleje el nuevo código
+  renderAll(); // Re-renderizar todo (incluye mapa, lista, estanterías, etiquetas)
   if(movedItems.length){
-    items=await dbGetAll();
-    renderAll();
     toast(`✓ Estantería actualizada (${movedItems.length} repuesto(s) reubicados)`);
   }else{
     toast('✓ Estantería actualizada');
@@ -2788,12 +2782,14 @@ function addShelf(){
 function removeShelf(idx){
   const s=shelfDraft[idx];
   const used=items.filter(i=>i.loc.startsWith(s.id+'-')).length;
-  document.getElementById('confirm-title').textContent=used>0?'Estantería con material':'Eliminar estantería';
-  document.getElementById('confirm-msg').textContent=used>0
-    ?`La estantería "${s.name}" tiene ${used} artículo(s). Si la eliminas, esos artículos quedarán sin ubicación válida. ¿Eliminar de todas formas?`
-    :`¿Eliminar la estantería "${s.name}"? Esta acción no se puede deshacer.`;
-  document.getElementById('confirm-ok').onclick=()=>{shelfDraft.splice(idx,1);renderShelfEditor();closeModal('modal-confirm');};
-  openModal('modal-confirm');
+  if(used>0){
+    document.getElementById('confirm-title').textContent='Estantería con material';
+    document.getElementById('confirm-msg').textContent=`La estantería "${s.name}" tiene ${used} artículo(s). Si la eliminas, esos artículos quedarán sin ubicación válida. ¿Eliminar de todas formas?`;
+    document.getElementById('confirm-ok').onclick=()=>{shelfDraft.splice(idx,1);renderShelfEditor();closeModal('modal-confirm');};
+    openModal('modal-confirm');
+  }else{
+    shelfDraft.splice(idx,1);renderShelfEditor();
+  }
 }
 async function saveShelves(){
   if(!shelfDraft.length){toast('Debe haber al menos una estantería');return;}
@@ -2921,6 +2917,14 @@ function labelList(){
   if(q){
     list=list.filter(i=>[i.name,i.ref,i.brand,i.machine,i.loc].some(v=>(v||'').toLowerCase().includes(q)));
   }
+  list.sort((a,b)=>{
+    const spA=splitLoc(a.loc||''),spB=splitLoc(b.loc||'');
+    const shA=shelves.findIndex(s=>s.id===spA.shelfId),shB=shelves.findIndex(s=>s.id===spB.shelfId);
+    if(shA!==shB)return(shA<0?9999:shA)-(shB<0?9999:shB);
+    const bA=parseInt(spA.balda)||0,bB=parseInt(spB.balda)||0;
+    if(bA!==bB)return bA-bB;
+    return(a.pos||'').localeCompare(b.pos||'');
+  });
   return list;
 }
 
@@ -3076,6 +3080,15 @@ function setStartPos(n){startPos=n;renderStartGrid();}
 
 async function doPrintLabels(){
   const sel=items.filter(i=>labelSel.has(i.id));
+  // Ordenar por estantería (orden en el mapa) → balda → hueco/gaveta
+  sel.sort((a,b)=>{
+    const spA=splitLoc(a.loc||''),spB=splitLoc(b.loc||'');
+    const shA=shelves.findIndex(s=>s.id===spA.shelfId),shB=shelves.findIndex(s=>s.id===spB.shelfId);
+    if(shA!==shB)return(shA<0?9999:shA)-(shB<0?9999:shB);
+    const bA=parseInt(spA.balda)||0,bB=parseInt(spB.balda)||0;
+    if(bA!==bB)return bA-bB;
+    return(a.pos||'').localeCompare(b.pos||'');
+  });
   if(!sel.length){closeModal('modal-start-pos');return;}
   const cfg=LABEL_SIZES[labelSize];
   const sheet=document.getElementById('labels-sheet');
@@ -4493,15 +4506,9 @@ function layStep(b,bi,prop,d){
   renderLayoutEditor();
 }
 function layDel(b,bi){
-  document.getElementById('confirm-title').textContent='Eliminar bloque';
-  document.getElementById('confirm-msg').textContent='¿Eliminar este bloque de la distribución de la balda? Esta acción no se puede deshacer.';
-  document.getElementById('confirm-ok').onclick=()=>{
-    layoutDraft[String(b)].splice(bi,1);
-    if(!layoutDraft[String(b)].length)delete layoutDraft[String(b)];
-    renderLayoutEditor();
-    closeModal('modal-confirm');
-  };
-  openModal('modal-confirm');
+  layoutDraft[String(b)].splice(bi,1);
+  if(!layoutDraft[String(b)].length)delete layoutDraft[String(b)];
+  renderLayoutEditor();
 }
 async function saveLayout(){
   const sh=shelves.find(s=>s.id===layoutShelfId); if(!sh)return;
