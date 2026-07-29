@@ -1849,11 +1849,12 @@ function renderItems(){
       const abierta=expandedShelf==='__none__';
       const orgNone=organizeShelf==='__none__';
       html+='<div class="shelf-group">';
-      html+='<div class="shelf-group-head '+(abierta?'open':'')+'' onclick=\"toggleShelfGroup(\\'__none__\\')\">';
+      html+='<div class="shelf-group-head '+(abierta?'open':'')+' shelf-none-head" onclick="toggleShelfGroup(\'__none__\')">';
       html+='<div style="flex:1;display:flex;align-items:center;gap:8px;"><strong>Sin ubicación</strong></div>';
       html+='<div style="display:flex;align-items:center;gap:6px;" onclick="event.stopPropagation()">';
       html+='<button class="btn btn-sm" style="padding:4px 10px;font-size:12px;" onclick="reconstruirEstanterias()">🔧 Reconstruir</button>';
-      html+='<button class="btn btn-sm'+(orgNone?' btn-primary':'')+'' style=\"padding:4px 10px;font-size:12px;\" onclick=\"toggleOrganize(\\'__none__\\')\">'+(orgNone?'✓ Hecho':'Organizar')+'</button>';\n      html+='</div>';
+      html+='<button class="btn btn-sm'+(orgNone?' btn-primary':'')+'" style="padding:4px 10px;font-size:12px;" onclick="toggleOrganize(\'__none__\')">'+(orgNone?'✓ Hecho':'Organizar')+'</button>';
+      html+='</div>';
       html+='<span class="shelf-count">'+huérfanos.length+' ref.</span>';
       html+='<svg class="chev" width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
       html+='</div>';
@@ -1865,8 +1866,10 @@ function renderItems(){
             const sel=svSelectedIds.has(i.id);
             const ps=posShort(i);
             const locStr=i.loc?(esc(i.loc)+(ps?' · '+esc(ps):'')):'—';
-            return '<div class="org-row'+(sel?' org-sel':'')+'' data-id=\"'+i.id+'\" onclick=\"svPick(\\''+i.id+'\\')\">' +'
-              '<div class="lcheck">'+(sel?'<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>':'')+'</div>'+
+            const cls='org-row'+(sel?' org-sel':'');
+            const chk=sel?'<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>':'';
+            return '<div class="'+cls+'" data-id="'+i.id+'" onclick="svPick(\''+i.id+'\')">'+
+              '<div class="lcheck">'+chk+'</div>'+
               '<div class="linfo"><strong>'+esc(i.name)+'</strong><span>'+locStr+'</span></div>'+
               stockBadge(i)+'</div>';
           }).join('');
