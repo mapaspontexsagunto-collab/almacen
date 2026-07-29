@@ -199,7 +199,6 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .price-hist-h{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text2);margin-bottom:10px;}
 .price-hist-avg{display:flex;justify-content:space-between;font-size:14px;padding-bottom:10px;margin-bottom:10px;border-bottom:1px solid var(--border2);}
 .price-hist-avg .v{font-weight:700;font-family:'DM Mono',monospace;}
-.price-hist-rows{max-height:220px;overflow-y:auto;}
 .price-hist-row{display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px;padding:5px 0;color:var(--text2);}
 .price-hist-row .ph-price{font-weight:700;color:var(--text);font-family:'DM Mono',monospace;}
 .price-hist-row .ph-meta{text-align:right;}
@@ -1382,13 +1381,10 @@ async function cloudPriceAdd(entry){
   try{const{error}=await sb.from(WH.tblPrice).insert(entry);if(error)throw error;return true;}
   catch(e){console.warn('cloudPriceAdd error',e);return false;}
 }
-async function cloudPriceGetForItem(itemId,limit,desdeTs){
+async function cloudPriceGetForItem(itemId,limit){
   if(!sb||!WH?.tblPrice)return[];
   try{
-    let q=sb.from(WH.tblPrice).select('*').eq('item_id',itemId).order('ts',{ascending:false});
-    if(desdeTs!=null)q=q.gte('ts',desdeTs);
-    q=q.limit(limit||500);
-    const{data,error}=await q;
+    const{data,error}=await sb.from(WH.tblPrice).select('*').eq('item_id',itemId).order('ts',{ascending:false}).limit(limit||3);
     if(error)throw error;return data||[];
   }catch(e){console.warn('cloudPriceGetForItem error',e);return[];}
 }
@@ -1940,15 +1936,13 @@ async function renderPriceHistory(itemId){
   const box=document.getElementById('price-history-box');
   if(!box)return;
   if(!sb){box.innerHTML='';return;}
-  const hace3anios=Date.now()-(3*365*24*60*60*1000);
-  const hist=await cloudPriceGetForItem(itemId,500,hace3anios);
+  const hist=await cloudPriceGetForItem(itemId,3);
   if(!hist.length){box.innerHTML='';return;}
   const avg=hist.reduce((s,h)=>s+Number(h.price||0),0)/hist.length;
   let h='<div class="price-hist"><div class="price-hist-h">Histórico de precios</div>';
-  h+='<div class="price-hist-avg"><span class="k">Precio medio ('+hist.length+' compra'+(hist.length!==1?'s':'')+' · últimos 3 años)</span><span class="v">'+fmtEur(avg)+'</span></div>';
-  h+='<div class="price-hist-rows">';
+  h+='<div class="price-hist-avg"><span class="k">Precio medio (últimas '+hist.length+')</span><span class="v">'+fmtEur(avg)+'</span></div>';
   h+=hist.map(p=>'<div class="price-hist-row"><span class="ph-price">'+fmtEur(Number(p.price))+'/u</span><span class="ph-meta">'+esc(p.fecha||'')+(p.provider?' · '+esc(p.provider):'')+' · '+(p.qty||0)+' uds.</span></div>').join('');
-  h+='</div></div>';
+  h+='</div>';
   box.innerHTML=h;
 }
 
@@ -2636,12 +2630,18 @@ function delMapNode(type,idx){
   if(type==='shelf'){
     const s=mapDraftShelves[idx];
     const used=items.filter(i=>i.loc&&i.loc.startsWith(s.id+'-')).length;
-    if(used>0&&!confirm(`"${s.name}" tiene ${used} artículo(s). Si la eliminas quedarán sin ubicación válida. ¿Eliminar?`))return;
-    mapDraftShelves.splice(idx,1);
+    document.getElementById('confirm-title').textContent=used>0?'Estantería con material':'Eliminar estantería del mapa';
+    document.getElementById('confirm-msg').textContent=used>0
+      ?`"${s.name}" tiene ${used} artículo(s) asignados. Si la eliminas quedarán sin ubicación válida. Esta acción no se puede deshacer.`
+      :`¿Eliminar la estantería "${s.name}" del mapa? Esta acción no se puede deshacer.`;
+    document.getElementById('confirm-ok').onclick=()=>{mapDraftShelves.splice(idx,1);closeModal('modal-confirm');renderMap();};
+    openModal('modal-confirm');
   }else{
-    mapDraftAisles.splice(idx,1);
+    document.getElementById('confirm-title').textContent='Eliminar pasillo del mapa';
+    document.getElementById('confirm-msg').textContent='¿Eliminar este pasillo del mapa? Esta acción no se puede deshacer.';
+    document.getElementById('confirm-ok').onclick=()=>{mapDraftAisles.splice(idx,1);closeModal('modal-confirm');renderMap();};
+    openModal('modal-confirm');
   }
-  renderMap();
 }
 let editShelfIdx=null;
 function editMapShelf(idx){
@@ -2788,14 +2788,12 @@ function addShelf(){
 function removeShelf(idx){
   const s=shelfDraft[idx];
   const used=items.filter(i=>i.loc.startsWith(s.id+'-')).length;
-  if(used>0){
-    document.getElementById('confirm-title').textContent='Estantería con material';
-    document.getElementById('confirm-msg').textContent=`La estantería "${s.name}" tiene ${used} artículo(s). Si la eliminas, esos artículos quedarán sin ubicación válida. ¿Eliminar de todas formas?`;
-    document.getElementById('confirm-ok').onclick=()=>{shelfDraft.splice(idx,1);renderShelfEditor();closeModal('modal-confirm');};
-    openModal('modal-confirm');
-  }else{
-    shelfDraft.splice(idx,1);renderShelfEditor();
-  }
+  document.getElementById('confirm-title').textContent=used>0?'Estantería con material':'Eliminar estantería';
+  document.getElementById('confirm-msg').textContent=used>0
+    ?`La estantería "${s.name}" tiene ${used} artículo(s). Si la eliminas, esos artículos quedarán sin ubicación válida. ¿Eliminar de todas formas?`
+    :`¿Eliminar la estantería "${s.name}"? Esta acción no se puede deshacer.`;
+  document.getElementById('confirm-ok').onclick=()=>{shelfDraft.splice(idx,1);renderShelfEditor();closeModal('modal-confirm');};
+  openModal('modal-confirm');
 }
 async function saveShelves(){
   if(!shelfDraft.length){toast('Debe haber al menos una estantería');return;}
@@ -4495,9 +4493,15 @@ function layStep(b,bi,prop,d){
   renderLayoutEditor();
 }
 function layDel(b,bi){
-  layoutDraft[String(b)].splice(bi,1);
-  if(!layoutDraft[String(b)].length)delete layoutDraft[String(b)];
-  renderLayoutEditor();
+  document.getElementById('confirm-title').textContent='Eliminar bloque';
+  document.getElementById('confirm-msg').textContent='¿Eliminar este bloque de la distribución de la balda? Esta acción no se puede deshacer.';
+  document.getElementById('confirm-ok').onclick=()=>{
+    layoutDraft[String(b)].splice(bi,1);
+    if(!layoutDraft[String(b)].length)delete layoutDraft[String(b)];
+    renderLayoutEditor();
+    closeModal('modal-confirm');
+  };
+  openModal('modal-confirm');
 }
 async function saveLayout(){
   const sh=shelves.find(s=>s.id===layoutShelfId); if(!sh)return;
