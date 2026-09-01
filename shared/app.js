@@ -729,7 +729,7 @@ function renderItems(){
   const c=document.getElementById('items-container');
   if(selectMode){ renderSelectList(); updateSelBar(); return; }
   const q=(document.getElementById('search-input')||{}).value||'';
-  const hayBusqueda = q.trim()!=='' || currentCat!=='';
+  const hayBusqueda = q.trim()!=='' || currentCat!=='' || filterLowStock;
 
   // MODO ESTANTERÍAS: sin búsqueda ni categoría activa → mostrar estanterías plegables
   if(!hayBusqueda){
