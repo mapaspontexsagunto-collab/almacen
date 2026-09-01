@@ -1,9 +1,9 @@
 {
-  "id": "/almacen-electrico/",
+  "id": "almacen-electrico",
   "name": "Almacén Eléctrico",
   "short_name": "A. Eléctrico",
   "description": "Gestión de inventario del almacén eléctrico",
-  "start_url": "./index.html",
+  "start_url": "./index.html?wh=electrico",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait-primary",
