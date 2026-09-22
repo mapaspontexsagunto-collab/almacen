@@ -1,4 +1,4 @@
-﻿// ===== CREDENCIALES DESDE SUPABASE =====
+// ===== CREDENCIALES DESDE SUPABASE =====
 async function fetchAuthFromSupabase(){
   const _url='https://pttopgjtndbhtvrkuppk.supabase.co';
   const _key='sb_publishable_x2BxA94JGgKWqNR1tYXYPA_2s-C_wEy';
@@ -3441,7 +3441,7 @@ async function saveLayout(){
   await cfgPut('shelves',shelves);
   await cloudCfgPut('shelves',shelves);
   closeModal('modal-layout');
-  if(document.getElementById('modal-shelf-view').classList.contains('open'))renderShelfView();
+  renderItems();
   toast('✓ Distribución guardada');
 }
 
