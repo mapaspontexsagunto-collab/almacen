@@ -1497,6 +1497,58 @@ function enableDrag(canvas){
   });
 }
 
+function printMap(){
+  const canvas=document.getElementById('map-canvas');
+  if(!canvas||canvas.offsetWidth===0){toast('El mapa está vacío');return;}
+  const area=document.getElementById('map-print-area');
+  const wrap=area.querySelector('.map-print-canvas-wrap');
+  const titleEl=document.getElementById('map-print-title');
+  // A4 landscape printable area (10mm margins): 277mm × 190mm; reserve 12mm for header
+  const mmPx=3.7795275591;
+  const PW=277*mmPx, PH=178*mmPx;
+  const cw=canvas.offsetWidth, ch=canvas.offsetHeight;
+  const scale=Math.min(PW/cw, PH/ch, 1);
+  // Clone the rendered canvas preserving absolute positioning of nodes
+  const clone=canvas.cloneNode(true);
+  clone.querySelectorAll('.node-del,.resize-handle').forEach(el=>el.remove());
+  clone.style.transformOrigin='top left';
+  clone.style.transform='scale('+scale+')';
+  // Explicitly size the wrapper (CSS transforms don't affect layout flow)
+  wrap.style.width=Math.ceil(cw*scale)+'px';
+  wrap.style.height=Math.ceil(ch*scale)+'px';
+  wrap.innerHTML='';
+  wrap.appendChild(clone);
+  if(titleEl) titleEl.textContent=(WH?WH.name:'Almacén')+' — '+new Date().toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit',year:'numeric'});
+  // Inject temporary print styles (A4 landscape + light-theme overrides)
+  const st=document.createElement('style');
+  st.id='map-print-page-style';
+  st.textContent='@media print{'
+    +'@page{size:A4 landscape;margin:10mm;}'
+    +'body>*{display:none !important;}'
+    +'#print-area{display:none !important;}'
+    +'#map-print-area{display:block !important;}'
+    +'.map-print-header{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:3mm;padding-bottom:2mm;border-bottom:0.5pt solid #999;}'
+    +'.map-print-title{font-size:10pt;font-weight:700;font-family:Arial,sans-serif;color:#000;}'
+    +'.map-print-legend{display:flex;gap:5mm;font-size:7.5pt;font-family:Arial,sans-serif;color:#555;align-items:center;}'
+    +'.map-print-legend>span{display:flex;align-items:center;gap:1.5mm;}'
+    +'.map-print-canvas-wrap .map-canvas{background:#fff !important;background-image:linear-gradient(#ddd 1px,transparent 1px),linear-gradient(90deg,#ddd 1px,transparent 1px) !important;background-size:24px 24px !important;}'
+    +'.map-print-canvas-wrap .map-node.shelf{background:#fff !important;border:1.5px solid #999 !important;}'
+    +'.map-print-canvas-wrap .map-node .nname{color:#1a1916 !important;}'
+    +'.map-print-canvas-wrap .map-node .ncount{color:#777 !important;}'
+    +'.map-print-canvas-wrap .map-node.aisle{background:#f0f0f0 !important;border:1px dashed #aaa !important;color:#444 !important;}'
+    +'.map-print-canvas-wrap .map-node .nbar{-webkit-print-color-adjust:exact;print-color-adjust:exact;}'
+    +'.map-print-legend .balda-dot{-webkit-print-color-adjust:exact;print-color-adjust:exact;background:#e5e5e5 !important;border-color:#aaa !important;}'
+    +'.map-print-legend .balda-dot.occ{background:#dbeafe !important;border-color:#93c5fd !important;}'
+    +'.map-print-legend .balda-dot.low{background:#fef3c7 !important;border-color:#fcd34d !important;}'
+    +'.map-print-legend .balda-dot.out{background:#fee2e2 !important;border-color:#fca5a5 !important;}'
+    +'}';
+  document.head.appendChild(st);
+  let cleaned=false;
+  const cleanup=()=>{if(cleaned)return;cleaned=true;const s=document.getElementById('map-print-page-style');if(s)s.remove();};
+  window.addEventListener('afterprint',cleanup,{once:true});
+  window.print();
+  cleanup();
+}
 function toggleMapEdit(){
   if(mapEditing){return;}
   mapEditing=true;
@@ -1508,6 +1560,7 @@ function toggleMapEdit(){
   document.getElementById('map-toolbar').style.display='flex';
   document.getElementById('map-hint').style.display='block';
   document.getElementById('map-edit-btn').style.display='none';
+  document.getElementById('map-print-btn').style.display='none';
   renderMap();
 }
 function setMapSize(){
@@ -1521,6 +1574,7 @@ function cancelMapEdit(){
   document.getElementById('map-toolbar').style.display='none';
   document.getElementById('map-hint').style.display='none';
   document.getElementById('map-edit-btn').style.display='';
+  document.getElementById('map-print-btn').style.display='';
   renderMap();
 }
 async function saveMapLayout(){
@@ -1534,6 +1588,7 @@ async function saveMapLayout(){
   document.getElementById('map-toolbar').style.display='none';
   document.getElementById('map-hint').style.display='none';
   document.getElementById('map-edit-btn').style.display='';
+  document.getElementById('map-print-btn').style.display='';
   renderAll();
   toast('✓ Plano guardado');
 }

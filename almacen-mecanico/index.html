@@ -119,9 +119,14 @@
   <div class="page" id="page-mapa">
     <div class="page-head-row">
       <div><div class="page-title">Mapa</div><div class="page-sub" id="map-sub">Plano del almacén</div></div>
-      <button class="btn btn-sm" id="map-edit-btn" onclick="toggleMapEdit()">
-        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke-width="1.8" stroke-linecap="round"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4z" stroke-width="1.8" stroke-linejoin="round"/></svg>Editar plano
-      </button>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-sm" id="map-print-btn" onclick="printMap()">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Imprimir
+        </button>
+        <button class="btn btn-sm" id="map-edit-btn" onclick="toggleMapEdit()">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke-width="1.8" stroke-linecap="round"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4z" stroke-width="1.8" stroke-linejoin="round"/></svg>Editar plano
+        </button>
+      </div>
     </div>
     <div class="map-toolbar" id="map-toolbar" style="display:none;">
       <button class="btn btn-sm btn-primary" onclick="addMapShelf()">+ Estantería</button>
@@ -305,6 +310,20 @@
 
 <!-- Contenedor de impresión de etiquetas (oculto salvo al imprimir) -->
 <div id="print-area"><div class="labels-sheet" id="labels-sheet"></div></div>
+
+<!-- Contenedor de impresión del mapa (oculto salvo al imprimir) -->
+<div id="map-print-area">
+  <div class="map-print-header">
+    <span class="map-print-title" id="map-print-title"></span>
+    <div class="map-print-legend">
+      <span><span class="balda-dot occ"></span>Ocupada</span>
+      <span><span class="balda-dot low"></span>Stock bajo</span>
+      <span><span class="balda-dot out"></span>Sin stock</span>
+      <span><span class="balda-dot"></span>Vacía</span>
+    </div>
+  </div>
+  <div class="map-print-canvas-wrap"></div>
+</div>
 
 <div class="modal-bg" id="modal-detail">
   <div class="modal">
