@@ -1,9 +1,9 @@
-// Service Worker — Almacén Eléctrico
+// Service Worker — Almacén Mecánico
 // Estrategia: "network-first". Siempre intenta cargar la versión más reciente
 // de internet primero; solo si no hay conexión, usa la copia guardada.
 // Así evitamos quedarnos con una versión antigua de la app "pegada" en el móvil.
 
-const CACHE_NAME = 'almacen-v1';
+const CACHE_NAME = 'almacen-mec-v1';
 const PRECACHE_URLS = [
   './index.html',
   './manifest.json',
