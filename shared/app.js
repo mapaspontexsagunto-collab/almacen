@@ -1506,16 +1506,31 @@ function printMap(){
   // A4 landscape printable area (10mm margins): 277mm × 190mm; reserve 12mm for header
   const mmPx=3.7795275591;
   const PW=277*mmPx, PH=178*mmPx;
-  const cw=canvas.offsetWidth, ch=canvas.offsetHeight;
-  const scale=Math.min(PW/cw, PH/ch, 1);
+  // Calculate bounding box of actual content (nodes only, not full canvas)
+  const PAD=GRID; // 1 grid unit of padding around content
+  let minX=Infinity,minY=Infinity,maxX=0,maxY=0;
+  canvas.querySelectorAll('.map-node').forEach(n=>{
+    const x=parseInt(n.style.left)||0,y=parseInt(n.style.top)||0;
+    const w=parseInt(n.style.width)||0,h=parseInt(n.style.height)||0;
+    if(x<minX)minX=x; if(y<minY)minY=y;
+    if(x+w>maxX)maxX=x+w; if(y+h>maxY)maxY=y+h;
+  });
+  if(minX===Infinity){toast('El mapa está vacío');return;}
+  minX=Math.max(0,minX-PAD); minY=Math.max(0,minY-PAD);
+  maxX=Math.min(canvas.offsetWidth,maxX+PAD); maxY=Math.min(canvas.offsetHeight,maxY+PAD);
+  const contentW=maxX-minX, contentH=maxY-minY;
+  // Scale content to fill A4 page (allow upscaling for small maps)
+  const scale=Math.min(PW/contentW, PH/contentH);
   // Clone the rendered canvas preserving absolute positioning of nodes
   const clone=canvas.cloneNode(true);
   clone.querySelectorAll('.node-del,.resize-handle').forEach(el=>el.remove());
+  // Translate to crop to content area, then scale; transform-origin top left
   clone.style.transformOrigin='top left';
-  clone.style.transform='scale('+scale+')';
-  // Explicitly size the wrapper (CSS transforms don't affect layout flow)
-  wrap.style.width=Math.ceil(cw*scale)+'px';
-  wrap.style.height=Math.ceil(ch*scale)+'px';
+  clone.style.transform='scale('+scale+') translate('+(-minX)+'px,'+(-minY)+'px)';
+  // Size the wrapper to the scaled content area (overflow clips excess canvas)
+  wrap.style.width=Math.ceil(contentW*scale)+'px';
+  wrap.style.height=Math.ceil(contentH*scale)+'px';
+  wrap.style.overflow='hidden';
   wrap.innerHTML='';
   wrap.appendChild(clone);
   if(titleEl) titleEl.textContent=(WH?WH.name:'Almacén')+' — '+new Date().toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit',year:'numeric'});
