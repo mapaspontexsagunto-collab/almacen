@@ -1,5 +1,6 @@
 // ===== CREDENCIALES DESDE SUPABASE =====
 async function fetchAuthFromSupabase(){
+  if(typeof WAREHOUSE_CONFIG!=='undefined'&&WAREHOUSE_CONFIG.useSupabaseAuth)return null; // con Supabase Auth ya no se usa app_auth
   const _url='https://pttopgjtndbhtvrkuppk.supabase.co';
   const _key='sb_publishable_x2BxA94JGgKWqNR1tYXYPA_2s-C_wEy';
   try{
@@ -15,42 +16,41 @@ async function fetchAuthFromSupabase(){
 async function loadAuthCredentials(){
   const AUTH_CACHE_KEY='almacen_auth_cache';
   const AUTH_CACHE_TTL=7*24*60*60*1000;
-  const _dU=(typeof WAREHOUSE_CONFIG!=='undefined'&&WAREHOUSE_CONFIG.fallbackUser)||'manteni';
-  const _dE=(typeof WAREHOUSE_CONFIG!=='undefined'&&WAREHOUSE_CONFIG.fallbackPassElectrico)||'Electrico';
-  const _dM=(typeof WAREHOUSE_CONFIG!=='undefined'&&WAREHOUSE_CONFIG.fallbackPassMecanico)||'Mecanico';
+  const H=async v=>v?await sha256(v):''; // hash solo si hay valor (nunca el hash de una cadena vacía)
   let cached=null;
   try{const raw=localStorage.getItem(AUTH_CACHE_KEY);if(raw){const obj=JSON.parse(raw);if(Date.now()-obj.ts<AUTH_CACHE_TTL)cached=obj.data;}}catch(e){}
   const fromSupabase=await fetchAuthFromSupabase();
   if(fromSupabase){
     const cacheData={
-      user:fromSupabase.auth_user||_dU,
-      pass_electrico:await sha256(fromSupabase.auth_pass_electrico||_dE),
-      pass_mecanico:await sha256(fromSupabase.auth_pass_mecanico||_dM),
-      admin_pass:await sha256(fromSupabase.admin_pass||'Mapamsi01')
+      user:fromSupabase.auth_user||'',
+      pass_electrico:await H(fromSupabase.auth_pass_electrico),
+      pass_mecanico:await H(fromSupabase.auth_pass_mecanico),
+      admin_pass:await H(fromSupabase.admin_pass)
     };
     try{localStorage.setItem(AUTH_CACHE_KEY,JSON.stringify({ts:Date.now(),data:cacheData}));}catch(e){}
     return cacheData;
   }
   if(cached)return cached;
-  return {user:_dU,pass_electrico:await sha256(_dE),pass_mecanico:await sha256(_dM),admin_pass:await sha256('Mapamsi01')};
+  return {user:'',pass_electrico:'',pass_mecanico:'',admin_pass:''};
 }
 async function saveAuthToSupabase(cfg){
   const _url='https://pttopgjtndbhtvrkuppk.supabase.co';
   const _key='sb_publishable_x2BxA94JGgKWqNR1tYXYPA_2s-C_wEy';
   try{
     const updates=[{key:'auth_user',value:cfg.user||''},{key:'auth_pass_electrico',value:cfg.raw_pass_electrico||''},{key:'auth_pass_mecanico',value:cfg.raw_pass_mecanico||''}];
-    for(const u of updates){
-      await fetch(_url+'/rest/v1/app_auth?key=eq.'+u.key,{method:'PATCH',headers:{'apikey':_key,'Authorization':'Bearer '+_key,'Content-Type':'application/json','Prefer':'return=minimal'},body:JSON.stringify({value:u.value})});
+    for(const u of updates.filter(x=>x.value)){ // solo lo que se ha rellenado
+      await fetch(_url+'/rest/v1/app_auth?key=eq.'+u.key,{method:'PATCH',headers:{'apikey':_key,'Authorization':'Bearer '+_key,'Content-Type':'application/json','Prefer':'return=minimal'},body:JSON.stringify({value:u.value})}).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);});
     }
     _authCredentials=await loadAuthCredentials();
-  }catch(e){console.warn('No se pudo guardar en Supabase:',e);}
+    return true;
+  }catch(e){console.warn('No se pudo guardar en Supabase:',e);return false;}
 }
 let _authCredentials=null;
 document.addEventListener('DOMContentLoaded',async function(){
   if(typeof WAREHOUSE_CONFIG!=='undefined'){
     WH=WAREHOUSE_CONFIG;DB_NAME=WH.db;applyBranding();
     document.getElementById('warehouse-screen').style.display='none';
-    let ok=false;try{ok=localStorage.getItem(WH.sesKey)==='1';}catch(e){}
+    const ok=await authSessionOk();
     if(ok){document.getElementById('login-screen').style.display='none';enterApp();}
     else{document.getElementById('login-error').textContent='';document.getElementById('login-pass').value='';document.getElementById('login-screen').style.display='flex';setTimeout(()=>document.getElementById('login-user').focus(),100);}
   }else{showWarehouseSelector();}
@@ -95,26 +95,29 @@ async function sha256(msg){
 let db;
 let DB_NAME=(typeof WAREHOUSE_CONFIG!=='undefined'?WAREHOUSE_CONFIG.db:'almacen_db');const STORE='items',CFG='config',MOV='movements';
 function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB_NAME,2);r.onupgradeneeded=e=>{const d=e.target.result;if(!d.objectStoreNames.contains(STORE))d.createObjectStore(STORE,{keyPath:'id'});if(!d.objectStoreNames.contains(CFG))d.createObjectStore(CFG,{keyPath:'key'});if(!d.objectStoreNames.contains(MOV))d.createObjectStore(MOV,{keyPath:'id',autoIncrement:true});};r.onsuccess=e=>{db=e.target.result;res();};r.onerror=e=>rej(e);});}
-function dbGetAll(){return new Promise(res=>{const t=db.transaction(STORE,'readonly').objectStore(STORE).getAll();t.onsuccess=()=>res(t.result||[]);});}
-function dbPut(item){return new Promise(res=>{const t=db.transaction(STORE,'readwrite').objectStore(STORE).put(item);t.onsuccess=()=>res();});}
-function dbDelete(id){return new Promise(res=>{const t=db.transaction(STORE,'readwrite').objectStore(STORE).delete(id);t.onsuccess=()=>res();});}
-function dbClear(){return new Promise(res=>{const t=db.transaction(STORE,'readwrite').objectStore(STORE).clear();t.onsuccess=()=>res();});}
-function cfgGet(key){return new Promise(res=>{const t=db.transaction(CFG,'readonly').objectStore(CFG).get(key);t.onsuccess=()=>res(t.result?t.result.value:null);});}
-function cfgPut(key,value){return new Promise(res=>{const t=db.transaction(CFG,'readwrite').objectStore(CFG).put({key,value});t.onsuccess=()=>res();});}
+// Ejecuta una operación y resuelve SOLO cuando la transacción termina; rechaza si falla o se aborta
+function idbRun(store,mode,fn){return new Promise((res,rej)=>{try{const tx=db.transaction(store,mode);const req=fn(tx.objectStore(store));tx.oncomplete=()=>res(req?req.result:undefined);tx.onerror=()=>rej(tx.error||new Error('IndexedDB error'));tx.onabort=()=>rej(tx.error||new Error('IndexedDB abortado'));}catch(e){rej(e);}});}
+function dbGetAll(){return idbRun(STORE,'readonly',s=>s.getAll()).then(r=>r||[]);}
+function dbPut(item){return idbRun(STORE,'readwrite',s=>s.put(item)).then(()=>{});}
+function dbDelete(id){return idbRun(STORE,'readwrite',s=>s.delete(id)).then(()=>{});}
+function dbClear(){return idbRun(STORE,'readwrite',s=>s.clear()).then(()=>{});}
+// Sustituye TODO el contenido en una única transacción (si falla, no queda a medias)
+function dbReplaceAll(list){return new Promise((res,rej)=>{try{const tx=db.transaction(STORE,'readwrite');const s=tx.objectStore(STORE);s.clear();list.forEach(it=>s.put(it));tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error||new Error('IndexedDB error'));tx.onabort=()=>rej(tx.error||new Error('IndexedDB abortado'));}catch(e){rej(e);}});}
+function cfgGet(key){return idbRun(CFG,'readonly',s=>s.get(key)).then(r=>r?r.value:null);}
+function cfgPut(key,value){return idbRun(CFG,'readwrite',s=>s.put({key,value})).then(()=>{});}
 // Movimientos de stock
-function movPut(mov){return new Promise(res=>{const r=db.transaction(MOV,'readwrite').objectStore(MOV).add(mov);r.onsuccess=()=>res(r.result);});}
-function movUpdate(mov){return new Promise(res=>{const t=db.transaction(MOV,'readwrite').objectStore(MOV).put(mov);t.onsuccess=()=>res();});}
-function movGetAll(){return new Promise(res=>{const t=db.transaction(MOV,'readonly').objectStore(MOV).getAll();t.onsuccess=()=>res(t.result||[]);});}
-function movClear(){return new Promise(res=>{const t=db.transaction(MOV,'readwrite').objectStore(MOV).clear();t.onsuccess=()=>res();});}
+function movPut(mov){return idbRun(MOV,'readwrite',s=>s.add(mov));}
+function movUpdate(mov){return idbRun(MOV,'readwrite',s=>s.put(mov)).then(()=>{});}
+function movGetAll(){return idbRun(MOV,'readonly',s=>s.getAll()).then(r=>r||[]);}
+function movClear(){return idbRun(MOV,'readwrite',s=>s.clear()).then(()=>{});}
 // Borra del store local todas las líneas que coincidan en ts e itemId
-function movDeleteLocal(ts,itemId){return new Promise(res=>{
-  const st=db.transaction(MOV,'readwrite').objectStore(MOV);
-  const g=st.getAll();
-  g.onsuccess=()=>{
-    (g.result||[]).forEach(m=>{ if(m.ts===ts && m.itemId===itemId) st.delete(m.id); });
-    res();
-  };
-  g.onerror=()=>res();
+function movDeleteLocal(ts,itemId){return new Promise((res,rej)=>{
+  try{
+    const tx=db.transaction(MOV,'readwrite');const st=tx.objectStore(MOV);
+    const g=st.getAll();
+    g.onsuccess=()=>{(g.result||[]).forEach(m=>{ if(m.ts===ts && m.itemId===itemId) st.delete(m.id); });};
+    tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error||new Error('IndexedDB error'));tx.onabort=()=>rej(tx.error||new Error('IndexedDB abortado'));
+  }catch(e){rej(e);}
 });}
 function getTurno(date){const h=date.getHours();if(h>=6&&h<14)return'Mañana (06:00–14:00)';if(h>=14&&h<22)return'Tarde (14:00–22:00)';return'Noche (22:00–06:00)';}
 async function registrarMovimiento(item, anterior, nuevo, tipo, coste, provider){
@@ -174,6 +177,7 @@ const SUPABASE_KEY='sb_publishable_x2BxA94JGgKWqNR1tYXYPA_2s-C_wEy';
 const EDGE_URL=SUPABASE_URL+'/functions/v1/bright-worker';
 let sb=null, cloudOK=false;
 function initSupabase(){
+  if(sb)return true;
   try{
     if(window.supabase&&window.supabase.createClient){
       sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
@@ -182,20 +186,143 @@ function initSupabase(){
   }catch(e){console.warn('Supabase init falló',e);}
   return false;
 }
-// Sube un item a la nube (insert o update)
-async function cloudPut(item){
+// ---- Validación de datos que llegan de la nube (evita inyección de código en el HTML)
+const SAFE_ID_RE=/^[A-Za-z0-9_-]{1,64}$/;
+function isSafeId(id){return typeof id==='string'&&SAFE_ID_RE.test(id);}
+const SAFE_PHOTO_RE=/^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+\/=]+$/;
+function safePhoto(p){return (typeof p==='string'&&SAFE_PHOTO_RE.test(p))?p:null;}
+function safeUrl(u){return (typeof u==='string'&&/^https?:\/\//i.test(u))?u:'#';}
+// Literal JS seguro para usar dentro de un atributo HTML onclick="..." (JSON + escape HTML)
+function jsq(s){return esc(JSON.stringify(String(s==null?'':s)));}
+function cleanText(s){return String(s==null?'':s).replace(/[<>"'&`\\]/g,'');}
+function cleanNum(v,min,max,def){v=Number(v);return Number.isFinite(v)?Math.max(min,Math.min(max,v)):def;}
+function strArr(v){return Array.isArray(v)?v.filter(x=>x!=null).map(x=>String(x)):[];}
+function cleanItem(it){
+  if(!it||!isSafeId(String(it.id)))return null;
+  const m={...it,id:String(it.id)};
+  m.loc=cleanText(m.loc);
+  if(typeof m.pos==='string')m.pos=cleanText(m.pos);
+  m.photo=safePhoto(m.photo);
+  // Tipos esperados (evita que un valor no numérico llegue al HTML)
+  m.stock=cleanNum(m.stock,-1e9,1e9,0);
+  m.min=cleanNum(m.min,-1e9,1e9,0);
+  m.precio=(m.precio==null||!Number.isFinite(Number(m.precio)))?null:Number(m.precio);
+  ['name','cat','ref','brand','machine','notes'].forEach(k=>{if(m[k]!=null&&typeof m[k]!=='string')m[k]=String(m[k]);});
+  if(m.cats!=null)m.cats=strArr(m.cats);
+  return m;
+}
+function cleanItems(list){return (Array.isArray(list)?list:[]).map(cleanItem).filter(Boolean);}
+function cleanBlock(b){
+  if(!b||typeof b!=='object')return null;
+  const id=String(b.id==null?'':b.id).replace(/[^A-Za-z0-9_-]/g,'').slice(0,64);
+  if(!id)return null;
+  const o={id,k:b.k==='g'?'g':'h'};
+  if(b.n!=null)o.n=Math.round(cleanNum(b.n,1,40,1));
+  if(b.rows!=null)o.rows=Math.round(cleanNum(b.rows,1,40,1));
+  if(b.cols!=null)o.cols=Math.round(cleanNum(b.cols,1,40,1));
+  if(b.name!=null)o.name=cleanText(b.name).slice(0,60);
+  return o;
+}
+function cleanLayout(l){
+  const out={};
+  if(!l||typeof l!=='object')return out;
+  Object.keys(l).forEach(k=>{
+    if(!/^\d{1,2}$/.test(k))return;
+    const arr=Array.isArray(l[k])?l[k].map(cleanBlock).filter(Boolean).slice(0,40):[];
+    if(arr.length)out[k]=arr;
+  });
+  return out;
+}
+// Estanterías: código solo con letras, números, guion y guion bajo; números acotados; distribución validada
+function cleanShelves(list){
+  return (Array.isArray(list)?list:[]).map(s=>{
+    if(!s||typeof s!=='object')return null;
+    const id=String(s.id==null?'':s.id).replace(/[^A-Za-z0-9_-]/g,'').slice(0,64);
+    if(!id)return null;
+    const o={};
+    Object.keys(s).forEach(k=>{
+      if(['id','name','baldas','layout','x','y','w','h'].includes(k))return;
+      const v=s[k];
+      if(typeof v==='number'&&Number.isFinite(v))o[k]=v;
+      else if(typeof v==='boolean')o[k]=v;
+      else if(typeof v==='string')o[k]=cleanText(v).slice(0,100);
+    });
+    ['x','y','w','h'].forEach(k=>{if(typeof s[k]==='number'&&Number.isFinite(s[k]))o[k]=cleanNum(s[k],-10000,100000,0);});
+    o.id=id;
+    o.name=cleanText(s.name==null?id:s.name).slice(0,80)||id;
+    o.baldas=Math.round(cleanNum(s.baldas,1,20,5));
+    if(s.layout)o.layout=cleanLayout(s.layout);
+    return o;
+  }).filter(Boolean);
+}
+function cleanAisles(list){
+  return (Array.isArray(list)?list:[]).filter(a=>a&&typeof a==='object').map(a=>({
+    label:cleanText(a.label==null?'Pasillo':a.label).slice(0,60),
+    x:cleanNum(a.x,-10000,100000,0),y:cleanNum(a.y,-10000,100000,0),
+    w:cleanNum(a.w,0,100000,0),h:cleanNum(a.h,0,100000,0)
+  }));
+}
+
+// ---- Cola de cambios pendientes de subir (offline / fallos de red)
+let dirtyIds=new Set(), dirtyDel=new Set();
+function persistDirty(){cfgPut('dirtyIds',[...dirtyIds]).catch(()=>{});cfgPut('dirtyDel',[...dirtyDel]).catch(()=>{});}
+function markDirty(id){dirtyIds.add(id);dirtyDel.delete(id);persistDirty();}
+function clearDirty(id){if(dirtyIds.delete(id))persistDirty();}
+function markDirtyDel(id){dirtyDel.add(id);dirtyIds.delete(id);persistDirty();}
+function clearDirtyDel(id){if(dirtyDel.delete(id))persistDirty();}
+// Sube a la nube lo que quedó pendiente (devuelve cuando termina)
+async function flushDirty(){
   if(!sb)return;
+  for(const id of [...dirtyDel]){await cloudDelete(id);}
+  for(const id of [...dirtyIds]){
+    const it=items.find(x=>x.id===id);
+    if(!it){dirtyIds.delete(id);continue;}
+    await cloudPut(it);
+  }
+  persistDirty();
+}
+// Token a enviar a la Edge Function: el del usuario (si usa Supabase Auth) o la clave pública
+async function authBearer(){
+  try{if(sb&&useSbAuth()){const{data}=await sb.auth.getSession();if(data&&data.session)return data.session.access_token;}}catch(e){}
+  return SUPABASE_KEY;
+}
+// Sube un item a la nube (insert o update). Devuelve true si se guardó.
+// La foto solo se envía si tiene valor (o si opts.photo=true), para no borrar la de la nube
+// con un null cuando la foto local aún no se ha descargado.
+async function cloudPut(item,opts){
+  if(!sb){markDirty(item.id);return false;}
   // Mapear el campo local 'cats' a la columna 'categories' de la tabla
   const cloudItem={...item};
   cloudItem.categories=item.cats||[];
   delete cloudItem.cats;
-  try{const{error}=await sb.from(WH.tblItems).upsert(cloudItem,{onConflict:'id'});if(error)throw error;cloudOK=true;}
-  catch(e){cloudOK=false;console.warn('cloudPut error',e);}
+  if(!(opts&&opts.photo)&&!cloudItem.photo)delete cloudItem.photo;
+  try{const{error}=await sb.from(WH.tblItems).upsert(cloudItem,{onConflict:'id'});if(error)throw error;cloudOK=true;clearDirty(item.id);return true;}
+  catch(e){cloudOK=false;console.warn('cloudPut error',e);markDirty(item.id);return false;}
 }
 async function cloudDelete(id){
-  if(!sb)return;
-  try{const{error}=await sb.from(WH.tblItems).delete().eq('id',id);if(error)throw error;cloudOK=true;}
-  catch(e){cloudOK=false;console.warn('cloudDelete error',e);}
+  if(!sb){markDirtyDel(id);return false;}
+  try{const{error}=await sb.from(WH.tblItems).delete().eq('id',id);if(error)throw error;cloudOK=true;clearDirtyDel(id);return true;}
+  catch(e){cloudOK=false;console.warn('cloudDelete error',e);markDirtyDel(id);return false;}
+}
+// Lee el stock actual de un artículo en la nube y lo copia al objeto local (evita pisar cambios de otros)
+async function refreshStock(item){
+  if(!sb||!item)return;
+  if(dirtyIds.has(item.id))return; // hay un cambio local pendiente de subir: manda el valor local
+  try{
+    const{data,error}=await withTimeout(sb.from(WH.tblItems).select('stock').eq('id',item.id).maybeSingle(),5000,'stock');
+    if(!error&&data&&typeof data.stock==='number')item.stock=data.stock;
+  }catch(e){console.warn('refreshStock',e);}
+}
+// Descarga todas las filas de una consulta paginando (Supabase limita a ~1000 por petición)
+async function fetchAllPages(buildQuery,pageSize=1000,maxPages=200){
+  let all=[];
+  for(let pg=0;pg<maxPages;pg++){
+    const{data,error}=await buildQuery().range(pg*pageSize,pg*pageSize+pageSize-1);
+    if(error)throw error;
+    all=all.concat(data||[]);
+    if(!data||data.length<pageSize)break;
+  }
+  return all;
 }
 async function cloudGetAll(){
   if(!sb)return null;
@@ -215,12 +342,12 @@ async function cloudGetMeta(){
   if(!sb)return null;
   const cols='id,name,cat,categories,loc,pos,precio,stock,min,ref,brand,machine,notes';
   try{
-    const{data,error}=await withTimeout(sb.from(WH.tblItems).select(cols).limit(10000),20000,'datos');
-    if(error)throw error;cloudOK=true;return data||[];
+    const data=await withTimeout(fetchAllPages(()=>sb.from(WH.tblItems).select(cols).order('id')),40000,'datos');
+    cloudOK=true;return data||[];
   }catch(e){
     console.warn('cloudGetMeta error, intento con * :',e);
     // Respaldo: si la lista de columnas falla, usa select('*')
-    try{const{data,error}=await withTimeout(sb.from(WH.tblItems).select('*').limit(10000),25000,'datos*');if(error)throw error;cloudOK=true;return data||[];}
+    try{const data=await withTimeout(fetchAllPages(()=>sb.from(WH.tblItems).select('*').order('id')),60000,'datos*');cloudOK=true;return data||[];}
     catch(e2){cloudOK=false;console.warn('cloudGetMeta * error',e2);return null;}
   }
 }
@@ -234,7 +361,7 @@ async function cloudGetPhotos(ids){
     try{
       const{data,error}=await withTimeout(sb.from(WH.tblItems).select('id,photo').in('id',grupo),20000,'fotos');
       if(error)throw error;
-      (data||[]).forEach(r=>{res[r.id]=r.photo||null;});
+      (data||[]).forEach(r=>{res[r.id]=safePhoto(r.photo);});
     }catch(e){console.warn('cloudGetPhotos lote error',e);}
   }
   return res;
@@ -276,7 +403,7 @@ async function cloudMovPut(mov){
 }
 async function cloudMovGetAll(){
   if(!sb||!WH?.tblMov)return[];
-  try{const{data,error}=await sb.from(WH.tblMov).select('*').order('ts',{ascending:false});if(error)throw error;return data||[];}
+  try{return await fetchAllPages(()=>sb.from(WH.tblMov).select('*').order('ts',{ascending:false}));}
   catch(e){console.warn('cloudMovGetAll error',e);return[];}
 }
 async function cloudMovDelete(ts,itemId){
@@ -323,7 +450,7 @@ function updateSyncBadge(state){
   t.textContent = state==='ok'?'Sincronizado' : state==='syncing'?'Sincronizando…' : 'Sin conexión';
 }
 
-let items=[],categories=[],providers=[],shelves=[],currentView='gallery',currentCat='',currentItem=null,pendingPhoto=null,adjustValue=0,editingId=null,scanner=null,shelfDraft=[],scanPurpose=null,pendingDelta=0;
+let items=[],categories=[],providers=[],shelves=[],currentView='gallery',currentCat='',currentItem=null,pendingPhoto=null,photoRemoved=false,adjustValue=0,editingId=null,scanner=null,shelfDraft=[],scanPurpose=null,pendingDelta=0;
 let lastAIIdent=null; // última identificación cruda de la IA (para buscar en internet)
 
 // shelves model: [{id:'01', name:'Estantería 01', baldas:5}, ...]
@@ -345,17 +472,19 @@ async function init(){
   await openDB();
   initSupabase();
   // Cargar primero lo local (rápido), luego intentar la nube
-  categories=await cfgGet('categories')||[];
-  providers=await cfgGet('providers')||[];
+  categories=strArr(await cfgGet('categories'));
+  providers=strArr(await cfgGet('providers'));
   shelves=await cfgGet('shelves');
-  aisles=await cfgGet('aisles')||[];
+  if(Array.isArray(shelves))shelves=cleanShelves(shelves);
+  aisles=cleanAisles(await cfgGet('aisles'));
   mapSize=await cfgGet('mapSize')||{...DEFAULT_MAP_SIZE};
   await loadPrintedIds();
   if(!shelves||!shelves.length){shelves=defaultShelves();}
   adminPass=(await cfgGet('adminPass'))||ADMIN_PASS_DEFAULT;
   const _lc=await cfgGet('loginCfg'); if(_lc)setLoginCfg(_lc);
   try{adminUnlocked=sessionStorage.getItem('almacen_admin_'+WH.key)==='1';}catch(e){}
-  items=await dbGetAll();
+  items=cleanItems(await dbGetAll());
+  try{dirtyIds=new Set((await cfgGet('dirtyIds'))||[]);dirtyDel=new Set((await cfgGet('dirtyDel'))||[]);}catch(e){}
   renderAll();
   renderHomeMovements();
   // Sincronizar desde la nube
@@ -371,30 +500,50 @@ async function init(){
 // Trae todo desde Supabase. Estrategia rápida y fiable:
 //  1) Descarga SOLO los datos (sin fotos) → rápido, casi nunca falla
 //  2) Las fotos que falten en local se bajan después en segundo plano
+let _syncing=false;
 async function syncFromCloud(refrescarTodasFotos=false){
   if(!sb){setCloudStatus(false);return;}
+  if(_syncing||_stockBusy)return; // evita dos sincronizaciones a la vez y pisar un cambio de stock en curso
+  _syncing=true;
+  try{await _syncFromCloud(refrescarTodasFotos);}
+  catch(e){console.warn('Error al sincronizar',e);try{updateSyncBadge('off');}catch(_){}}
+  finally{_syncing=false;}
+}
+async function _syncFromCloud(refrescarTodasFotos){
   updateSyncBadge('syncing');
   await pushPendingMovements(); // subir primero los movimientos que quedaron pendientes
+  await flushDirty();           // y los artículos cambiados sin conexión
   const meta=await cloudGetMeta();
   if(meta===null){setCloudStatus(false);updateSyncBadge('off');return;}
   setCloudStatus(true);
 
+  // Si la nube devuelve una lista vacía pero hay datos locales (p. ej. sesión caducada), no se borra nada
+  if(meta.length===0&&items.length>0){console.warn('La nube devolvió 0 artículos; se conserva lo local');updateSyncBadge('off');return;}
   // Mapa de fotos locales actuales (para conservarlas y no volver a bajarlas)
   const fotosLocales={};
   items.forEach(i=>{if(i.photo)fotosLocales[i.id]=i.photo;});
 
-  // Fusionar: datos nuevos de la nube + foto local si ya la teníamos
-  items=meta.map(it=>{
+  // Fusionar: datos nuevos de la nube + foto local si ya la teníamos.
+  // Lo que aún está pendiente de subir (dirty) manda la versión local; lo pendiente de borrar se omite.
+  const localById={};items.forEach(i=>{localById[i.id]=i;});
+  const seen=new Set();
+  const merged=[];
+  meta.forEach(it=>{
+    if(!isSafeId(it.id)||dirtyDel.has(it.id))return;
+    seen.add(it.id);
+    if(dirtyIds.has(it.id)&&localById[it.id]){merged.push(localById[it.id]);return;}
     const m={...it};
     m.cats=Array.isArray(it.categories)?it.categories:[];
     delete m.categories;
     m.photo=fotosLocales[it.id]||null; // conservamos la foto local; si no hay, se baja luego
-    return m;
+    merged.push(m);
   });
+  items.forEach(i=>{if(dirtyIds.has(i.id)&&!seen.has(i.id))merged.push(i);}); // altas locales aún sin subir
+  items=merged.map(cleanItem).filter(Boolean);
+  if(currentItem){const n=items.find(x=>x.id===currentItem.id);if(n)currentItem=n;}
 
-  // Guardar en local (merge limpio)
-  await dbClear();
-  for(const it of items)await dbPut(it);
+  // Guardar en local en una sola transacción
+  await dbReplaceAll(items);
 
   // Config desde la nube
   const cCats=await cloudCfgGet('categories');
@@ -406,11 +555,11 @@ async function syncFromCloud(refrescarTodasFotos=false){
   if(cPrinted){printedIds=new Set(cPrinted);await cfgPut('printedIds',cPrinted);}
   const cModified=await cloudCfgGet('modifiedIds');
   if(cModified){modifiedIds=new Set(cModified);await cfgPut('modifiedIds',cModified);}
-  if(cCats){categories=cCats;await cfgPut('categories',categories);}
-  if(cProviders){providers=cProviders;await cfgPut('providers',providers);}
-  if(cShelves&&cShelves.length){shelves=cShelves;await cfgPut('shelves',shelves);}
+  if(Array.isArray(cCats)){categories=strArr(cCats);await cfgPut('categories',categories);}
+  if(Array.isArray(cProviders)){providers=strArr(cProviders);await cfgPut('providers',providers);}
+  if(cShelves&&cShelves.length){shelves=cleanShelves(cShelves);await cfgPut('shelves',shelves);}
   else{await cloudCfgPut('shelves',shelves);}
-  if(cAisles){aisles=cAisles;await cfgPut('aisles',aisles);}
+  if(Array.isArray(cAisles)){aisles=cleanAisles(cAisles);await cfgPut('aisles',aisles);}
   if(cMapSize&&cMapSize.w&&cMapSize.h){mapSize=cMapSize;await cfgPut('mapSize',mapSize);}
   const cAdmin=await cloudCfgGet('adminPass'); if(cAdmin){adminPass=cAdmin;await cfgPut('adminPass',cAdmin);}
   const cLogin=await cloudCfgGet('loginCfg'); if(cLogin){setLoginCfg(cLogin);await cfgPut('loginCfg',cLogin);}
@@ -457,6 +606,7 @@ async function cloudPutRetry(item, intentos=3){
   const cloudItem={...item};
   cloudItem.categories=item.cats||[];
   delete cloudItem.cats;
+  if(!cloudItem.photo)delete cloudItem.photo; // no borrar la foto de la nube con un null
   for(let n=0;n<intentos;n++){
     try{
       const{error}=await sb.from(WH.tblItems).upsert(cloudItem,{onConflict:'id'});
@@ -568,7 +718,7 @@ function renderAlerts(){
     : '✓ Todo el stock está en niveles correctos';
 
   document.getElementById('alerts-list').innerHTML = list.length
-    ? list.map(i=>`<div class="detail-row" style="padding:13px 16px;cursor:pointer;" onclick="openDetail('${i.id}')"><div><strong>${esc(i.name)}</strong><br><span style="font-size:12px;color:var(--text2);">${i.loc}</span></div><div>${stockBadge(i)}</div></div>`).join('')
+    ? list.map(i=>`<div class="detail-row" style="padding:13px 16px;cursor:pointer;" onclick="openDetail('${i.id}')"><div><strong>${esc(i.name)}</strong><br><span style="font-size:12px;color:var(--text2);">${esc(i.loc)}</span></div><div>${stockBadge(i)}</div></div>`).join('')
     : `<div class="empty"><p>${vacioMsg}</p></div>`;
 }
 
@@ -630,7 +780,7 @@ function renderMovRows(list,dir){
     const it=items.find(x=>x.id===m.itemId); // artículo actual (para foto y abrir ficha)
     const foto=it?.photo||null;
     const thumb=`<div class="mv-thumb">${foto?`<img src="${foto}">`:`<svg width="18" height="18" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>`}</div>`;
-    const abrible=it?`onclick="openDetail('${esc(m.itemId)}')" style="cursor:pointer;"`:'';
+    const abrible=it?`onclick="openDetail(${jsq(m.itemId)})" style="cursor:pointer;"`:'';
     return `<div class="mov-row">
       <div class="mv-click" ${abrible}>
         ${thumb}
@@ -640,7 +790,7 @@ function renderMovRows(list,dir){
         </div>
       </div>
       <div class="mv-diff ${dir}">${signo}${m.diferencia}</div>
-      <button class="mv-del" title="Borrar línea" onclick="event.stopPropagation();askDeleteMov(${m.ts},'${esc(m.itemId)}')"><svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m2 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <button class="mv-del" title="Borrar línea" onclick="event.stopPropagation();askDeleteMov(${Number(m.ts)||0},${jsq(m.itemId)})"><svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m2 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     </div>`;
   }).join('');
 }
@@ -677,7 +827,7 @@ async function confirmDeleteMov(){
 function renderCats(){
   const inCat=(i,c)=>i.cat===c||(i.cats||[]).includes(c);
   const cats=[...new Set(items.flatMap(i=>[i.cat,...(i.cats||[])]))].filter(Boolean).sort();
-  document.getElementById('cats').innerHTML=`<span class="cat-pill${filterLowStock?' active':''}" id="filter-lowstock" onclick="toggleLowStockFilter()">⚠ Stock bajo</span><span class="cat-pill ${currentCat===''?'active':''}" onclick="setCat('')">Todos</span>`+cats.map(c=>`<span class="cat-pill ${currentCat===c?'active':''}" onclick="setCat('${esc(c)}')">${esc(c)} (${items.filter(i=>inCat(i,c)).length})</span>`).join('');
+  document.getElementById('cats').innerHTML=`<span class="cat-pill${filterLowStock?' active':''}" id="filter-lowstock" onclick="toggleLowStockFilter()">⚠ Stock bajo</span><span class="cat-pill ${currentCat===''?'active':''}" onclick="setCat('')">Todos</span>`+cats.map(c=>`<span class="cat-pill ${currentCat===c?'active':''}" onclick="setCat(${jsq(c)})">${esc(c)} (${items.filter(i=>inCat(i,c)).length})</span>`).join('');
 }
 function setCat(c){currentCat=c;currentPage=0;renderCats();renderItems();}
 function renderCatManage(){
@@ -719,10 +869,10 @@ function toggleShelfGroup(sid){
 }
 
 function itemCardHTML(i){
-  return `<div class="item-card" onclick="openDetail('${i.id}')"><div class="item-photo">${i.photo?`<img src="${i.photo}" loading="lazy">`:`<div class="ph"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.5"/><path d="M21 15l-5-5L5 21" stroke-width="1.5"/></svg></div>`}</div><div class="item-body"><div class="item-name">${esc(i.name)}</div><div class="item-meta"><span class="badge badge-loc">${i.loc}</span>${stockBadge(i)}</div></div></div>`;
+  return `<div class="item-card" onclick="openDetail('${i.id}')"><div class="item-photo">${i.photo?`<img src="${esc(i.photo)}" loading="lazy">`:`<div class="ph"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.5"/><path d="M21 15l-5-5L5 21" stroke-width="1.5"/></svg></div>`}</div><div class="item-body"><div class="item-name">${esc(i.name)}</div><div class="item-meta"><span class="badge badge-loc">${esc(i.loc)}</span>${stockBadge(i)}</div></div></div>`;
 }
 function itemRowHTML(i){
-  return `<div class="detail-row" style="padding:13px 16px;cursor:pointer;align-items:center;" onclick="openDetail('${i.id}')"><div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;"><div style="width:44px;height:44px;border-radius:8px;background:var(--surface2);overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;">${i.photo?`<img src="${i.photo}" style="width:100%;height:100%;object-fit:cover;">`:`<svg width="20" height="20" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>`}</div><div style="min-width:0;"><strong style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(i.name)}</strong><span style="font-size:12px;color:var(--text2);">${esc(i.cat)} · ${i.loc}${(adminUnlocked&&i.precio!=null)?' · 💶 '+fmtEur(i.precio)+'/u':''}</span></div></div>${stockBadge(i)}</div>`;
+  return `<div class="detail-row" style="padding:13px 16px;cursor:pointer;align-items:center;" onclick="openDetail('${i.id}')"><div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;"><div style="width:44px;height:44px;border-radius:8px;background:var(--surface2);overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;">${i.photo?`<img src="${esc(i.photo)}" style="width:100%;height:100%;object-fit:cover;">`:`<svg width="20" height="20" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>`}</div><div style="min-width:0;"><strong style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(i.name)}</strong><span style="font-size:12px;color:var(--text2);">${esc(i.cat)} · ${esc(i.loc)}${(adminUnlocked&&i.precio!=null)?' · 💶 '+fmtEur(i.precio)+'/u':''}</span></div></div>${stockBadge(i)}</div>`;
 }
 
 function renderItems(){
@@ -806,7 +956,7 @@ function renderCatChips(){
   cont.innerHTML=categories.map(c=>{
     const isMain = c===mainCat;
     const on = selectedExtraCats.has(c);
-    return `<div class="cat-chip ${on?'on':''} ${isMain?'disabled':''}" onclick="toggleExtraCat('${esc(c).replace(/'/g,"\\'")}')">${esc(c)}${isMain?' (principal)':''}</div>`;
+    return `<div class="cat-chip ${on?'on':''} ${isMain?'disabled':''}" onclick="toggleExtraCat(${jsq(c)})">${esc(c)}${isMain?' (principal)':''}</div>`;
   }).join('');
 }
 function toggleExtraCat(c){
@@ -826,7 +976,7 @@ function closePhotoViewer(){
 
 function openDetail(id){
   currentItem=items.find(i=>i.id===id);if(!currentItem)return;const i=currentItem;
-  document.getElementById('detail-photo').innerHTML=i.photo?`<img src="${i.photo}" onclick="openPhotoViewer('${i.id}')" style="cursor:zoom-in;"><div class="zoom-hint">Toca para ampliar</div>`:`<div class="ph"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.5"/><path d="M21 15l-5-5L5 21" stroke-width="1.5"/></svg></div>`;
+  document.getElementById('detail-photo').innerHTML=i.photo?`<img src="${esc(i.photo)}" onclick="openPhotoViewer('${i.id}')" style="cursor:zoom-in;"><div class="zoom-hint">Toca para ampliar</div>`:`<div class="ph"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.5"/><path d="M21 15l-5-5L5 21" stroke-width="1.5"/></svg></div>`;
   document.getElementById('detail-name').textContent=i.name;
   document.getElementById('detail-cat').innerHTML=`<span class="badge badge-cat">${esc(i.cat)}</span>${(i.cats||[]).map(c=>`<span class="badge badge-cat2">${esc(c)}</span>`).join('')}`;
   document.getElementById('detail-stock').textContent=i.stock;
@@ -1033,7 +1183,29 @@ function renderPending(){
   document.getElementById('pending-result').textContent=result+' ud'+(result===1?'':'s');
 }
 function cancelPending(){pendingDelta=0;renderPending();}
-async function confirmPending(){
+let _stockBusy=false;
+async function withFreshStock(fn,opts){
+  if(_stockBusy){toast('Procesando…');return;}
+  _stockBusy=true;
+  try{
+    const antes=currentItem?currentItem.stock:null;
+    await refreshStock(currentItem);
+    // Ajuste a un valor absoluto: si el stock cambió mientras tanto, se avisa en vez de aplicarlo a ciegas
+    if(opts&&opts.abortIfChanged&&currentItem&&antes!==null&&currentItem.stock!==antes){
+      adjustValue=currentItem.stock;
+      const a=document.getElementById('adjust-val');if(a)a.textContent=adjustValue;
+      const d=document.getElementById('detail-stock');if(d)d.textContent=currentItem.stock;
+      renderAll();
+      toast('El stock ha cambiado (ahora '+currentItem.stock+'). Revísalo y vuelve a aplicar');
+      return;
+    }
+    await fn();
+  }finally{_stockBusy=false;}
+}
+function confirmPending(){return withFreshStock(_confirmPending);}
+function applyAdjust(){return withFreshStock(_applyAdjust,{abortIfChanged:true});}
+function applyPurchase(){return withFreshStock(_applyPurchase);}
+async function _confirmPending(){
   if(!currentItem||pendingDelta===0)return;
   const btn=document.getElementById('pending-confirm-btn');
   const anterior=currentItem.stock;
@@ -1061,7 +1233,7 @@ async function confirmPending(){
   }
 }
 function stepAdjust(d){adjustValue=Math.max(0,adjustValue+d);document.getElementById('adjust-val').textContent=adjustValue;}
-async function applyAdjust(){if(!currentItem)return;const anterior=currentItem.stock;const nuevo=adjustValue;if(anterior===nuevo){toast('Sin cambios');return;}const tipo=nuevo>anterior?'Entrada':'Salida';const _coste=(currentItem.precio!=null)?+(Math.abs(nuevo-anterior)*currentItem.precio).toFixed(2):null;currentItem.stock=nuevo;await registrarMovimiento(currentItem,anterior,nuevo,tipo,_coste);await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;renderAll();toast('Stock actualizado: '+nuevo);}
+async function _applyAdjust(){if(!currentItem)return;const anterior=currentItem.stock;const nuevo=adjustValue;if(anterior===nuevo){toast('Sin cambios');return;}const tipo=nuevo>anterior?'Entrada':'Salida';const _coste=(currentItem.precio!=null)?+(Math.abs(nuevo-anterior)*currentItem.precio).toFixed(2):null;currentItem.stock=nuevo;await registrarMovimiento(currentItem,anterior,nuevo,tipo,_coste);await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;renderAll();toast('Stock actualizado: '+nuevo);}
 function fmtEur(n){return (Number(n)||0).toFixed(2).replace('.',',')+' €';}
 function calcPurNet(){
   const p=parseFloat(document.getElementById('pur-price').value)||0;
@@ -1088,7 +1260,7 @@ function openPurchase(){
     openModal('modal-purchase');
   });
 }
-async function applyPurchase(){
+async function _applyPurchase(){
   if(!currentItem)return;
   const qty=parseInt(document.getElementById('pur-qty').value)||0;
   const praw=document.getElementById('pur-price').value.trim();
@@ -1098,6 +1270,8 @@ async function applyPurchase(){
   const price=priceBase!=null?+(priceBase*(1-disc/100)).toFixed(4):null;
   const provider=document.getElementById('pur-provider').value.trim();
   if(qty<1){toast('Indica cuántas unidades entran');return;}
+  if(priceBase!=null&&priceBase<0){toast('Precio no válido');return;}
+  if(disc<0||disc>100){toast('Descuento no válido (0-100)');return;}
   const anterior=currentItem.stock;
   const precioAnterior=currentItem.precio!=null?currentItem.precio:null;
   currentItem.stock=anterior+qty;
@@ -1132,7 +1306,7 @@ function askDelete(){
 }
 
 function openAddForm(){
-  editingId=null;pendingPhoto=null;
+  editingId=null;pendingPhoto=null;photoRemoved=false;
   document.getElementById('form-title').textContent='Añadir material';
   rebuildCatSelect();buildShelfOptions();
   ['f-name','f-ref','f-brand','f-machine','f-notes','f-newcat'].forEach(id=>document.getElementById(id).value='');
@@ -1149,7 +1323,7 @@ function openAddForm(){
   renderPhotoZone();resetAiFillStatus();openModal('modal-form');
 }
 function editCurrentItem(){
-  if(!currentItem)return;editingId=currentItem.id;pendingPhoto=currentItem.photo||null;
+  if(!currentItem)return;editingId=currentItem.id;pendingPhoto=currentItem.photo||null;photoRemoved=false;
   document.getElementById('form-title').textContent='Editar material';rebuildCatSelect();buildShelfOptions();
   document.getElementById('f-name').value=currentItem.name;document.getElementById('f-cat').value=currentItem.cat;
   document.getElementById('f-ref').value=currentItem.ref||'';document.getElementById('f-brand').value=currentItem.brand||'';
@@ -1160,7 +1334,7 @@ function editCurrentItem(){
   document.getElementById('newcat-zone').style.display='none';renderPhotoZone();resetAiFillStatus();closeModal('modal-detail');openModal('modal-form');
 }
 function renderPhotoZone(){const z=document.getElementById('photo-zone');z.innerHTML=pendingPhoto?`<div class="photo-preview"><img src="${pendingPhoto}"><button class="rotate" onclick="rotatePhoto()" title="Girar imagen"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 12a9 9 0 11-2.64-6.36M21 3v5h-5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="remove" onclick="removePhoto()">×</button></div>`:`<div class="photo-input" onclick="document.getElementById('photo-file').click()"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 9a2 2 0 012-2h.93a2 2 0 001.66-.9l.82-1.2A2 2 0 0110.07 4h3.86a2 2 0 011.66.9l.82 1.2a2 2 0 001.66.9H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z" stroke-width="1.7"/><circle cx="12" cy="13" r="3" stroke-width="1.7"/></svg><p>Tocar para hacer foto o elegir imagen</p></div>`;}
-function removePhoto(){pendingPhoto=null;renderPhotoZone();}
+function removePhoto(){pendingPhoto=null;photoRemoved=true;renderPhotoZone();}
 // Gira la foto 90° en sentido horario
 function rotatePhoto(){
   if(!pendingPhoto)return;
@@ -1206,7 +1380,7 @@ async function aiBuscar(b64, prompt){
     try{
       resp=await fetch(EDGE_URL,{
         method:'POST',
-        headers:{'Content-Type':'application/json','Authorization':'Bearer '+SUPABASE_KEY,'apikey':SUPABASE_KEY},
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+await authBearer(),'apikey':SUPABASE_KEY},
         body:JSON.stringify({image:b64, prompt})
       });
     }catch(e){
@@ -1307,7 +1481,9 @@ async function saveItem(){
   const minVal = minRaw==='' ? 2 : (parseInt(minRaw)||0);
   const pos=getFormPos();
   let _precio;const _pg=document.getElementById('f-precio-group');if(_pg&&_pg.style.display==='none'){const _prev=editingId?items.find(x=>x.id===editingId):null;_precio=_prev&&_prev.precio!=null?_prev.precio:null;}else{const _precioRaw=document.getElementById('f-precio').value.trim();_precio=_precioRaw===''?null:(parseFloat(_precioRaw.replace(',','.'))||0);}
-  const item={id:editingId||('I'+Date.now()+Math.floor(Math.random()*1000)),name,cat,cats:extraCats,loc:shelf+'-'+balda,pos:pos,precio:_precio,stock:parseInt(document.getElementById('f-stock').value)||0,min:minVal,ref:document.getElementById('f-ref').value.trim(),brand:document.getElementById('f-brand').value.trim(),machine:document.getElementById('f-machine').value.trim(),notes:document.getElementById('f-notes').value.trim(),photo:pendingPhoto};
+  const item={id:editingId||('I'+Date.now()+Math.floor(Math.random()*1000)),name,cat,cats:extraCats,loc:shelf+'-'+balda,pos:pos,precio:_precio,stock:Math.max(0,parseInt(document.getElementById('f-stock').value)||0),min:minVal,ref:document.getElementById('f-ref').value.trim(),brand:document.getElementById('f-brand').value.trim(),machine:document.getElementById('f-machine').value.trim(),notes:document.getElementById('f-notes').value.trim(),photo:pendingPhoto};
+  if(item.precio!=null&&(isNaN(item.precio)||item.precio<0)){toast('⚠ Precio no válido');return;}
+  const _prevStockItem=editingId?items.find(x=>x.id===editingId):null;
   // ¿Es un artículo ya impreso cuya etiqueta ha cambiado?
   // La etiqueta muestra nombre, referencia y ubicación: si alguno cambia, conviene reimprimir.
   let etiquetaCambiada=false;
@@ -1319,7 +1495,12 @@ async function saveItem(){
       if(antes!==ahora){etiquetaCambiada=true;}
     }
   }
-  await dbPut(item);await cloudPut(item);items=await dbGetAll();closeModal('modal-form');
+  if(_prevStockItem&&_prevStockItem.stock!==item.stock){
+    const _d=item.stock-_prevStockItem.stock;
+    const _c=(item.precio!=null)?+(Math.abs(_d)*item.precio).toFixed(2):null;
+    await registrarMovimiento(item,_prevStockItem.stock,item.stock,_d>0?'Entrada':'Salida',_c);
+  }
+  await dbPut(item);await cloudPut(item,{photo:!!item.photo||photoRemoved});items=await dbGetAll();closeModal('modal-form');
   if(etiquetaCambiada){
     modifiedIds.add(editingId);
     await savePrintedIds();
@@ -1662,6 +1843,7 @@ async function saveEditShelf(){
 
   if(!newName){toast('El nombre no puede estar vacío');return;}
   if(!newCode){toast('El código no puede estar vacío');return;}
+  if(!SAFE_ID_RE.test(newCode)){toast('El código solo puede llevar letras, números, guion y guion bajo');return;}
 
   // Comprobar que el código no choque con otra estantería
   if(newCode!==oldId && mapDraftShelves.some((o,i)=>i!==editShelfIdx && o.id===newCode)){
@@ -2000,7 +2182,7 @@ function renderLabels(){
       </div>`:'';
     return `<div class="label-row ${sel?'sel':''}" onclick="toggleLabel('${i.id}')">
       <div class="lcheck">${sel?'<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>':''}</div>
-      <div class="linfo"><strong>${esc(i.name)}</strong><span>${i.ref?esc(i.ref)+' · ':''}${i.loc} · <strong style="color:var(--text2);">stock: ${stock}</strong></span></div>
+      <div class="linfo"><strong>${esc(i.name)}</strong><span>${i.ref?esc(i.ref)+' · ':''}${esc(i.loc)} · <strong style="color:var(--text2);">stock: ${stock}</strong></span></div>
       ${estado}${qty}
     </div>`;
   }).join('');
@@ -2175,14 +2357,13 @@ async function importBoth(data){
     for(const k of keys){
       const wh=[...(typeof WAREHOUSE_CONFIG!=='undefined'?[WAREHOUSE_CONFIG]:[]),...(typeof WAREHOUSE_OTHER_CONFIG!=='undefined'?[WAREHOUSE_OTHER_CONFIG]:[])].find(w=>w.key===k); if(!wh)continue;
       const wd=data.warehouses[k]||{};
-      for(const it of (wd.items||[])){ await cloudPutTo(wh.tblItems,it); }
+      for(const it of cleanItems(wd.items)){ await cloudPutTo(wh.tblItems,it); }
       await cloudCfgPutTo(wh.tblCfg,'categories',wd.categories||[]);
-      await cloudCfgPutTo(wh.tblCfg,'shelves',wd.shelves||[]);
+      await cloudCfgPutTo(wh.tblCfg,'shelves',cleanShelves(wd.shelves));
       if(WH && wh.key===WH.key){
-        await dbClear();
-        for(const it of (wd.items||[])) await dbPut(it);
+        await dbReplaceAll(cleanItems(wd.items));
         categories=wd.categories||[];
-        if(wd.shelves&&wd.shelves.length)shelves=wd.shelves;
+        if(wd.shelves&&wd.shelves.length)shelves=cleanShelves(wd.shelves);
         await cfgPut('categories',categories);
         await cfgPut('shelves',shelves);
         items=await dbGetAll();
@@ -2194,7 +2375,7 @@ async function importBoth(data){
   openModal('modal-confirm');
 }
 async function exportData(){const data={version:2,exported:new Date().toISOString(),categories,shelves,items:await dbGetAll()};const blob=new Blob([JSON.stringify(data)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='almacen_backup_'+(WH?WH.key+'_':'')+new Date().toISOString().slice(0,10)+'.json';a.click();toast('✓ Copia descargada');}
-function importData(e){const file=e.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=async ev=>{try{const data=JSON.parse(ev.target.result);if(data.warehouses){return importBoth(data);}if(!data.items)throw new Error('no valid');document.getElementById('confirm-title').textContent='Importar copia';document.getElementById('confirm-msg').textContent='Reemplazará el inventario actual con '+data.items.length+' items. ¿Continuar?';document.getElementById('confirm-ok').onclick=async()=>{await dbClear();for(const it of data.items)await dbPut(it);categories=data.categories||[];if(data.shelves&&data.shelves.length)shelves=data.shelves;await cfgPut('categories',categories);await cfgPut('shelves',shelves);items=await dbGetAll();closeModal('modal-confirm');renderAll();toast('⏳ Subiendo a la nube...');for(const it of items)await cloudPut(it);await cloudCfgPut('categories',categories);await cloudCfgPut('shelves',shelves);toast('✓ Importado y sincronizado ('+items.length+' items)');};openModal('modal-confirm');}catch(err){toast('Error: archivo no válido');}};reader.readAsText(file);}
+function importData(e){const file=e.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=async ev=>{try{const data=JSON.parse(ev.target.result);if(data.warehouses){return importBoth(data);}if(!data.items)throw new Error('no valid');document.getElementById('confirm-title').textContent='Importar copia';document.getElementById('confirm-msg').textContent='Reemplazará el inventario actual con '+data.items.length+' items. ¿Continuar?';document.getElementById('confirm-ok').onclick=async()=>{await dbReplaceAll(cleanItems(data.items));categories=data.categories||[];if(data.shelves&&data.shelves.length)shelves=cleanShelves(data.shelves);await cfgPut('categories',categories);await cfgPut('shelves',shelves);items=await dbGetAll();closeModal('modal-confirm');renderAll();toast('⏳ Subiendo a la nube...');for(const it of items)await cloudPut(it);await cloudCfgPut('categories',categories);await cloudCfgPut('shelves',shelves);toast('✓ Importado y sincronizado ('+items.length+' items)');};openModal('modal-confirm');}catch(err){toast('Error: archivo no válido');}};reader.readAsText(file);}
 // ===== BÚSQUEDA POR FOTO CON IA =====
 function handleAIPhoto(e){
   const file=e.target.files[0];if(!file)return;
@@ -2358,7 +2539,7 @@ async function braveSearch(query,num){
     try{
       resp=await fetch(EDGE_URL,{
         method:'POST',
-        headers:{'Content-Type':'application/json','Authorization':'Bearer '+SUPABASE_KEY,'apikey':SUPABASE_KEY},
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+await authBearer(),'apikey':SUPABASE_KEY},
         body:JSON.stringify({mode:'web', query, num:num||4})
       });
     }catch(e){
@@ -2402,7 +2583,7 @@ async function runWebSearch(){
     huboAlgo=true;
     html+=`<div style="margin:16px 0 8px;display:flex;align-items:center;gap:8px;"><span style="font-size:16px;">${c.icono}</span><span class="fl" style="color:${c.color};">${esc(c.titulo)}</span></div>`;
     its.forEach(it=>{
-      html+=`<a href="${esc(it.link)}" target="_blank" rel="noopener" class="card" style="display:block;margin-bottom:10px;text-decoration:none;color:inherit;">
+      html+=`<a href="${esc(safeUrl(it.link))}" target="_blank" rel="noopener" class="card" style="display:block;margin-bottom:10px;text-decoration:none;color:inherit;">
         <div style="padding:12px 14px;">
           <strong style="font-size:14px;color:var(--blue-text);line-height:1.35;">${esc(it.title)}</strong>
           <div style="font-size:11px;color:var(--text3);margin:3px 0 6px;">${esc(it.display)}</div>
@@ -2762,7 +2943,7 @@ function showWarehouseSelector(){
   document.getElementById('warehouse-screen').style.display='none';document.getElementById('login-screen').style.display='flex';
 }
 
-function selectWarehouse(key){
+async function selectWarehouse(key){
   if(typeof WAREHOUSE_CONFIG!=='undefined'&&WAREHOUSE_CONFIG.key===key)WH=WAREHOUSE_CONFIG;
   else if(typeof WAREHOUSE_OTHER_CONFIG!=='undefined'&&WAREHOUSE_OTHER_CONFIG.key===key)WH=WAREHOUSE_OTHER_CONFIG;
   if(!WH)return;
@@ -2770,7 +2951,7 @@ function selectWarehouse(key){
   applyBranding();
   document.getElementById('warehouse-screen').style.display='none';
   let ok=false;
-  try{ok=localStorage.getItem(WH.sesKey)==='1';}catch(e){}
+  ok=await authSessionOk();
   if(ok){enterApp();}
   else{
     document.getElementById('login-error').textContent='';
@@ -2785,18 +2966,44 @@ function backToWarehouse(){
   showWarehouseSelector();
 }
 
+function useSbAuth(){return typeof WAREHOUSE_CONFIG!=='undefined'&&!!WAREHOUSE_CONFIG.useSupabaseAuth;}
+const SESSION_MAX_MS=30*24*60*60*1000;
+function sessionValid(){
+  try{const v=Number(localStorage.getItem(WH.sesKey));return v>0&&v<=Date.now()+60000&&Date.now()-v<SESSION_MAX_MS;}
+  catch(e){return false;}
+}
+async function authSessionOk(){
+  if(!sessionValid())return false;
+  if(useSbAuth()){
+    if(!sb)initSupabase();
+    if(!sb)return false;
+    try{const{data}=await sb.auth.getSession();return !!(data&&data.session);}catch(e){return false;}
+  }
+  return true;
+}
 async function doLogin(){
   if(!WH){showWarehouseSelector();return;}
   const u=document.getElementById('login-user').value.trim();
   const p=document.getElementById('login-pass').value;
+  if(useSbAuth()){
+    // Acceso con Supabase Auth: el usuario es su correo electrónico
+    if(!sb)initSupabase();
+    const errEl=document.getElementById('login-error');
+    if(!sb){errEl.textContent='Sin conexión: no se puede iniciar sesión';return;}
+    const{error}=await sb.auth.signInWithPassword({email:u,password:p});
+    if(error){errEl.textContent='Usuario o contraseña incorrectos';document.getElementById('login-pass').value='';return;}
+    try{localStorage.setItem(WH.sesKey,String(Date.now()));}catch(e){}
+    enterApp();
+    return;
+  }
   const creds=_authCredentials||await loadAuthCredentials();
   const ph=await sha256(p);
   const storedHash=creds['pass_'+WH.key]||'';
-  if(u===creds.user && ph===storedHash){
-    try{localStorage.setItem(WH.sesKey,'1');}catch(e){}
+  if(storedHash && creds.user && u===creds.user && ph===storedHash){
+    try{localStorage.setItem(WH.sesKey,String(Date.now()));}catch(e){}
     enterApp();
   }else{
-    document.getElementById('login-error').textContent='Usuario o contraseña incorrectos';
+    document.getElementById('login-error').textContent=storedHash?'Usuario o contraseña incorrectos':'No se pueden comprobar las credenciales (sin conexión)';
     document.getElementById('login-pass').value='';
   }
 }
@@ -2808,15 +3015,22 @@ function enterApp(){
   if(!appStarted){appStarted=true;init();}
 }
 
-function logout(){
+async function logout(){
   try{if(WH)localStorage.removeItem(WH.sesKey);}catch(e){}
+  try{if(sb&&useSbAuth())await sb.auth.signOut();}catch(e){}
+  try{if(WH)sessionStorage.removeItem('almacen_admin_'+WH.key);}catch(e){}
   location.reload();
 }
 
 
 // ===== CONTRASEÑA ÚNICA / DESBLOQUEO DE SESIÓN =====
-const ADMIN_PASS_DEFAULT='Mapamsi01';
+const ADMIN_PASS_DEFAULT='';
 let adminPass=ADMIN_PASS_DEFAULT, adminUnlocked=false, pendingAdminAction=null;
+// Huella (hash) de la contraseña de administrador; si no hay ninguna guardada, usa la de app_auth
+async function adminHash(){
+  if(adminPass)return adminPass.length===64?adminPass:await sha256(adminPass);
+  return (_authCredentials&&_authCredentials.admin_pass)||'';
+}
 
 function requireAdmin(action){
   if(adminUnlocked){if(action)action();return;}
@@ -2828,7 +3042,8 @@ function requireAdmin(action){
 async function submitUnlock(){
   const p=document.getElementById('unlock-pass').value;
   const ph=await sha256(p);
-  const storedHash=adminPass.length===64?adminPass:await sha256(adminPass);
+  const storedHash=await adminHash();
+  if(!storedHash){toast('No hay contraseña de administrador configurada');return;}
   if(ph!==storedHash){toast('Contraseña incorrecta');return;}
   adminUnlocked=true;
   try{sessionStorage.setItem('almacen_admin_'+(WH?WH.key:''),'1');}catch(e){}
@@ -2853,11 +3068,11 @@ function openChangePass(){
 async function saveAdminPass(){
   const cur=document.getElementById('cp-cur').value, nu=document.getElementById('cp-new').value, n2=document.getElementById('cp-new2').value;
   const curH=await sha256(cur);
-  const adminH=adminPass.length===64?adminPass:await sha256(adminPass);
-  if(curH!==adminH){toast('La contraseña actual no es correcta');return;}
+  const adminH=await adminHash();
+  if(!adminH||curH!==adminH){toast('La contraseña actual no es correcta');return;}
   if(nu.length<4){toast('La nueva debe tener al menos 4 caracteres');return;}
   if(nu!==n2){toast('Las dos contraseñas nuevas no coinciden');return;}
-  adminPass=nu;
+  adminPass=await sha256(nu); // se guarda solo la huella, nunca la contraseña
   await cfgPut('adminPass',adminPass);
   await cloudCfgPut('adminPass',adminPass);
   closeModal('modal-change-pass');
@@ -2867,39 +3082,28 @@ async function saveAdminPass(){
 // Usuario y contraseñas de los almacenes (login)
 function getLoginCfg(){
   let c={};try{c=JSON.parse(localStorage.getItem('almacen_login')||'{}');}catch(e){}
-  const _dU=(typeof WAREHOUSE_CONFIG!=='undefined'&&WAREHOUSE_CONFIG.fallbackUser)||'manteni';
-  return {
-    user: c.user || _dU,
-    pass_electrico: c.pass_electrico || (typeof WAREHOUSE_CONFIG!=='undefined'&&WAREHOUSE_CONFIG.fallbackPassElectrico)||'Electrico',
-    pass_mecanico:  c.pass_mecanico  || (typeof WAREHOUSE_CONFIG!=='undefined'&&WAREHOUSE_CONFIG.fallbackPassMecanico)||'Mecanico'
-  };
+  return {user:c.user||'',pass_electrico:'',pass_mecanico:''};
 }
+// Ya no se guardan contraseñas en el navegador: se borra cualquier copia antigua
 function setLoginCfg(c){
-  const merged={...getLoginCfg(),...c};
-  try{localStorage.setItem('almacen_login',JSON.stringify(merged));}catch(e){}
+  try{localStorage.removeItem('almacen_login');}catch(e){}
 }
 function openUsers(){
   const c=getLoginCfg();
-  document.getElementById('us-user').value=c.user;
-  document.getElementById('us-pass-e').value=c.pass_electrico;
-  document.getElementById('us-pass-m').value=c.pass_mecanico;
+  document.getElementById('us-user').value=(_authCredentials&&_authCredentials.user)||c.user||'';
+  ['us-pass-e','us-pass-m'].forEach(id=>{const el=document.getElementById(id);el.value='';el.placeholder='Dejar vacío para no cambiarla';});
   openModal('modal-users');
 }
 async function saveUsers(){
-  const _dU=(typeof WAREHOUSE_CONFIG!=='undefined'&&WAREHOUSE_CONFIG.fallbackUser)||'manteni';
-  const _dE=(typeof WAREHOUSE_CONFIG!=='undefined'&&WAREHOUSE_CONFIG.fallbackPassElectrico)||'Electrico';
-  const _dM=(typeof WAREHOUSE_CONFIG!=='undefined'&&WAREHOUSE_CONFIG.fallbackPassMecanico)||'Mecanico';
   const cfg={
-    user:(document.getElementById('us-user').value.trim())||_dU,
-    pass_electrico:document.getElementById('us-pass-e').value.trim()||_dE,
-    pass_mecanico:document.getElementById('us-pass-m').value.trim()||_dM
+    user:document.getElementById('us-user').value.trim(),
+    pass_electrico:document.getElementById('us-pass-e').value.trim(),
+    pass_mecanico:document.getElementById('us-pass-m').value.trim()
   };
-  setLoginCfg(cfg);
-  await cfgPut('loginCfg',cfg);
-  await cloudCfgPut('loginCfg',cfg);
-  await saveAuthToSupabase({user:cfg.user,raw_pass_electrico:cfg.pass_electrico,raw_pass_mecanico:cfg.pass_mecanico});
+  if(!cfg.user&&!cfg.pass_electrico&&!cfg.pass_mecanico){toast('No hay nada que cambiar');return;}
+  const okAuth=await saveAuthToSupabase({user:cfg.user,raw_pass_electrico:cfg.pass_electrico,raw_pass_mecanico:cfg.pass_mecanico});
   closeModal('modal-users');
-  toast('✓ Accesos de almacenes actualizados');
+  toast(okAuth?'✓ Accesos de almacenes actualizados':'⚠ No se pudieron guardar los accesos (¿sin conexión o sin permisos?)');
 }
 
 // ===== MOVER ARTÍCULO ENTRE ALMACENES =====
@@ -2910,6 +3114,7 @@ function otherWarehouse(){
 async function cloudPutTo(table,item){
   if(!sb)return false;
   const ci={...item}; ci.categories=item.cats||[]; delete ci.cats;
+  if(!ci.photo)delete ci.photo;
   try{const{error}=await sb.from(table).upsert(ci,{onConflict:'id'});if(error)throw error;return true;}
   catch(e){console.warn('cloudPutTo error',e);return false;}
 }
@@ -2924,9 +3129,14 @@ function moveToOtherWarehouse(){
       const it=currentItem; const id=it.id;
       toast('Moviendo...');
       const moved={...it, loc:'', pos:''};
+      if(!moved.photo){
+        const _ph=await cloudGetPhotos([id]);
+        if(!(id in _ph)){toast('No se pudo comprobar la foto. Inténtalo con conexión.');return;}
+        moved.photo=_ph[id]||null;
+      }
       const okCloud=await cloudPutTo(other.tblItems,moved);
-      if(!sb || okCloud){
-        await dbDelete(id); await cloudDelete(id);
+      if(okCloud){
+        await dbDelete(id); await cloudDelete(id); // si el borrado falla, queda en cola y se reintenta al sincronizar
         items=await dbGetAll();
         closeModal('modal-detail');
         renderAll();
@@ -3067,7 +3277,7 @@ let svDragId=null;        // artículo arrastrándose (ratón)
 
 function svMini(i,org){
   const img = i.photo
-    ? '<img src="'+i.photo+'">'
+    ? '<img src="'+esc(i.photo)+'">'
     : '<svg width="34" height="34" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.4"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.4"/><path d="M21 15l-5-5L5 21" stroke-width="1.4"/></svg>';
   const st = isOut(i)
     ? '<span style="color:var(--red-text);font-weight:600;">Sin stock</span>'
@@ -3143,7 +3353,7 @@ async function ahPlace(){
 function openScannerFor(purpose){ scanPurpose=purpose; openScanner(); }
 function svRow(i){
   const img = i.photo
-    ? '<img src="'+i.photo+'">'
+    ? '<img src="'+esc(i.photo)+'">'
     : '<svg width="20" height="20" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>';
   const pl = posLabel(i);
   const sub = esc(i.cat||'')+' · '+esc(i.loc||'')+(pl?' · '+esc(pl):'')+((adminUnlocked&&i.precio!=null)?' · 💶 '+fmtEur(i.precio)+'/u':'');
@@ -3413,7 +3623,7 @@ function schemaOpen(el,sid,balda,cid,label){
       h+='<div class="sch-panel-items">'+its.map(it=>{
         const sel=(svSelectedId===it.id)?' sv2-sel':'';
         return '<div class="sv2-mini'+sel+'" data-id="'+it.id+'" onclick="svPick(\''+it.id+'\');document.querySelectorAll(\'.sch-cell.sch-sel\').forEach(x=>x.classList.remove(\'sch-sel\'));" style="cursor:pointer;">'+
-          (it.photo?'<div class="sv2-mini-img"><img src="'+it.photo+'"></div>':'<div class="sv2-mini-img"><svg width="34" height="34" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.4"/></svg></div>')+
+          (it.photo?'<div class="sv2-mini-img"><img src="'+esc(it.photo)+'"></div>':'<div class="sv2-mini-img"><svg width="34" height="34" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.4"/></svg></div>')+
           '<div class="sv2-mini-tx"><div class="sv2-mini-nm">'+esc(it.name)+'</div><div class="sv2-mini-st">'+it.stock+' uds.</div></div></div>';
       }).join('')+'</div>';
     } else {
@@ -3632,6 +3842,11 @@ function bulkMove(){
       for(const id of ids){
         const it=items.find(x=>x.id===id); if(!it)continue;
         const moved={...it, loc:'', pos:''};
+        if(!moved.photo){
+          const _ph=await cloudGetPhotos([id]);
+          if(!(id in _ph))continue; // no se pudo comprobar la foto: este artículo no se mueve
+          moved.photo=_ph[id]||null;
+        }
         const ok=await cloudPutTo(o.tblItems,moved);
         if(ok){ await dbDelete(id); await cloudDelete(id); okc++; }
       }
@@ -3643,9 +3858,7 @@ function bulkMove(){
     openModal('modal-confirm');
   });
 }
-// Esta copia de la app es exclusiva del Almacén Eléctrico:
-// entra siempre directo a él, sin mostrar selector ni opción de cambiar.
-selectWarehouse('electrico');
+// (El almacén correcto se elige en el evento DOMContentLoaded según el config.js de cada carpeta.)
 
 // Registro del Service Worker (PWA): permite instalar la app en el móvil
 // con icono propio y pantalla completa. No afecta si falla (navegador sin soporte).
@@ -3690,7 +3903,7 @@ function renderSearchHistory(){
   if(!row)return;
   const q=(document.getElementById('search-input')||{}).value||'';
   if(q.trim()!==''||!searchHistory.length){row.innerHTML='';return;}
-  row.innerHTML=searchHistory.map(s=>`<span class="search-hist-chip" onclick="applySearchHistory('${esc(s)}')">${esc(s)}</span>`).join('');
+  row.innerHTML=searchHistory.map(s=>`<span class="search-hist-chip" onclick="applySearchHistory(${jsq(s)})">${esc(s)}</span>`).join('');
 }
 function applySearchHistory(q){
   const inp=document.getElementById('search-input');
