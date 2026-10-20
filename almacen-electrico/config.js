@@ -9,9 +9,9 @@ const WAREHOUSE_CONFIG = {
   tblMov: 'movements',
   tblPrice: 'price_history',
   sesKey: 'almacen_sesion_electrico',
-  fallbackUser: 'manteni',
-  fallbackPassElectrico: 'Electrico',
-  fallbackPassMecanico: 'Mecanico'
+  // false = acceso antiguo (usuario/contraseña de la tabla app_auth)
+  // true  = acceso con Supabase Auth (ver SEGURIDAD.md). Hay que activarlo en los DOS almacenes.
+  useSupabaseAuth: false
 };
 
 /* El almacen opuesto (para mover material entre almacenes) */
