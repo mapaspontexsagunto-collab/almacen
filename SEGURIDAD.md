@@ -55,5 +55,8 @@ Con Supabase Auth no hay contraseña de administrador: algunos usuarios se marca
   leer y escribir el histórico de precios, y las filas antiguas de contraseñas (`adminPass`, `loginCfg`).
 - Lo que sigue siendo solo de pantalla: ocultar costes, ajustes y el nombre de quién hizo cada movimiento.
   Los precios de los artículos (`items.precio`) los puede leer cualquier usuario con sesión si inspecciona las respuestas.
+- También siguen siendo legibles para cualquier usuario con sesión los costes de las compras en el historial (`movements.coste` y `provider`).
+- Quitar el rol a un administrador (o borrar un usuario) no corta el acceso al instante: la sesión actual sigue valiendo hasta que
+  se renueva (aprox. 1 hora). Si importa, hay que cerrarle la sesión.
 - Si un administrador borra algo sin conexión y otra persona sincroniza después en ese mismo móvil, el borrado no se aplica
   en la nube (la base de datos lo rechaza) hasta que lo sincronice un administrador.

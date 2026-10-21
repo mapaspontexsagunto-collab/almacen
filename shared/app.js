@@ -302,8 +302,20 @@ async function cloudPut(item,opts){
 }
 async function cloudDelete(id){
   if(!sb){markDirtyDel(id);return false;}
-  try{const{error}=await sb.from(WH.tblItems).delete().eq('id',id);if(error)throw error;cloudOK=true;clearDirtyDel(id);return true;}
-  catch(e){cloudOK=false;console.warn('cloudDelete error',e);markDirtyDel(id);return false;}
+  try{
+    const{data,error}=await sb.from(WH.tblItems).delete().eq('id',id).select('id');
+    if(error)throw error;
+    if(!data||data.length===0){
+      // 0 filas: o ya no existía o la base de datos lo ha rechazado (sin permisos de administrador)
+      const chk=await sb.from(WH.tblItems).select('id').eq('id',id).maybeSingle();
+      if(chk.error)throw chk.error;
+      if(chk.data){const d=new Error('borrado denegado');d.denied=true;throw d;}
+    }
+    cloudOK=true;clearDirtyDel(id);return true;
+  }catch(e){
+    if(e&&e.denied){clearDirtyDel(id);toast('⚠ Sin permisos para borrar en la nube (solo administradores)');return false;}
+    cloudOK=false;console.warn('cloudDelete error',e);markDirtyDel(id);return false;
+  }
 }
 // Lee el stock actual de un artículo en la nube y lo copia al objeto local (evita pisar cambios de otros)
 async function refreshStock(item){
@@ -408,9 +420,17 @@ async function cloudMovGetAll(){
   catch(e){console.warn('cloudMovGetAll error',e);return[];}
 }
 async function cloudMovDelete(ts,itemId){
-  if(!sb||!WH?.tblMov)return;
-  try{const{error}=await sb.from(WH.tblMov).delete().eq('ts',ts).eq('itemId',itemId);if(error)throw error;}
-  catch(e){console.warn('cloudMovDelete error',e);}
+  if(!sb||!WH?.tblMov)return true;
+  try{
+    const{data,error}=await sb.from(WH.tblMov).delete().eq('ts',ts).eq('itemId',itemId).select('ts');
+    if(error)throw error;
+    if(!data||data.length===0){
+      const chk=await sb.from(WH.tblMov).select('ts').eq('ts',ts).eq('itemId',itemId).limit(1);
+      if(chk.error)throw chk.error;
+      if(chk.data&&chk.data.length)return false; // la línea sigue ahí: borrado denegado
+    }
+    return true;
+  }catch(e){console.warn('cloudMovDelete error',e);return true;}
 }
 // Histórico de precios (tabla aparte: price_history / price_history_mec)
 async function cloudPriceAdd(entry){
@@ -485,6 +505,7 @@ async function init(){
   const _lc=await cfgGet('loginCfg'); if(_lc)setLoginCfg(_lc);
   try{adminUnlocked=sessionStorage.getItem('almacen_admin_'+WH.key)==='1';}catch(e){}
   if(adminUnlocked&&useSbAuth()&&!(await isAdminRole()))adminUnlocked=false;
+  renderUserBar();
   items=cleanItems(await dbGetAll());
   try{dirtyIds=new Set((await cfgGet('dirtyIds'))||[]);dirtyDel=new Set((await cfgGet('dirtyDel'))||[]);}catch(e){}
   renderAll();
@@ -814,7 +835,8 @@ async function confirmDeleteMov(){
   if(!pendingMovDel)return;
   const {ts,itemId}=pendingMovDel;
   toast('Borrando línea...');
-  await cloudMovDelete(ts,itemId);
+  const okMov=await cloudMovDelete(ts,itemId);
+  if(!okMov){toast('⚠ Sin permisos para borrar esta línea (solo administradores)');pendingMovDel=null;return;}
   await movDeleteLocal(ts,itemId);
   pendingMovDel=null;
   // Refrescar la lista visible: la de Inicio o la de Costes, según dónde estemos
@@ -2763,6 +2785,7 @@ function showInfo(title,msg){
 
 // Comprueba si la tabla de movimientos de la nube se puede leer y escribir
 async function diagnosticoMovimientos(){
+  if(!adminUnlocked){requireAdmin(diagnosticoMovimientos);return;}
   const btn=document.getElementById('btn-diag');
   if(btn){btn.disabled=true;btn.style.opacity='0.6';}
   const tabla=WH?.tblMov||'(desconocida)';
@@ -2774,7 +2797,7 @@ async function diagnosticoMovimientos(){
       // 1) ¿Se puede LEER la tabla?
       const lectura=await sb.from(tabla).select('id',{count:'exact'}).limit(1);
       if(lectura.error){
-        msg='❌ No se puede acceder a la tabla "'+tabla+'".\n\nCausa probable: la tabla NO existe en Supabase, o tiene el candado de seguridad (RLS) activado.\n\nSolución: ejecuta en Supabase el SQL para crear las tablas y poner "disable row level security".\n\nDetalle técnico: '+(lectura.error.message||lectura.error);
+        msg='❌ No se puede acceder a la tabla "'+tabla+'".\n\nCausa probable: la tabla NO existe en Supabase, o tiene el candado de seguridad (RLS) activado.\n\nSolución: ejecuta en Supabase los SQL de seguridad (supabase_seguridad.sql y supabase_admin_roles.sql) y comprueba que la tabla existe.\n\nDetalle técnico: '+(lectura.error.message||lectura.error);
       }else{
         const total=lectura.count;
         // 2) ¿Se puede ESCRIBIR? insert de prueba y borrado
@@ -2782,7 +2805,7 @@ async function diagnosticoMovimientos(){
         const prueba={itemId:'__TEST__',nombre:'PRUEBA',ref:'',cat:'',loc:'',brand:'',machine:'',fecha:'',hora:'',turno:'',tipo:'Entrada',anterior:0,nuevo:0,diferencia:0,ts:testTs};
         const ins=await sb.from(tabla).insert(prueba);
         if(ins.error){
-          msg='⚠ La tabla "'+tabla+'" se puede LEER ('+total+' movimientos guardados en la nube) pero NO se puede ESCRIBIR.\n\nCausa: el candado de seguridad (RLS) bloquea la escritura.\n\nSolución: ejecuta en Supabase:\nalter table '+tabla+' disable row level security;\n\nDetalle técnico: '+(ins.error.message||ins.error);
+          msg='⚠ La tabla "'+tabla+'" se puede LEER ('+total+' movimientos guardados en la nube) pero NO se puede ESCRIBIR.\n\nCausa: el candado de seguridad (RLS) bloquea la escritura.\n\nSolución: ejecuta en Supabase supabase_seguridad.sql y supabase_admin_roles.sql (nunca desactives la seguridad de la tabla).\n\nDetalle técnico: '+(ins.error.message||ins.error);
         }else{
           await sb.from(tabla).delete().eq('itemId','__TEST__').eq('ts',testTs);
           msg='✅ Todo correcto.\n\nLa tabla "'+tabla+'" funciona: se puede leer y escribir.\n\nMovimientos guardados en la nube ahora mismo: '+total+'.\n\nSi tienes movimientos antiguos que solo se ven en un navegador, abre ese navegador y pulsa "Descargar de la nube": la app subirá automáticamente los que falten.';
@@ -3021,13 +3044,14 @@ function whBarHtml(cur,other,name,locked){
     ?'<span class="wh-tab active">'+esc(w.icon)+' '+corto(w)+'</span>'
     :'<a class="wh-tab" href="../almacen-'+esc(w.key)+'/index.html">'+esc(w.icon)+' '+corto(w)+'</a>';
   return tab(cur,true)+(other?tab(other,false):'')+(name?'<span class="wh-user" title="'+esc(name)+'">👤 '+esc(name)+'</span>':'')
-    +(locked===undefined?'':'<button class="wh-lock" onclick="toggleAdminLock()" title="'+(locked?'Modo administrador bloqueado: toca para desbloquear':'Modo administrador activo: toca para bloquear')+'" aria-label="Modo administrador">'+(locked?'🔒':'🔓')+' Admin</button>');
+    +(locked===undefined?'':'<button class="wh-lock" onclick="toggleAdminLock()" title="'+(locked?'Modo administrador bloqueado: toca para desbloquear':'Modo administrador activo: toca para bloquear')+'" aria-label="Modo administrador">'+(locked?'🔒':'🔓')+'<span class="lbl"> Admin</span></button>');
 }
+let _sessionUid=null;
 async function renderUserBar(){
   const bar=document.getElementById('whbar');
   if(!bar||typeof WAREHOUSE_CONFIG==='undefined')return;
   const other=(typeof WAREHOUSE_OTHER_CONFIG!=='undefined')?WAREHOUSE_OTHER_CONFIG:null;
-  bar.innerHTML=whBarHtml(WAREHOUSE_CONFIG,other,'',!adminUnlocked);
+  bar.innerHTML=whBarHtml(WAREHOUSE_CONFIG,other,'',useSbAuth()?!adminUnlocked:undefined);
   if(!useSbAuth())return;
   try{
     initSupabase();
@@ -3035,6 +3059,7 @@ async function renderUserBar(){
     const{data}=await sb.auth.getSession();
     const em=data&&data.session&&data.session.user&&data.session.user.email;
     if(em)bar.innerHTML=whBarHtml(WAREHOUSE_CONFIG,other,String(em).split('@')[0].slice(0,40),!adminUnlocked);
+    _sessionUid=data.session.user.id||null;
   }catch(e){console.warn('renderUserBar',e);}
 }
 function enterApp(){
@@ -3073,7 +3098,15 @@ async function logout(){
 // Si se cierra sesión en otra pestaña, esta se recarga para no dejar datos a la vista
 if(typeof window!=='undefined'&&window.addEventListener){
   window.addEventListener('storage',e=>{
-    if(e.key==='almacen_sesion_sb'&&e.newValue===null&&typeof appStarted!=='undefined'&&appStarted)location.reload();
+    if(typeof appStarted==='undefined'||!appStarted)return;
+    if(e.key==='almacen_sesion_sb'&&e.newValue===null){location.reload();return;}
+    if(e.key&&/^sb-.*-auth-token$/.test(e.key)){
+      try{
+        const v=e.newValue?JSON.parse(e.newValue):null;
+        const id=v&&v.user&&v.user.id;
+        if(!id||(_sessionUid&&id!==_sessionUid))location.reload(); // otro usuario (o sin sesión) en otra pestaña
+      }catch(_){}
+    }
   });
 }
 
@@ -3102,6 +3135,9 @@ function requireAdmin(action){
   if(adminUnlocked){if(action)action();return;}
   pendingAdminAction=action;
   if(useSbAuth()){showRoleUnlock();return;}
+  document.getElementById('unlock-pass').parentElement.style.display='';
+  const ub=document.getElementById('unlock-btn');if(ub)ub.style.display='';
+  document.getElementById('unlock-msg').textContent='Introduce la contraseña de Ajustes para continuar. Una vez desbloqueado, no te la volverá a pedir mientras tengas la app abierta.';
   document.getElementById('unlock-pass').value='';
   openModal('modal-unlock');
   setTimeout(()=>document.getElementById('unlock-pass').focus(),120);
@@ -3123,6 +3159,7 @@ function finishUnlock(){
   try{sessionStorage.setItem('almacen_admin_'+(WH?WH.key:''),'1');}catch(e){}
   closeModal('modal-unlock');
   renderUserBar();
+  renderAll();
   const a=pendingAdminAction;pendingAdminAction=null;
   if(a)a();
 }
@@ -3145,7 +3182,8 @@ function lockAdmin(){
   adminUnlocked=false;
   try{sessionStorage.removeItem('almacen_admin_'+(WH?WH.key:''));}catch(e){}
   renderUserBar();
-  toast('🔒 Modo administrador bloqueado');
+  renderAll();
+  toast(useSbAuth()?'🔒 Modo administrador bloqueado':'🔒 Ajustes bloqueados');
   showPage('inicio');
 }
 function goAjustes(){ requireAdmin(()=>showPage('ajustes')); }

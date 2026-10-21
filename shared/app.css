@@ -42,6 +42,7 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .wh-tab.active{background:var(--accent-text);color:var(--text);}
 .wh-lock{margin-left:auto;border:0;background:rgba(255,255,255,.14);color:inherit;border-radius:999px;padding:5px 10px;cursor:pointer;font:inherit;font-weight:600;white-space:nowrap;}
 .wh-user + .wh-lock{margin-left:0;}
+@media (max-width:430px){.wh-lock .lbl{display:none;}.wh-tab{padding:5px 10px;}.whbar{gap:6px;}}
 .wh-user{margin-left:auto;opacity:.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:45%;}
 .icon-btn{background:rgba(255,255,255,0.12);border:none;color:#fff;width:40px;height:40px;border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;cursor:pointer;}
 .icon-btn:active{background:rgba(255,255,255,0.25);}

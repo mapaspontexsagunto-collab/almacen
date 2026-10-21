@@ -173,8 +173,8 @@ test('logout borra la sesión y el desbloqueo de admin de los dos almacenes', as
 
 test('barra: candado de administrador según el estado', () => {
   const cur = { key: 'electrico', name: 'Almacén Eléctrico', icon: '⚡' };
-  assert.ok(t.whBarHtml(cur, null, 'ana', true).includes('🔒 Admin'));
-  assert.ok(t.whBarHtml(cur, null, 'ana', false).includes('🔓 Admin'));
+  assert.ok(t.whBarHtml(cur, null, 'ana', true).includes('🔒<span class="lbl"> Admin</span>'));
+  assert.ok(t.whBarHtml(cur, null, 'ana', false).includes('🔓<span class="lbl"> Admin</span>'));
   assert.ok(!t.whBarHtml(cur, null, 'ana').includes('wh-lock'), 'sin estado no hay candado');
 });
 

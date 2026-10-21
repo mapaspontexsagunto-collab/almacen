@@ -37,6 +37,10 @@ $$;
 DO $$
 DECLARE s text; t text; p record;
 BEGIN
+  -- Protección: sin ningún administrador no se podría borrar nada. Si falla, no se cambia nada.
+  IF NOT EXISTS (SELECT 1 FROM auth.users WHERE raw_app_meta_data ->> 'role' = 'admin') THEN
+    RAISE EXCEPTION 'No hay ningún administrador: ejecuta primero el PASO A (y que esa persona cierre sesión y vuelva a entrar)';
+  END IF;
   FOREACH s IN ARRAY ARRAY['', '_mec'] LOOP
 
     -- 1) Limpiar: borrar TODAS las políticas existentes de las cuatro tablas del almacén
@@ -52,34 +56,34 @@ BEGIN
     -- 2) Artículos: cualquier usuario ve, crea y edita; solo administradores borran
     t := 'items' || s;
     IF to_regclass('public.' || t) IS NOT NULL THEN
-      EXECUTE format('CREATE POLICY items_ver ON public.%I FOR SELECT TO authenticated USING (public.es_usuario())', t);
-      EXECUTE format('CREATE POLICY items_crear ON public.%I FOR INSERT TO authenticated WITH CHECK (public.es_usuario())', t);
-      EXECUTE format('CREATE POLICY items_editar ON public.%I FOR UPDATE TO authenticated USING (public.es_usuario()) WITH CHECK (public.es_usuario())', t);
-      EXECUTE format('CREATE POLICY items_borrar ON public.%I FOR DELETE TO authenticated USING (public.es_admin())', t);
+      EXECUTE format('CREATE POLICY items_ver ON public.%I FOR SELECT TO authenticated USING ((SELECT public.es_usuario()))', t);
+      EXECUTE format('CREATE POLICY items_crear ON public.%I FOR INSERT TO authenticated WITH CHECK ((SELECT public.es_usuario()))', t);
+      EXECUTE format('CREATE POLICY items_editar ON public.%I FOR UPDATE TO authenticated USING ((SELECT public.es_usuario())) WITH CHECK ((SELECT public.es_usuario()))', t);
+      EXECUTE format('CREATE POLICY items_borrar ON public.%I FOR DELETE TO authenticated USING ((SELECT public.es_admin()))', t);
     END IF;
 
     -- 3) Configuración: todos, salvo las filas antiguas de contraseñas (solo administradores)
     t := 'config' || s;
     IF to_regclass('public.' || t) IS NOT NULL THEN
-      EXECUTE format('CREATE POLICY config_ver ON public.%I FOR SELECT TO authenticated USING (public.es_usuario() AND (key NOT IN (''adminPass'', ''loginCfg'') OR public.es_admin()))', t);
-      EXECUTE format('CREATE POLICY config_crear ON public.%I FOR INSERT TO authenticated WITH CHECK (public.es_usuario() AND (key NOT IN (''adminPass'', ''loginCfg'') OR public.es_admin()))', t);
-      EXECUTE format('CREATE POLICY config_editar ON public.%I FOR UPDATE TO authenticated USING (public.es_usuario() AND (key NOT IN (''adminPass'', ''loginCfg'') OR public.es_admin())) WITH CHECK (public.es_usuario() AND (key NOT IN (''adminPass'', ''loginCfg'') OR public.es_admin()))', t);
-      EXECUTE format('CREATE POLICY config_borrar ON public.%I FOR DELETE TO authenticated USING (public.es_admin())', t);
+      EXECUTE format('CREATE POLICY config_ver ON public.%I FOR SELECT TO authenticated USING ((SELECT public.es_usuario()) AND (key NOT IN (''adminPass'', ''loginCfg'') OR (SELECT public.es_admin())))', t);
+      EXECUTE format('CREATE POLICY config_crear ON public.%I FOR INSERT TO authenticated WITH CHECK ((SELECT public.es_usuario()) AND (key NOT IN (''adminPass'', ''loginCfg'') OR (SELECT public.es_admin())))', t);
+      EXECUTE format('CREATE POLICY config_editar ON public.%I FOR UPDATE TO authenticated USING ((SELECT public.es_usuario()) AND (key NOT IN (''adminPass'', ''loginCfg'') OR (SELECT public.es_admin()))) WITH CHECK ((SELECT public.es_usuario()) AND (key NOT IN (''adminPass'', ''loginCfg'') OR (SELECT public.es_admin())))', t);
+      EXECUTE format('CREATE POLICY config_borrar ON public.%I FOR DELETE TO authenticated USING ((SELECT public.es_admin()))', t);
     END IF;
 
     -- 4) Movimientos: todos ven y crean; solo administradores modifican o borran líneas
     t := 'movements' || s;
     IF to_regclass('public.' || t) IS NOT NULL THEN
-      EXECUTE format('CREATE POLICY mov_ver ON public.%I FOR SELECT TO authenticated USING (public.es_usuario())', t);
-      EXECUTE format('CREATE POLICY mov_crear ON public.%I FOR INSERT TO authenticated WITH CHECK (public.es_usuario())', t);
-      EXECUTE format('CREATE POLICY mov_editar ON public.%I FOR UPDATE TO authenticated USING (public.es_admin()) WITH CHECK (public.es_admin())', t);
-      EXECUTE format('CREATE POLICY mov_borrar ON public.%I FOR DELETE TO authenticated USING (public.es_admin())', t);
+      EXECUTE format('CREATE POLICY mov_ver ON public.%I FOR SELECT TO authenticated USING ((SELECT public.es_usuario()))', t);
+      EXECUTE format('CREATE POLICY mov_crear ON public.%I FOR INSERT TO authenticated WITH CHECK ((SELECT public.es_usuario()))', t);
+      EXECUTE format('CREATE POLICY mov_editar ON public.%I FOR UPDATE TO authenticated USING ((SELECT public.es_admin())) WITH CHECK ((SELECT public.es_admin()))', t);
+      EXECUTE format('CREATE POLICY mov_borrar ON public.%I FOR DELETE TO authenticated USING ((SELECT public.es_admin()))', t);
     END IF;
 
     -- 5) Histórico de precios: solo administradores (ver y escribir)
     t := 'price_history' || s;
     IF to_regclass('public.' || t) IS NOT NULL THEN
-      EXECUTE format('CREATE POLICY precios_admin ON public.%I FOR ALL TO authenticated USING (public.es_admin()) WITH CHECK (public.es_admin())', t);
+      EXECUTE format('CREATE POLICY precios_admin ON public.%I FOR ALL TO authenticated USING ((SELECT public.es_admin())) WITH CHECK ((SELECT public.es_admin()))', t);
     END IF;
 
   END LOOP;
