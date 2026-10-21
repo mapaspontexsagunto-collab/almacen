@@ -3042,10 +3042,30 @@ function enterApp(){
 }
 
 async function logout(){
-  try{localStorage.removeItem(sesStorageKey());if(WH)localStorage.removeItem(WH.sesKey);}catch(e){}
-  try{if(sb&&useSbAuth())await sb.auth.signOut();}catch(e){}
-  try{if(WH)sessionStorage.removeItem('almacen_admin_'+WH.key);}catch(e){}
+  // Se borra la sesión y el desbloqueo de administrador de LOS DOS almacenes
+  try{
+    localStorage.removeItem(sesStorageKey());
+    const whs=[];
+    if(typeof WAREHOUSE_CONFIG!=='undefined')whs.push(WAREHOUSE_CONFIG);
+    if(typeof WAREHOUSE_OTHER_CONFIG!=='undefined')whs.push(WAREHOUSE_OTHER_CONFIG);
+    if(WH)whs.push(WH);
+    whs.forEach(w=>{
+      if(w.sesKey)localStorage.removeItem(w.sesKey);
+      if(w.key)sessionStorage.removeItem('almacen_admin_'+w.key);
+    });
+  }catch(e){}
+  if(sb&&useSbAuth()){
+    try{const r=await sb.auth.signOut({scope:'local'});if(r&&r.error)console.warn('signOut',r.error);}catch(e){console.warn('signOut',e);}
+    // Aunque falle la red, se elimina el token guardado en el navegador
+    try{Object.keys(localStorage).filter(k=>/^sb-.*-auth-token/.test(k)).forEach(k=>localStorage.removeItem(k));}catch(e){}
+  }
   location.reload();
+}
+// Si se cierra sesión en otra pestaña, esta se recarga para no dejar datos a la vista
+if(typeof window!=='undefined'&&window.addEventListener){
+  window.addEventListener('storage',e=>{
+    if(e.key==='almacen_sesion_sb'&&e.newValue===null&&typeof appStarted!=='undefined'&&appStarted)location.reload();
+  });
 }
 
 
