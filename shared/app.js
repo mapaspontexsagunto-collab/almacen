@@ -2968,9 +2968,11 @@ function backToWarehouse(){
 }
 
 function useSbAuth(){return typeof WAREHOUSE_CONFIG!=='undefined'&&!!WAREHOUSE_CONFIG.useSupabaseAuth;}
+// Clave donde se guarda la hora de inicio de sesión: compartida entre almacenes con Supabase Auth
+function sesStorageKey(){return useSbAuth()?'almacen_sesion_sb':(WH?WH.sesKey:'almacen_sesion');}
 const SESSION_MAX_MS=30*24*60*60*1000;
 function sessionValid(){
-  try{const v=Number(localStorage.getItem(WH.sesKey));return v>0&&v<=Date.now()+60000&&Date.now()-v<SESSION_MAX_MS;}
+  try{const v=Number(localStorage.getItem(sesStorageKey()));return v>0&&v<=Date.now()+60000&&Date.now()-v<SESSION_MAX_MS;}
   catch(e){return false;}
 }
 async function authSessionOk(){
@@ -2993,7 +2995,7 @@ async function doLogin(){
     if(!sb){errEl.textContent='Sin conexión: no se puede iniciar sesión';return;}
     const{error}=await sb.auth.signInWithPassword({email:u,password:p});
     if(error){errEl.textContent='Usuario o contraseña incorrectos';document.getElementById('login-pass').value='';return;}
-    try{localStorage.setItem(WH.sesKey,String(Date.now()));}catch(e){}
+    try{localStorage.setItem(sesStorageKey(),String(Date.now()));}catch(e){}
     enterApp();
     return;
   }
@@ -3001,7 +3003,7 @@ async function doLogin(){
   const ph=await sha256(p);
   const storedHash=creds['pass_'+WH.key]||'';
   if(storedHash && creds.user && u===creds.user && ph===storedHash){
-    try{localStorage.setItem(WH.sesKey,String(Date.now()));}catch(e){}
+    try{localStorage.setItem(sesStorageKey(),String(Date.now()));}catch(e){}
     enterApp();
   }else{
     document.getElementById('login-error').textContent=storedHash?'Usuario o contraseña incorrectos':'No se pueden comprobar las credenciales (sin conexión)';
@@ -3009,15 +3011,38 @@ async function doLogin(){
   }
 }
 
+// HTML de la barra: pestaña del almacén actual (activa), enlace al otro almacén y nombre del usuario
+function whBarHtml(cur,other,name){
+  const corto=w=>esc(String(w.name||'').replace(/^Almacén\s+/,''));
+  const tab=(w,activa)=>activa
+    ?'<span class="wh-tab active">'+esc(w.icon)+' '+corto(w)+'</span>'
+    :'<a class="wh-tab" href="../almacen-'+esc(w.key)+'/index.html">'+esc(w.icon)+' '+corto(w)+'</a>';
+  return tab(cur,true)+(other?tab(other,false):'')+(name?'<span class="wh-user" title="'+esc(name)+'">👤 '+esc(name)+'</span>':'');
+}
+async function renderUserBar(){
+  const bar=document.getElementById('whbar');
+  if(!bar||typeof WAREHOUSE_CONFIG==='undefined')return;
+  const other=(typeof WAREHOUSE_OTHER_CONFIG!=='undefined')?WAREHOUSE_OTHER_CONFIG:null;
+  bar.innerHTML=whBarHtml(WAREHOUSE_CONFIG,other,'');
+  if(!useSbAuth())return;
+  try{
+    initSupabase();
+    if(!sb)return;
+    const{data}=await sb.auth.getSession();
+    const em=data&&data.session&&data.session.user&&data.session.user.email;
+    if(em)bar.innerHTML=whBarHtml(WAREHOUSE_CONFIG,other,String(em).split('@')[0].slice(0,40));
+  }catch(e){console.warn('renderUserBar',e);}
+}
 function enterApp(){
   document.getElementById('warehouse-screen').style.display='none';
   document.getElementById('login-screen').style.display='none';
   document.getElementById('app-root').style.display='';
+  renderUserBar();
   if(!appStarted){appStarted=true;init();}
 }
 
 async function logout(){
-  try{if(WH)localStorage.removeItem(WH.sesKey);}catch(e){}
+  try{localStorage.removeItem(sesStorageKey());if(WH)localStorage.removeItem(WH.sesKey);}catch(e){}
   try{if(sb&&useSbAuth())await sb.auth.signOut();}catch(e){}
   try{if(WH)sessionStorage.removeItem('almacen_admin_'+WH.key);}catch(e){}
   location.reload();

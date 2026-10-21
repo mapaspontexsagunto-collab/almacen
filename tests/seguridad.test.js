@@ -20,7 +20,7 @@ const ctx = vm.createContext({
   Intl, URL, Blob: function () {}, FileReader: function () {}, Image: function () {},
 });
 // Las declaraciones `let/const` de nivel superior no cuelgan del contexto: las exponemos con una función
-vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid,quienMov};', ctx);
+vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid,quienMov,whBarHtml,sesStorageKey};', ctx);
 const t = ctx.__t;
 
 test('ids: solo letras, números, guion y guion bajo', () => {
@@ -137,6 +137,26 @@ test('quienMov: nombre corto a partir del correo', () => {
   assert.strictEqual(t.quienMov({}), '');
   assert.strictEqual(t.quienMov(null), '');
   assert.strictEqual(t.quienMov({ usuario: 'a'.repeat(100) + '@x.com' }).length, 40);
+});
+
+test('barra de usuario: pestaña activa, enlace al otro almacén y nombre escapado', () => {
+  const cur = { key: 'electrico', name: 'Almacén Eléctrico', icon: '⚡' };
+  const otro = { key: 'mecanico', name: 'Almacén Mecánico', icon: '🔧' };
+  const h = t.whBarHtml(cur, otro, '<img src=x onerror=1>');
+  assert.ok(h.includes('<span class="wh-tab active">⚡ Eléctrico</span>'));
+  assert.ok(h.includes('href="../almacen-mecanico/index.html"'));
+  assert.ok(h.includes('🔧 Mecánico'));
+  assert.ok(!h.includes('<img'), 'el nombre se escapa');
+  assert.ok(!t.whBarHtml(cur, otro, '').includes('wh-user'), 'sin nombre no hay chip de usuario');
+  assert.ok(!t.whBarHtml(cur, null, 'ana').includes('href='), 'sin otro almacén no hay enlace');
+});
+
+test('sesión: con Supabase Auth la clave es común a los dos almacenes', () => {
+  vm.runInContext("WH={sesKey:'k'}", ctx);
+  assert.strictEqual(t.sesStorageKey(), 'k');
+  vm.runInContext("var WAREHOUSE_CONFIG={useSupabaseAuth:true}", ctx);
+  assert.strictEqual(t.sesStorageKey(), 'almacen_sesion_sb');
+  vm.runInContext("WAREHOUSE_CONFIG=undefined; delete globalThis.WAREHOUSE_CONFIG", ctx);
 });
 
 test('no quedan contraseñas por defecto en el código', () => {
