@@ -484,6 +484,7 @@ async function init(){
   adminPass=(await cfgGet('adminPass'))||ADMIN_PASS_DEFAULT;
   const _lc=await cfgGet('loginCfg'); if(_lc)setLoginCfg(_lc);
   try{adminUnlocked=sessionStorage.getItem('almacen_admin_'+WH.key)==='1';}catch(e){}
+  if(adminUnlocked&&useSbAuth()&&!(await isAdminRole()))adminUnlocked=false;
   items=cleanItems(await dbGetAll());
   try{dirtyIds=new Set((await cfgGet('dirtyIds'))||[]);dirtyDel=new Set((await cfgGet('dirtyDel'))||[]);}catch(e){}
   renderAll();
@@ -2996,6 +2997,8 @@ async function doLogin(){
     const{error}=await sb.auth.signInWithPassword({email:u,password:p});
     if(error){errEl.textContent='Usuario o contraseña incorrectos';document.getElementById('login-pass').value='';return;}
     try{localStorage.setItem(sesStorageKey(),String(Date.now()));}catch(e){}
+    adminUnlocked=false;
+    try{['electrico','mecanico'].forEach(k=>sessionStorage.removeItem('almacen_admin_'+k));}catch(e){}
     enterApp();
     return;
   }
@@ -3012,25 +3015,26 @@ async function doLogin(){
 }
 
 // HTML de la barra: pestaña del almacén actual (activa), enlace al otro almacén y nombre del usuario
-function whBarHtml(cur,other,name){
+function whBarHtml(cur,other,name,locked){
   const corto=w=>esc(String(w.name||'').replace(/^Almacén\s+/,''));
   const tab=(w,activa)=>activa
     ?'<span class="wh-tab active">'+esc(w.icon)+' '+corto(w)+'</span>'
     :'<a class="wh-tab" href="../almacen-'+esc(w.key)+'/index.html">'+esc(w.icon)+' '+corto(w)+'</a>';
-  return tab(cur,true)+(other?tab(other,false):'')+(name?'<span class="wh-user" title="'+esc(name)+'">👤 '+esc(name)+'</span>':'');
+  return tab(cur,true)+(other?tab(other,false):'')+(name?'<span class="wh-user" title="'+esc(name)+'">👤 '+esc(name)+'</span>':'')
+    +(locked===undefined?'':'<button class="wh-lock" onclick="toggleAdminLock()" title="'+(locked?'Modo administrador bloqueado: toca para desbloquear':'Modo administrador activo: toca para bloquear')+'" aria-label="Modo administrador">'+(locked?'🔒':'🔓')+' Admin</button>');
 }
 async function renderUserBar(){
   const bar=document.getElementById('whbar');
   if(!bar||typeof WAREHOUSE_CONFIG==='undefined')return;
   const other=(typeof WAREHOUSE_OTHER_CONFIG!=='undefined')?WAREHOUSE_OTHER_CONFIG:null;
-  bar.innerHTML=whBarHtml(WAREHOUSE_CONFIG,other,'');
+  bar.innerHTML=whBarHtml(WAREHOUSE_CONFIG,other,'',!adminUnlocked);
   if(!useSbAuth())return;
   try{
     initSupabase();
     if(!sb)return;
     const{data}=await sb.auth.getSession();
     const em=data&&data.session&&data.session.user&&data.session.user.email;
-    if(em)bar.innerHTML=whBarHtml(WAREHOUSE_CONFIG,other,String(em).split('@')[0].slice(0,40));
+    if(em)bar.innerHTML=whBarHtml(WAREHOUSE_CONFIG,other,String(em).split('@')[0].slice(0,40),!adminUnlocked);
   }catch(e){console.warn('renderUserBar',e);}
 }
 function enterApp(){
@@ -3038,6 +3042,11 @@ function enterApp(){
   document.getElementById('login-screen').style.display='none';
   document.getElementById('app-root').style.display='';
   renderUserBar();
+  if(useSbAuth()){
+    document.querySelectorAll('[onclick="openChangePass()"],[onclick="openUsers()"]').forEach(b=>{b.style.display='none';});
+    const h=document.getElementById('sec-help');
+    if(h)h.textContent='El acceso lo gestiona Supabase: cada persona entra con su propio usuario y los administradores se marcan allí. Usa el candado 🔒 de la parte superior para activar o quitar el modo administrador.';
+  }
   if(!appStarted){appStarted=true;init();}
 }
 
@@ -3078,29 +3087,65 @@ async function adminHash(){
   return (_authCredentials&&_authCredentials.admin_pass)||'';
 }
 
+// ¿El usuario con sesión es administrador? (rol puesto en Supabase: app_metadata.role = 'admin')
+async function isAdminRole(){
+  if(!useSbAuth())return false;
+  try{
+    initSupabase();
+    if(!sb)return false;
+    const{data}=await sb.auth.getSession();
+    const u=data&&data.session&&data.session.user;
+    return !!(u&&u.app_metadata&&u.app_metadata.role==='admin');
+  }catch(e){return false;}
+}
 function requireAdmin(action){
   if(adminUnlocked){if(action)action();return;}
   pendingAdminAction=action;
+  if(useSbAuth()){showRoleUnlock();return;}
   document.getElementById('unlock-pass').value='';
   openModal('modal-unlock');
   setTimeout(()=>document.getElementById('unlock-pass').focus(),120);
 }
+// Con Supabase Auth no hay contraseña de administrador: el admin solo confirma que quiere desbloquear
+async function showRoleUnlock(){
+  const adm=await isAdminRole();
+  const passBox=document.getElementById('unlock-pass').parentElement;
+  const btn=document.getElementById('unlock-btn');
+  passBox.style.display='none';
+  document.getElementById('unlock-msg').textContent=adm
+    ?'Tu usuario es administrador. Pulsa Desbloquear para activar las funciones de administrador (costes, ajustes, borrar...). Puedes volver a bloquear cuando quieras con el candado de arriba.'
+    :'Tu usuario no tiene permisos de administrador. Pídele a un administrador que lo haga.';
+  if(btn)btn.style.display=adm?'':'none';
+  openModal('modal-unlock');
+}
+function finishUnlock(){
+  adminUnlocked=true;
+  try{sessionStorage.setItem('almacen_admin_'+(WH?WH.key:''),'1');}catch(e){}
+  closeModal('modal-unlock');
+  renderUserBar();
+  const a=pendingAdminAction;pendingAdminAction=null;
+  if(a)a();
+}
+function toggleAdminLock(){
+  if(adminUnlocked)lockAdmin();else requireAdmin(null);
+}
 async function submitUnlock(){
+  if(useSbAuth()){
+    if(!(await isAdminRole())){toast('Tu usuario no es administrador');return;}
+    finishUnlock();return;
+  }
   const p=document.getElementById('unlock-pass').value;
   const ph=await sha256(p);
   const storedHash=await adminHash();
   if(!storedHash){toast('No hay contraseña de administrador configurada');return;}
   if(ph!==storedHash){toast('Contraseña incorrecta');return;}
-  adminUnlocked=true;
-  try{sessionStorage.setItem('almacen_admin_'+(WH?WH.key:''),'1');}catch(e){}
-  closeModal('modal-unlock');
-  const a=pendingAdminAction;pendingAdminAction=null;
-  if(a)a();
+  finishUnlock();
 }
 function lockAdmin(){
   adminUnlocked=false;
   try{sessionStorage.removeItem('almacen_admin_'+(WH?WH.key:''));}catch(e){}
-  toast('🔒 Ajustes bloqueados');
+  renderUserBar();
+  toast('🔒 Modo administrador bloqueado');
   showPage('inicio');
 }
 function goAjustes(){ requireAdmin(()=>showPage('ajustes')); }

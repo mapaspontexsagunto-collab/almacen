@@ -214,7 +214,7 @@
     </div>
     <div class="card"><div class="card-h">Seguridad y contraseñas</div>
       <div style="padding:16px;">
-        <p style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.5;">Una sola contraseña protege Ajustes, eliminar artículos y movimientos, y mover material entre almacenes. Aquí puedes cambiarla y gestionar los accesos de los almacenes.</p>
+        <p id="sec-help" style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.5;">Una sola contraseña protege Ajustes, eliminar artículos y movimientos, y mover material entre almacenes. Aquí puedes cambiarla y gestionar los accesos de los almacenes.</p>
         <button class="btn btn-block btn-primary" style="margin-bottom:10px;" onclick="openChangePass()">Cambiar contraseña de Ajustes</button>
         <button class="btn btn-block" style="margin-bottom:10px;" onclick="openUsers()">Usuario y contraseñas de almacenes</button>
         <button class="btn btn-block" onclick="lockAdmin()">Bloquear Ajustes ahora</button>
@@ -620,7 +620,7 @@
     <div class="fg"><input type="password" class="fi" id="unlock-pass" placeholder="Contraseña" onkeydown="if(event.key==='Enter')submitUnlock()"></div>
     <div class="fr">
       <button class="btn" onclick="closeModal('modal-unlock');pendingAdminAction=null;">Cancelar</button>
-      <button class="btn btn-primary" onclick="submitUnlock()">Desbloquear</button>
+      <button class="btn btn-primary" id="unlock-btn" onclick="submitUnlock()">Desbloquear</button>
     </div>
   </div>
 </div>

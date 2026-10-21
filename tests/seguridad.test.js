@@ -20,7 +20,7 @@ const ctx = vm.createContext({
   Intl, URL, Blob: function () {}, FileReader: function () {}, Image: function () {},
 });
 // Las declaraciones `let/const` de nivel superior no cuelgan del contexto: las exponemos con una función
-vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid,quienMov,whBarHtml,sesStorageKey,logout};', ctx);
+vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid,quienMov,whBarHtml,sesStorageKey,logout,isAdminRole};', ctx);
 const t = ctx.__t;
 
 test('ids: solo letras, números, guion y guion bajo', () => {
@@ -169,6 +169,29 @@ test('logout borra la sesión y el desbloqueo de admin de los dos almacenes', as
   assert.ok(!('se' in store) && !('sm' in store));
   assert.ok(!('almacen_admin_electrico' in sess) && !('almacen_admin_mecanico' in sess));
   vm.runInContext("WAREHOUSE_CONFIG=undefined;WAREHOUSE_OTHER_CONFIG=undefined; delete globalThis.WAREHOUSE_CONFIG; delete globalThis.WAREHOUSE_OTHER_CONFIG", ctx);
+});
+
+test('barra: candado de administrador según el estado', () => {
+  const cur = { key: 'electrico', name: 'Almacén Eléctrico', icon: '⚡' };
+  assert.ok(t.whBarHtml(cur, null, 'ana', true).includes('🔒 Admin'));
+  assert.ok(t.whBarHtml(cur, null, 'ana', false).includes('🔓 Admin'));
+  assert.ok(!t.whBarHtml(cur, null, 'ana').includes('wh-lock'), 'sin estado no hay candado');
+});
+
+test('isAdminRole: solo el rol admin de Supabase cuenta', async () => {
+  const set = (cfg, sess) => vm.runInContext(
+    'var WAREHOUSE_CONFIG=' + cfg + ';sb={auth:{getSession:async()=>({data:{session:' + sess + '}})}}', ctx);
+  set('{useSupabaseAuth:true}', "{user:{app_metadata:{role:'admin'}}}");
+  assert.strictEqual(await t.isAdminRole(), true);
+  set('{useSupabaseAuth:true}', "{user:{app_metadata:{role:'user'}}}");
+  assert.strictEqual(await t.isAdminRole(), false);
+  set('{useSupabaseAuth:true}', "{user:{user_metadata:{role:'admin'}}}"); // editable por el usuario: no vale
+  assert.strictEqual(await t.isAdminRole(), false);
+  set('{useSupabaseAuth:true}', 'null');
+  assert.strictEqual(await t.isAdminRole(), false);
+  set('{useSupabaseAuth:false}', "{user:{app_metadata:{role:'admin'}}}"); // modo antiguo: nunca por rol
+  assert.strictEqual(await t.isAdminRole(), false);
+  vm.runInContext('WAREHOUSE_CONFIG=undefined; delete globalThis.WAREHOUSE_CONFIG; sb=null', ctx);
 });
 
 test('no quedan contraseñas por defecto en el código', () => {
