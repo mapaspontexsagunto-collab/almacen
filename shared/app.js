@@ -3038,27 +3038,41 @@ async function doLogin(){
 }
 
 // HTML de la barra: pestaña del almacén actual (activa), enlace al otro almacén y nombre del usuario
-function whBarHtml(cur,other,name,locked){
+function whBarHtml(cur,other,name,locked,salir){
   const corto=w=>esc(String(w.name||'').replace(/^Almacén\s+/,''));
   const tab=(w,activa)=>activa
     ?'<span class="wh-tab active">'+esc(w.icon)+' '+corto(w)+'</span>'
-    :'<a class="wh-tab" href="../almacen-'+esc(w.key)+'/index.html">'+esc(w.icon)+' '+corto(w)+'</a>';
+    :'<a class="wh-tab" href="../almacen-'+esc(w.key)+'/index.html" title="Cambiar a '+esc(w.name)+'" aria-label="Cambiar a '+esc(w.name)+'">'+esc(w.icon)+'<span class="tl"> '+corto(w)+'</span></a>';
   return tab(cur,true)+(other?tab(other,false):'')+(name?'<span class="wh-user" title="'+esc(name)+'">👤 '+esc(name)+'</span>':'')
-    +(locked===undefined?'':'<button class="wh-lock" onclick="toggleAdminLock()" title="'+(locked?'Modo administrador bloqueado: toca para desbloquear':'Modo administrador activo: toca para bloquear')+'" aria-label="Modo administrador">'+(locked?'🔒':'🔓')+'<span class="lbl"> Admin</span></button>');
+    +(locked===undefined?'':'<button class="wh-lock" onclick="toggleAdminLock()" title="'+(locked?'Modo administrador bloqueado: toca para desbloquear':'Modo administrador activo: toca para bloquear')+'" aria-label="Modo administrador">'+(locked?'🔒':'🔓')+'<span class="lbl"> Admin</span></button>')
+    +(salir?'<button class="wh-lock wh-out" onclick="askLogout()" title="Cerrar sesión" aria-label="Cerrar sesión">🚪<span class="lbl"> Salir</span></button>':'');
 }
-let _sessionUid=null;
+let _sessionUid=null,_sessionName='';
+// Cerrar sesión desde la cabecera (no hace falta ser administrador)
+async function askLogout(){
+  let aviso='';
+  try{
+    const pend=(await movGetAll()).filter(m=>!m.synced).length;
+    if(pend||dirtyIds.size||dirtyDel.size)aviso=' Hay cambios sin sincronizar: espera a que se suban (indicador de sincronización) antes de salir; si no, se anotarán a nombre de quien entre después en este móvil.';
+  }catch(e){}
+  document.getElementById('confirm-title').textContent='Cerrar sesión';
+  document.getElementById('confirm-msg').textContent=(_sessionName?('Vas a cerrar la sesión de '+_sessionName+' en los dos almacenes.'):'Vas a cerrar la sesión en los dos almacenes.')+aviso;
+  document.getElementById('confirm-ok').onclick=()=>{closeModal('modal-confirm');logout();};
+  openModal('modal-confirm');
+}
 async function renderUserBar(){
   const bar=document.getElementById('whbar');
   if(!bar||typeof WAREHOUSE_CONFIG==='undefined')return;
   const other=(typeof WAREHOUSE_OTHER_CONFIG!=='undefined')?WAREHOUSE_OTHER_CONFIG:null;
-  bar.innerHTML=whBarHtml(WAREHOUSE_CONFIG,other,'',useSbAuth()?!adminUnlocked:undefined);
+  bar.innerHTML=whBarHtml(WAREHOUSE_CONFIG,other,'',useSbAuth()?!adminUnlocked:undefined,true);
   if(!useSbAuth())return;
   try{
     initSupabase();
     if(!sb)return;
     const{data}=await sb.auth.getSession();
     const em=data&&data.session&&data.session.user&&data.session.user.email;
-    if(em)bar.innerHTML=whBarHtml(WAREHOUSE_CONFIG,other,String(em).split('@')[0].slice(0,40),!adminUnlocked);
+    if(em)bar.innerHTML=whBarHtml(WAREHOUSE_CONFIG,other,String(em).split('@')[0].slice(0,40),!adminUnlocked,true);
+    _sessionName=String(em).split('@')[0].slice(0,40);
     _sessionUid=data.session.user.id||null;
   }catch(e){console.warn('renderUserBar',e);}
 }

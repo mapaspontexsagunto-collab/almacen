@@ -145,7 +145,8 @@ test('barra de usuario: pestaña activa, enlace al otro almacén y nombre escapa
   const h = t.whBarHtml(cur, otro, '<img src=x onerror=1>');
   assert.ok(h.includes('<span class="wh-tab active">⚡ Eléctrico</span>'));
   assert.ok(h.includes('href="../almacen-mecanico/index.html"'));
-  assert.ok(h.includes('🔧 Mecánico'));
+  assert.ok(h.includes('🔧<span class="tl"> Mecánico</span>'));
+  assert.ok(h.includes('aria-label="Cambiar a Almacén Mecánico"'));
   assert.ok(!h.includes('<img'), 'el nombre se escapa');
   assert.ok(!t.whBarHtml(cur, otro, '').includes('wh-user'), 'sin nombre no hay chip de usuario');
   assert.ok(!t.whBarHtml(cur, null, 'ana').includes('href='), 'sin otro almacén no hay enlace');
@@ -176,6 +177,13 @@ test('barra: candado de administrador según el estado', () => {
   assert.ok(t.whBarHtml(cur, null, 'ana', true).includes('🔒<span class="lbl"> Admin</span>'));
   assert.ok(t.whBarHtml(cur, null, 'ana', false).includes('🔓<span class="lbl"> Admin</span>'));
   assert.ok(!t.whBarHtml(cur, null, 'ana').includes('wh-lock'), 'sin estado no hay candado');
+});
+
+test('barra: botón de salir solo si se pide', () => {
+  const cur = { key: 'electrico', name: 'Almacén Eléctrico', icon: '⚡' };
+  assert.ok(t.whBarHtml(cur, null, 'ana', true, true).includes('askLogout()'));
+  assert.ok(!t.whBarHtml(cur, null, 'ana', true).includes('askLogout()'));
+  assert.ok(t.whBarHtml(cur, null, '', undefined, true).includes('Cerrar sesión'));
 });
 
 test('isAdminRole: solo el rol admin de Supabase cuenta', async () => {
