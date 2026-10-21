@@ -20,7 +20,7 @@ const ctx = vm.createContext({
   Intl, URL, Blob: function () {}, FileReader: function () {}, Image: function () {},
 });
 // Las declaraciones `let/const` de nivel superior no cuelgan del contexto: las exponemos con una función
-vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid};', ctx);
+vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid,quienMov};', ctx);
 const t = ctx.__t;
 
 test('ids: solo letras, números, guion y guion bajo', () => {
@@ -130,6 +130,13 @@ test('sesión: caduca a los 30 días y rechaza el valor antiguo "1"', () => {
   assert.ok(!t.sessionValid());
   store.k = String(Date.now() + 10 * 24 * 3600 * 1000);
   assert.ok(!t.sessionValid());
+});
+
+test('quienMov: nombre corto a partir del correo', () => {
+  assert.strictEqual(t.quienMov({ usuario: 'juan.perez@empresa.com' }), 'juan.perez');
+  assert.strictEqual(t.quienMov({}), '');
+  assert.strictEqual(t.quienMov(null), '');
+  assert.strictEqual(t.quienMov({ usuario: 'a'.repeat(100) + '@x.com' }).length, 40);
 });
 
 test('no quedan contraseñas por defecto en el código', () => {
