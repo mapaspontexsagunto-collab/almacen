@@ -44,3 +44,19 @@ Añade límite de tamaño de imagen y de peticiones por usuario dentro de la fun
 - Solo queda registrado a partir de ese momento. Cubre entradas, salidas y compras.
 - Si alguien hace un movimiento sin conexión y otra persona abre sesión en ese mismo móvil antes de que se sincronice, se anotará a nombre de quien sincronice. Conviene esperar a que se suba (el indicador de sincronización) antes de cerrar sesión.
 - No registra quién crea, edita o borra artículos, ni quién borra una línea del historial (borrar líneas exige la contraseña de administrador).
+
+## Administrador por usuario (sustituye a la contraseña de administrador)
+Con Supabase Auth no hay contraseña de administrador: algunos usuarios se marcan como administradores en Supabase.
+- Todos entran **bloqueados**. Quien es administrador pulsa el candado **🔒 Admin** (arriba) y confirma **Desbloquear**;
+  puede volver a bloquear con el mismo botón. Quien no es administrador no puede desbloquear aunque lo intente.
+- Pasos: 1) desplegar la app, 2) ejecutar el PASO A de `supabase_admin_roles.sql` con los correos de los administradores,
+  3) esas personas cierran sesión y vuelven a entrar (para que su sesión lleve el rol), 4) ejecutar el PASO B.
+- Lo que la **base de datos** ya exige solo a administradores: borrar artículos, modificar o borrar líneas del historial,
+  leer y escribir el histórico de precios, y las filas antiguas de contraseñas (`adminPass`, `loginCfg`).
+- Lo que sigue siendo solo de pantalla: ocultar costes, ajustes y el nombre de quién hizo cada movimiento.
+  Los precios de los artículos (`items.precio`) los puede leer cualquier usuario con sesión si inspecciona las respuestas.
+- También siguen siendo legibles para cualquier usuario con sesión los costes de las compras en el historial (`movements.coste` y `provider`).
+- Quitar el rol a un administrador (o borrar un usuario) no corta el acceso al instante: la sesión actual sigue valiendo hasta que
+  se renueva (aprox. 1 hora). Si importa, hay que cerrarle la sesión.
+- Si un administrador borra algo sin conexión y otra persona sincroniza después en ese mismo móvil, el borrado no se aplica
+  en la nube (la base de datos lo rechaza) hasta que lo sincronice un administrador.
