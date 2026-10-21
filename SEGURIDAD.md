@@ -39,7 +39,8 @@ Añade límite de tamaño de imagen y de peticiones por usuario dentro de la fun
 1. Crea **un usuario por persona** en Supabase (Authentication → Users). No compartáis correo.
 2. Ejecuta `supabase_usuario_movimientos.sql` en el SQL Editor. Añade la columna `usuario` y la rellena el servidor
    con el correo de la sesión; no se puede falsear desde la app ni cambiar después.
-3. La app muestra 👤 el nombre (la parte del correo antes de la @) en el historial, y añade la columna *Usuario* al Excel y al PDF.
+3. La app muestra 👤 el nombre (la parte del correo antes de la @) en el historial, y añade la columna *Usuario* al Excel y al PDF, **solo con la contraseña de administrador desbloqueada**.
+   Ojo: es una restricción de la pantalla. Cualquier usuario con sesión podría ver los correos si inspecciona las respuestas de la app.
 - Solo queda registrado a partir de ese momento. Cubre entradas, salidas y compras.
 - Si alguien hace un movimiento sin conexión y otra persona abre sesión en ese mismo móvil antes de que se sincronice, se anotará a nombre de quien sincronice. Conviene esperar a que se suba (el indicador de sincronización) antes de cerrar sesión.
 - No registra quién crea, edita o borra artículos, ni quién borra una línea del historial (borrar líneas exige la contraseña de administrador).
