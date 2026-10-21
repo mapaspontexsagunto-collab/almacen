@@ -119,6 +119,7 @@ function movDeleteLocal(ts,itemId){return new Promise((res,rej)=>{
     tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error||new Error('IndexedDB error'));tx.onabort=()=>rej(tx.error||new Error('IndexedDB abortado'));
   }catch(e){rej(e);}
 });}
+function quienMov(m){return String((m&&m.usuario)||'').split('@')[0].slice(0,40);}
 function getTurno(date){const h=date.getHours();if(h>=6&&h<14)return'Mañana (06:00–14:00)';if(h>=14&&h<22)return'Tarde (14:00–22:00)';return'Noche (22:00–06:00)';}
 async function registrarMovimiento(item, anterior, nuevo, tipo, coste, provider){
   const now=new Date();
@@ -786,7 +787,7 @@ function renderMovRows(list,dir){
         ${thumb}
         <div class="mv-main">
           <div class="mv-name">${esc(m.nombre||'')}</div>
-          <div class="mv-meta">${esc(m.fecha||'')} · ${esc(turnoCorto)} ${esc(m.hora||'')}${m.loc?' · '+esc(m.loc):''}${m.ref?' · '+esc(m.ref):''}${m.tipo==='Compra'?' · <span class="mv-compra">📦 Compra'+((adminUnlocked&&m.coste!=null)?' '+fmtEur(m.coste):'')+'</span>':''}</div>
+          <div class="mv-meta">${esc(m.fecha||'')} · ${esc(turnoCorto)} ${esc(m.hora||'')}${m.loc?' · '+esc(m.loc):''}${m.ref?' · '+esc(m.ref):''}${m.usuario?' · 👤 '+esc(quienMov(m)):''}${m.tipo==='Compra'?' · <span class="mv-compra">📦 Compra'+((adminUnlocked&&m.coste!=null)?' '+fmtEur(m.coste):'')+'</span>':''}</div>
         </div>
       </div>
       <div class="mv-diff ${dir}">${signo}${m.diferencia}</div>
@@ -1145,13 +1146,13 @@ async function exportCostesPDF(){
     }
     // Listado de movimientos del mes (igual que se ve en pantalla)
     const movRows=[...homeMovsCache].sort((a,b)=>b.ts-a.ts).map(mv=>[
-      mv.fecha||'', mv.nombre||'', mv.tipo||'', (mv.diferencia>0?'+':'')+mv.diferencia, mv.coste!=null?fmtEur(Number(mv.coste)):'—'
+      mv.fecha||'', mv.nombre||'', mv.tipo||'', (mv.diferencia>0?'+':'')+mv.diferencia, mv.coste!=null?fmtEur(Number(mv.coste)):'—', quienMov(mv)||'—'
     ]);
     if(doc.autoTable){
       doc.autoTable({
         margin:{left:40,right:40},
-        head:[['Fecha','Artículo','Tipo','Cant.','Coste']],
-        body:movRows.length?movRows:[['Sin movimientos este mes','','','','']],
+        head:[['Fecha','Artículo','Tipo','Cant.','Coste','Usuario']],
+        body:movRows.length?movRows:[['Sin movimientos este mes','','','','','']],
         styles:{fontSize:9,cellPadding:5},
         headStyles:{fillColor:[26,25,22],textColor:255}
       });
@@ -2835,8 +2836,8 @@ async function doExportMovimientos(){
     const itemMap={};allItems.forEach(i=>itemMap[i.id]=i);
     const wb=new ExcelJS.Workbook();wb.creator=WH?WH.name:'Almacén';wb.created=new Date();
     const ws=wb.addWorksheet('Movimientos');
-    ws.columns=[{key:'foto',width:21},{key:'fecha',width:13},{key:'turno',width:24},{key:'hora',width:9},{key:'tipo',width:11},{key:'nombre',width:32},{key:'cat',width:18},{key:'loc',width:12},{key:'anterior',width:10},{key:'diferencia',width:10},{key:'nuevo',width:10},{key:'coste',width:12},{key:'ref',width:16},{key:'brand',width:16},{key:'maq',width:22}];
-    const hRow=ws.addRow(['Foto','Fecha','Turno','Hora','Tipo','Nombre','Categoría','Ubicación','Antes','Diferencia','Después','Coste (€)','Referencia','Marca','Equipo/Máquina']);
+    ws.columns=[{key:'foto',width:21},{key:'fecha',width:13},{key:'turno',width:24},{key:'hora',width:9},{key:'tipo',width:11},{key:'nombre',width:32},{key:'cat',width:18},{key:'loc',width:12},{key:'anterior',width:10},{key:'diferencia',width:10},{key:'nuevo',width:10},{key:'coste',width:12},{key:'ref',width:16},{key:'brand',width:16},{key:'maq',width:22},{key:'usuario',width:22}];
+    const hRow=ws.addRow(['Foto','Fecha','Turno','Hora','Tipo','Nombre','Categoría','Ubicación','Antes','Diferencia','Después','Coste (€)','Referencia','Marca','Equipo/Máquina','Usuario']);
     hRow.height=22;
     hRow.eachCell(cell=>{cell.font={bold:true,color:{argb:'FFFFFFFF'},size:11};cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF1A1916'}};cell.alignment={vertical:'middle',horizontal:'center',wrapText:true};cell.border={bottom:{style:'thin',color:{argb:'FF444444'}}}; });
     const sorted=[...movs].sort((a,b)=>b.ts-a.ts);
@@ -2844,7 +2845,7 @@ async function doExportMovimientos(){
     for(let idx=0;idx<sorted.length;idx++){
       const m=sorted[idx];const rowNum=idx+2;
       const diff=m.diferencia;const esEntrada=diff>0;
-      const row=ws.addRow(['',(m.fecha||''),(m.turno||''),(m.hora||''),(m.tipo||''),(m.nombre||''),(m.cat||''),(m.loc||''),(m.anterior??''),(diff>0?'+':'')+diff,(m.nuevo??''),(m.coste!=null?Number(m.coste):''),(m.ref||''),(m.brand||''),(m.machine||m.maq||'')]);
+      const row=ws.addRow(['',(m.fecha||''),(m.turno||''),(m.hora||''),(m.tipo||''),(m.nombre||''),(m.cat||''),(m.loc||''),(m.anterior??''),(diff>0?'+':'')+diff,(m.nuevo??''),(m.coste!=null?Number(m.coste):''),(m.ref||''),(m.brand||''),(m.machine||m.maq||''),(m.usuario||'')]);
       row.height=ROW_H;
       const bg=idx%2===0?'FFFFFFFF':'FFF5F4F0';
       row.eachCell({includeEmpty:true},(cell,colNum)=>{cell.alignment={vertical:'middle',horizontal:colNum===6?'left':'center',wrapText:true};cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:bg}};cell.font={size:11};cell.border={bottom:{style:'hair',color:{argb:'FFDDDDDD'}}};});
@@ -2856,7 +2857,7 @@ async function doExportMovimientos(){
       if(foto){try{const parts=foto.split(',');const mimeMatch=parts[0].match(/image\/(jpeg|jpg|png|gif|webp)/i);const ext=mimeMatch?(mimeMatch[1]==='jpg'?'jpeg':mimeMatch[1]):'jpeg';const b64=parts[1];const imgId=wb.addImage({base64:b64,extension:ext});const dims=await imgDims(foto);const BOX=100;let pw=BOX,ph=BOX;if(dims&&dims.w&&dims.h){const r=Math.min(BOX/dims.w,BOX/dims.h);pw=Math.round(dims.w*r);ph=Math.round(dims.h*r);}ws.addImage(imgId,{tl:{col:0.08,row:(rowNum-1)+0.06},ext:{width:pw,height:ph},editAs:'oneCell'});}catch(e){console.warn('Imagen no incrustada',e);}}
     }
     ws.views=[{state:'frozen',ySplit:1}];
-    ws.autoFilter='A1:O'+(sorted.length+1);
+    ws.autoFilter='A1:P'+(sorted.length+1);
     const buf=await wb.xlsx.writeBuffer();
     const blob=new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
     const a=document.createElement('a');a.href=URL.createObjectURL(blob);const sufF=movRangeMode==='range'?(document.getElementById('mov-from').value+'_a_'+document.getElementById('mov-to').value):new Date().toISOString().slice(0,10);a.download='movimientos_'+(WH?WH.key+'_':'')+sufF+'.xlsx';a.click();
