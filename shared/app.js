@@ -624,17 +624,48 @@ async function _syncFromCloud(refrescarTodasFotos){
   if(currentItem&&document.getElementById('modal-detail')?.classList.contains('open')&&pendingDelta===0)updateDetailStockUI();
 
   // 2) En segundo plano: bajar las fotos (todas si se pide refresco, o solo las que falten)
-  // Las fotos se piden bajo demanda (pedirFoto) cuando se van a ver; ya no se bajan todas aquí
+  // Las fotos se piden bajo demanda (ver "FOTOS BAJO DEMANDA"); ya no se bajan todas aquí
 }
 
 // ===== FOTOS BAJO DEMANDA =====
-// Las fotos pesan mucho (≈100 KB cada una): no se bajan todas al arrancar, sino solo las que se van a ver en pantalla.
-// Se guardan en el móvil y no se vuelven a descargar.
-const _fotoPedida=new Set(); // ids ya consultados en la nube en esta sesión
-const _fotoCola=new Set();
+// Las fotos pesan mucho (≈100 KB cada una): no se bajan todas al arrancar, solo las que se ven en pantalla.
+// Cada hueco de foto lleva data-foto="id"; un IntersectionObserver pide la foto cuando el hueco entra en pantalla,
+// se guarda en el móvil y se coloca en su sitio sin redibujar nada.
+
+// Rellena las fotos que falten en una lista leída de IndexedDB con las que hay en memoria (por si una escritura local falló)
+function completarFotos(lista){
+  const m=new Map(items.map(i=>[i.id,i.photo]));
+  lista.forEach(i=>{if(!i.photo&&m.get(i.id))i.photo=m.get(i.id);});
+  return lista;
+}
+// Cambia SOLO la foto de un artículo en IndexedDB, dentro de una transacción (nunca pisa stock ni ubicación)
+function dbPatchPhoto(id,photo,reemplazar){return new Promise((res,rej)=>{
+  try{
+    const tx=db.transaction(STORE,'readwrite');const s=tx.objectStore(STORE);
+    const g=s.get(id);
+    g.onsuccess=()=>{const r=g.result;if(r&&(reemplazar||!r.photo)){r.photo=photo;s.put(r);}};
+    tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error||new Error('IndexedDB error'));tx.onabort=()=>rej(tx.error||new Error('IndexedDB abortado'));
+  }catch(e){rej(e);}
+});}
+// Guarda una foto en el artículo VIVO de memoria (no en una copia antigua) y en IndexedDB
+async function guardarFoto(id,photo,reemplazar){
+  const antes=items.find(x=>x.id===id);
+  if(antes&&(reemplazar||!antes.photo))antes.photo=photo;
+  try{await dbPatchPhoto(id,photo,reemplazar);}catch(e){console.warn('guardarFoto',e);}
+  const vivo=items.find(x=>x.id===id); // por si una sincronización cambió los objetos mientras tanto
+  if(vivo&&(reemplazar||!vivo.photo))vivo.photo=photo;
+}
+// Coloca la foto en todos los huecos visibles de ese artículo (tarjetas, filas, estanterías, movimientos...)
+function pintarFoto(id,photo){
+  if(typeof document==='undefined')return;
+  document.querySelectorAll('[data-foto="'+id+'"]').forEach(el=>{
+    el.innerHTML='<img src="'+esc(photo)+'" style="width:100%;height:100%;object-fit:cover;">';
+  });
+}
+const _fotoCola=new Set(),_fotoEnVuelo=new Set();
 let _fotoTimer=null,_fotoCargando=false;
 function pedirFoto(id){
-  if(!sb||!WH||_fotoPedida.has(id)||noPhotoIds.has(id)||_fotoCola.has(id))return;
+  if(!sb||!WH||!id||noPhotoIds.has(id)||_fotoCola.has(id)||_fotoEnVuelo.has(id))return;
   const it=items.find(x=>x.id===id);
   if(!it||it.photo)return;
   _fotoCola.add(id);
@@ -644,26 +675,46 @@ async function vaciarColaFotos(){
   _fotoTimer=null;
   if(_fotoCargando){_fotoTimer=setTimeout(vaciarColaFotos,500);return;}
   const ids=[..._fotoCola].slice(0,16);
-  ids.forEach(id=>_fotoCola.delete(id));
+  ids.forEach(id=>{_fotoCola.delete(id);_fotoEnVuelo.add(id);});
   if(!ids.length)return;
   _fotoCargando=true;
-  let cambios=0;
   try{
     const fotos=await cloudGetPhotos(ids);
     for(const id of ids){
-      if(!(id in fotos))continue;           // falló la petición: se reintentará al volver a pintar
-      _fotoPedida.add(id);
-      if(!fotos[id]){noPhotoIds.add(id);continue;} // no tiene foto en la nube
-      const it=items.find(x=>x.id===id);
-      if(it&&!it.photo){it.photo=fotos[id];try{await dbPut(it);}catch(e){}cambios++;}
+      if(!(id in fotos))continue;                      // falló la petición: se reintentará al volver a verse
+      if(!fotos[id]){noPhotoIds.add(id);continue;}     // no tiene foto en la nube
+      await guardarFoto(id,fotos[id]);
+      pintarFoto(id,fotos[id]);
     }
-  }finally{_fotoCargando=false;}
-  if(cambios)refreshVisiblePage();          // pinta las fotos recién llegadas
-  if(_fotoCola.size)_fotoTimer=setTimeout(vaciarColaFotos,200);
+  }finally{ids.forEach(id=>_fotoEnVuelo.delete(id));_fotoCargando=false;}
+  if(_fotoCola.size&&!_fotoTimer)_fotoTimer=setTimeout(vaciarColaFotos,200);
 }
-// Descarga las fotos que falten de unos artículos y espera a que terminen (para los Excel)
+// Observa los huecos de foto sin foto: cuando entran en pantalla se pide su foto
+let _ioFotos=null;
+function observarFotos(){
+  if(typeof document==='undefined')return;
+  const huecos=document.querySelectorAll('[data-foto]:not([data-ob])');
+  if(typeof IntersectionObserver==='undefined'){huecos.forEach(el=>{if(!el.querySelector('img'))pedirFoto(el.getAttribute('data-foto'));});return;}
+  if(!_ioFotos){
+    _ioFotos=new IntersectionObserver(es=>{
+      es.forEach(e=>{if(e.isIntersecting){_ioFotos.unobserve(e.target);pedirFoto(e.target.getAttribute('data-foto'));}});
+    },{rootMargin:'200px'});
+  }
+  huecos.forEach(el=>{
+    if(el.querySelector('img'))return; // ya tiene foto
+    el.setAttribute('data-ob','1');
+    _ioFotos.observe(el);
+  });
+}
+if(typeof MutationObserver!=='undefined'&&typeof document!=='undefined'&&document.body){
+  let _moT=null;
+  new MutationObserver(()=>{clearTimeout(_moT);_moT=setTimeout(observarFotos,150);}).observe(document.body,{childList:true,subtree:true});
+}
+// Descarga las fotos que falten de unos artículos y espera a que terminen (Excel y copias de seguridad).
+// Devuelve un objeto id → foto con lo descargado.
 async function asegurarFotos(ids){
-  if(!sb||!WH)return;
+  const res={};
+  if(!sb||!WH)return res;
   const mapa=new Map(items.map(i=>[i.id,i]));
   const faltan=[...new Set(ids)].filter(id=>{const it=mapa.get(id);return it&&!it.photo&&!noPhotoIds.has(id);});
   const total=faltan.length;
@@ -673,61 +724,43 @@ async function asegurarFotos(ids){
     const fotos=await cloudGetPhotos(lote);
     for(const id of lote){
       if(!(id in fotos))continue;
-      _fotoPedida.add(id);
       if(!fotos[id]){noPhotoIds.add(id);continue;}
-      const it=mapa.get(id);
-      if(it&&!it.photo){it.photo=fotos[id];try{await dbPut(it);}catch(e){}}
+      res[id]=fotos[id];
+      await guardarFoto(id,fotos[id]);
+      pintarFoto(id,fotos[id]);
     }
   }
+  return res;
 }
 // Al abrir un artículo se comprueba su foto (la carga si falta o la actualiza si otra persona la cambió)
 async function refreshDetailPhoto(id){
-  if(!sb)return;
+  if(!sb||dirtyIds.has(id))return; // con un cambio local pendiente manda la foto local
   const fotos=await cloudGetPhotos([id]);
-  if(!(id in fotos))return;
+  if(!(id in fotos)||dirtyIds.has(id))return;
   const v=fotos[id];
   const it=items.find(x=>x.id===id);
   if(!it||!v||v===it.photo)return;
-  it.photo=v;
-  try{await dbPut(it);}catch(e){}
+  await guardarFoto(id,v,true);
+  pintarFoto(id,v);
   if(currentItem&&currentItem.id===id){
     const d=document.getElementById('detail-photo');
     if(d)d.innerHTML='<img src="'+esc(v)+'" onclick="openPhotoViewer(\''+id+'\')" style="cursor:zoom-in;"><div class="zoom-hint">Toca para ampliar</div>';
   }
-  refreshVisiblePage();
 }
 
-// Descarga en segundo plano fotos. Si todas=true baja todas (para ver cambios de
-// otros equipos); si no, solo las que aún no tienen foto local (artículos nuevos)
-let cargandoFotos=false;
-const noPhotoIds=new Set(); // artículos que en la nube no tienen foto (no se vuelven a consultar)
-async function cargarFotosPendientes(todas=false){
-  if(cargandoFotos||!sb)return;
-  if(todas)noPhotoIds.clear();
-  const objetivo=todas?items.map(i=>i.id):items.filter(i=>!i.photo&&!noPhotoIds.has(i.id)).map(i=>i.id);
-  if(!objetivo.length)return;
-  cargandoFotos=true;
-  try{
-    const fotos=await cloudGetPhotos(objetivo);
-    objetivo.forEach(id=>{if(id in fotos&&!fotos[id])noPhotoIds.add(id);});
-    let cambios=0;
-    for(const id in fotos){
-      const it=items.find(x=>x.id===id);
-      if(it && fotos[id] && it.photo!==fotos[id]){it.photo=fotos[id];await dbPut(it);cambios++;}
-    }
-    if(cambios)renderAll();
-  }finally{cargandoFotos=false;}
-}
+// Artículos que en la nube no tienen foto (no se vuelven a consultar; se olvidan al sincronizar a mano o al hacer copias)
+const noPhotoIds=new Set();
 
 async function manualSync(){
   if(!sb){toast('Sin conexión a la nube');return;}
   toast('⏳ Descargando...');
+  noPhotoIds.clear(); // por si alguien ha añadido fotos a artículos que no tenían
   await syncFromCloud(true); // refresca también las fotos en segundo plano
   const wHome=document.getElementById('home-sync-warn'); if(wHome)wHome.style.display=(sb&&cloudOK)?'none':'';
   const wCos=document.getElementById('cos-sync-warn'); if(wCos)wCos.style.display=(sb&&cloudOK)?'none':'';
   if(document.getElementById('page-inicio')?.classList.contains('active'))renderHomeMovements();
   if(document.getElementById('page-costes')?.classList.contains('active'))renderCostes();
-  toast(cloudOK?'✓ Datos actualizados (las fotos siguen cargando)':'No se pudo conectar');
+  toast(cloudOK?'✓ Datos actualizados':'No se pudo conectar');
 }
 
 // Sube un item con reintentos. Devuelve true si lo consigue.
@@ -917,8 +950,7 @@ function renderMovRows(list,dir){
     const turnoCorto=String(m.turno||'').split(' ')[0];
     const it=items.find(x=>x.id===m.itemId); // artículo actual (para foto y abrir ficha)
     const foto=it?.photo||null;
-    if(!foto&&it&&idx<30)pedirFoto(it.id); // solo las primeras filas
-    const thumb=`<div class="mv-thumb">${foto?`<img src="${esc(foto)}">`:`<svg width="18" height="18" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>`}</div>`;
+    const thumb=`<div class="mv-thumb" data-foto="${it?it.id:''}">${foto?`<img src="${esc(foto)}">`:`<svg width="18" height="18" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>`}</div>`;
     const abrible=it?`onclick="openDetail(${jsq(m.itemId)})" style="cursor:pointer;"`:'';
     return `<div class="mov-row">
       <div class="mv-click" ${abrible}>
@@ -1009,12 +1041,10 @@ function toggleShelfGroup(sid){
 }
 
 function itemCardHTML(i){
-  if(!i.photo)pedirFoto(i.id);
-  return `<div class="item-card" onclick="openDetail('${i.id}')"><div class="item-photo">${i.photo?`<img src="${esc(i.photo)}" loading="lazy">`:`<div class="ph"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.5"/><path d="M21 15l-5-5L5 21" stroke-width="1.5"/></svg></div>`}</div><div class="item-body"><div class="item-name">${esc(i.name)}</div><div class="item-meta"><span class="badge badge-loc">${esc(i.loc)}</span>${stockBadge(i)}</div></div></div>`;
+  return `<div class="item-card" onclick="openDetail('${i.id}')"><div class="item-photo" data-foto="${i.id}">${i.photo?`<img src="${esc(i.photo)}" loading="lazy">`:`<div class="ph"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.5"/><path d="M21 15l-5-5L5 21" stroke-width="1.5"/></svg></div>`}</div><div class="item-body"><div class="item-name">${esc(i.name)}</div><div class="item-meta"><span class="badge badge-loc">${esc(i.loc)}</span>${stockBadge(i)}</div></div></div>`;
 }
 function itemRowHTML(i){
-  if(!i.photo)pedirFoto(i.id);
-  return `<div class="detail-row" style="padding:13px 16px;cursor:pointer;align-items:center;" onclick="openDetail('${i.id}')"><div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;"><div style="width:44px;height:44px;border-radius:8px;background:var(--surface2);overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;">${i.photo?`<img src="${esc(i.photo)}" style="width:100%;height:100%;object-fit:cover;">`:`<svg width="20" height="20" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>`}</div><div style="min-width:0;"><strong style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(i.name)}</strong><span style="font-size:12px;color:var(--text2);">${esc(i.cat)} · ${esc(i.loc)}${(adminUnlocked&&i.precio!=null)?' · 💶 '+fmtEur(i.precio)+'/u':''}</span></div></div>${stockBadge(i)}</div>`;
+  return `<div class="detail-row" style="padding:13px 16px;cursor:pointer;align-items:center;" onclick="openDetail('${i.id}')"><div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;"><div data-foto="${i.id}" style="width:44px;height:44px;border-radius:8px;background:var(--surface2);overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;">${i.photo?`<img src="${esc(i.photo)}" style="width:100%;height:100%;object-fit:cover;">`:`<svg width="20" height="20" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>`}</div><div style="min-width:0;"><strong style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(i.name)}</strong><span style="font-size:12px;color:var(--text2);">${esc(i.cat)} · ${esc(i.loc)}${(adminUnlocked&&i.precio!=null)?' · 💶 '+fmtEur(i.precio)+'/u':''}</span></div></div>${stockBadge(i)}</div>`;
 }
 
 function renderItems(){
@@ -2498,7 +2528,8 @@ async function cloudCfgPutTo(tbl,key,value){
 }
 async function collectWarehouse(wh){
   if(WH && wh.key===WH.key){
-    return {items: await dbGetAll(), categories: categories||[], shelves: shelves||[]};
+    await asegurarFotos(items.map(i=>i.id));
+    return {items: completarFotos(await dbGetAll()), categories: categories||[], shelves: shelves||[]};
   }
   // Otro almacén: desde la nube (fuente compartida)
   let its=[], cats=[], shs=[];
@@ -2513,12 +2544,15 @@ async function collectWarehouse(wh){
 }
 async function exportBoth(){
   if(!sb){toast('Para la copia de los dos almacenes necesitas conexión a internet');return;}
+  noPhotoIds.clear();
   toast('⏳ Preparando copia de los dos almacenes...');
   const out={version:3, exported:new Date().toISOString(), warehouses:{}};
   const _allWH=[];if(typeof WAREHOUSE_CONFIG!=='undefined')_allWH.push(WAREHOUSE_CONFIG);if(typeof WAREHOUSE_OTHER_CONFIG!=='undefined')_allWH.push(WAREHOUSE_OTHER_CONFIG);
   for(const wh of _allWH){
     out.warehouses[wh.key]=await collectWarehouse(wh);
   }
+  {const _fal=items.filter(i=>!i.photo&&!noPhotoIds.has(i.id)&&!dirtyIds.has(i.id)).length;
+   if(_fal){toast('⚠ No se pudieron descargar '+_fal+' fotos (¿sin conexión?). Inténtalo de nuevo para tener una copia completa.');return;}}
   const e=(out.warehouses.electrico.items||[]).length, m=(out.warehouses.mecanico.items||[]).length;
   const blob=new Blob([JSON.stringify(out)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);
@@ -2554,7 +2588,13 @@ async function importBoth(data){
   };
   openModal('modal-confirm');
 }
-async function exportData(){const data={version:2,exported:new Date().toISOString(),categories,shelves,items:await dbGetAll()};const blob=new Blob([JSON.stringify(data)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='almacen_backup_'+(WH?WH.key+'_':'')+new Date().toISOString().slice(0,10)+'.json';a.click();toast('✓ Copia descargada');}
+async function exportData(){
+  // Una copia de seguridad debe llevar TODAS las fotos: se descargan las que falten y, si no se puede, no se genera incompleta
+  noPhotoIds.clear(); // por si alguien ha añadido fotos desde la última comprobación
+  await asegurarFotos(items.map(i=>i.id));
+  const _fal=items.filter(i=>!i.photo&&!noPhotoIds.has(i.id)&&!dirtyIds.has(i.id)).length;
+  if(_fal){toast('⚠ No se pudieron descargar '+_fal+' fotos (¿sin conexión?). Inténtalo de nuevo para tener una copia completa.');return;}
+  const data={version:2,exported:new Date().toISOString(),categories,shelves,items:completarFotos(await dbGetAll())};const blob=new Blob([JSON.stringify(data)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='almacen_backup_'+(WH?WH.key+'_':'')+new Date().toISOString().slice(0,10)+'.json';a.click();toast('✓ Copia descargada');}
 function importData(e){const file=e.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=async ev=>{try{const data=JSON.parse(ev.target.result);if(data.warehouses){return importBoth(data);}if(!data.items)throw new Error('no valid');document.getElementById('confirm-title').textContent='Importar copia';document.getElementById('confirm-msg').textContent='Reemplazará el inventario actual con '+data.items.length+' items. ¿Continuar?';document.getElementById('confirm-ok').onclick=async()=>{await dbReplaceAll(cleanItems(data.items));categories=strArr(data.categories);if(data.shelves&&data.shelves.length)shelves=cleanShelves(data.shelves);await cfgPut('categories',categories);await cfgPut('shelves',shelves);items=await dbGetAll();closeModal('modal-confirm');renderAll();toast('⏳ Subiendo a la nube...');for(const it of items)await cloudPut(it);await cloudCfgPut('categories',categories);await cloudCfgPut('shelves',shelves);toast('✓ Importado y sincronizado ('+items.length+' items)');};openModal('modal-confirm');}catch(err){toast('Error: archivo no válido');}};reader.readAsText(file);}
 // ===== BÚSQUEDA POR FOTO CON IA =====
 function handleAIPhoto(e){
@@ -2810,8 +2850,8 @@ async function doExportExcel(scope){
     return;
   }
   const suf = scope==='out'?'_sin_stock':scope==='low'?'_stock_bajo':'';
-  await asegurarFotos(all.map(i=>i.id));
-  {const _fm={};(await dbGetAll()).forEach(x=>{_fm[x.id]=x.photo;});all.forEach(i=>{if(!i.photo)i.photo=_fm[i.id]||null;});}
+  const _extra=await asegurarFotos(all.map(i=>i.id));
+  {const _fm={};(await dbGetAll()).forEach(x=>{_fm[x.id]=x.photo;});all.forEach(i=>{if(!i.photo)i.photo=_fm[i.id]||_extra[i.id]||null;});}
   toast('⏳ Generando Excel...');
   const btn = document.getElementById('btn-excel');
   if(btn){btn.disabled=true;btn.style.opacity='0.6';}
@@ -3014,7 +3054,7 @@ async function doExportMovimientos(){
   if(btn){btn.disabled=true;btn.style.opacity='0.6';}
   toast('⏳ Generando Excel de movimientos...');
   try{
-    await asegurarFotos([...new Set(movs.map(m=>m.itemId))]);
+    const _fotosExtra=await asegurarFotos([...new Set(movs.map(m=>m.itemId))]);
     const allItems=await dbGetAll();
     const itemMap={};allItems.forEach(i=>itemMap[i.id]=i);
     const wb=new ExcelJS.Workbook();wb.creator=WH?WH.name:'Almacén';wb.created=new Date();
@@ -3036,7 +3076,7 @@ async function doExportMovimientos(){
       const esCompra=(m.tipo==='Compra');
       row.getCell(5).font={size:11,bold:true,color:{argb:esCompra?'FF8A5A00':(esEntrada?'FF217346':'FFC00000')}};
       if(esCompra){row.getCell(5).fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFFFF3C4'}};row.getCell(12).font={size:11,bold:true,color:{argb:'FF8A5A00'}};}
-      const itemActual=itemMap[m.itemId];const foto=safePhoto(itemActual?.photo||m.photo||null);
+      const itemActual=itemMap[m.itemId];const foto=safePhoto(itemActual?.photo||m.photo||_fotosExtra[m.itemId]||null);
       if(foto){try{const parts=foto.split(',');const mimeMatch=parts[0].match(/image\/(jpeg|jpg|png|gif|webp)/i);const ext=mimeMatch?(mimeMatch[1]==='jpg'?'jpeg':mimeMatch[1]):'jpeg';const b64=parts[1];const imgId=wb.addImage({base64:b64,extension:ext});const dims=await imgDims(foto);const BOX=100;let pw=BOX,ph=BOX;if(dims&&dims.w&&dims.h){const r=Math.min(BOX/dims.w,BOX/dims.h);pw=Math.round(dims.w*r);ph=Math.round(dims.h*r);}ws.addImage(imgId,{tl:{col:0.08,row:(rowNum-1)+0.06},ext:{width:pw,height:ph},editAs:'oneCell'});}catch(e){console.warn('Imagen no incrustada',e);}}
     }
     ws.views=[{state:'frozen',ySplit:1}];
@@ -3598,7 +3638,6 @@ let svSelectedId=null;    // artículo seleccionado para mover (táctil)
 let svDragId=null;        // artículo arrastrándose (ratón)
 
 function svMini(i,org){
-  if(!i.photo)pedirFoto(i.id);
   const img = i.photo
     ? '<img src="'+esc(i.photo)+'">'
     : '<svg width="34" height="34" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.4"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.4"/><path d="M21 15l-5-5L5 21" stroke-width="1.4"/></svg>';
@@ -3610,7 +3649,7 @@ function svMini(i,org){
   const click = org ? 'event.stopPropagation();svPick(\''+i.id+'\')' : 'openDetail(\''+i.id+'\')';
   const drag = org ? ' draggable="true" ondragstart="svDragStart(event,\''+i.id+'\')" ondragend="svDragId=null"' : '';
   const sel = (org && svSelectedId===i.id) ? ' sv2-sel' : '';
-  return '<div class="sv2-mini'+sel+'" data-id="'+i.id+'"'+drag+' onclick="'+click+'"><div class="sv2-mini-img">'+img+'</div><div class="sv2-mini-tx"><div class="sv2-mini-nm">'+esc(i.name)+'</div><div class="sv2-mini-st">'+st+'</div></div></div>';
+  return '<div class="sv2-mini'+sel+'" data-id="'+i.id+'"'+drag+' onclick="'+click+'"><div class="sv2-mini-img" data-foto="'+i.id+'">'+img+'</div><div class="sv2-mini-tx"><div class="sv2-mini-nm">'+esc(i.name)+'</div><div class="sv2-mini-st">'+st+'</div></div></div>';
 }
 function svAdd(sid,balda,cid){
   return '<button class="sv2-add" onclick="event.stopPropagation();quickAddHere(\''+sid+'\',\''+balda+'\',\''+cid+'\')">+ Añadir aquí</button>';
@@ -3675,13 +3714,12 @@ async function ahPlace(){
 }
 function openScannerFor(purpose){ scanPurpose=purpose; openScanner(); }
 function svRow(i){
-  if(!i.photo)pedirFoto(i.id);
   const img = i.photo
     ? '<img src="'+esc(i.photo)+'">'
     : '<svg width="20" height="20" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>';
   const pl = posLabel(i);
   const sub = esc(i.cat||'')+' · '+esc(i.loc||'')+(pl?' · '+esc(pl):'')+((adminUnlocked&&i.precio!=null)?' · 💶 '+fmtEur(i.precio)+'/u':'');
-  return '<div class="sv2-row" onclick="openDetail(\''+i.id+'\')"><div class="sv2-row-img">'+img+'</div><div class="sv2-row-tx"><strong class="sv2-row-nm">'+esc(i.name)+'</strong><span class="sv2-row-sub">'+sub+'</span></div>'+stockBadge(i)+'</div>';
+  return '<div class="sv2-row" onclick="openDetail(\''+i.id+'\')"><div class="sv2-row-img" data-foto="'+i.id+'">'+img+'</div><div class="sv2-row-tx"><strong class="sv2-row-nm">'+esc(i.name)+'</strong><span class="sv2-row-sub">'+sub+'</span></div>'+stockBadge(i)+'</div>';
 }
 
 function toggleOrganize(sid){
@@ -3946,9 +3984,8 @@ function schemaOpen(el,sid,balda,cid,label){
       h+='<div style="font-size:12px;color:var(--blue-text);padding:4px 8px 8px;">Toca un artículo para seleccionarlo y moverlo</div>';
       h+='<div class="sch-panel-items">'+its.map(it=>{
         const sel=(svSelectedId===it.id)?' sv2-sel':'';
-        if(!it.photo)pedirFoto(it.id);
         return '<div class="sv2-mini'+sel+'" data-id="'+it.id+'" onclick="svPick(\''+it.id+'\');document.querySelectorAll(\'.sch-cell.sch-sel\').forEach(x=>x.classList.remove(\'sch-sel\'));" style="cursor:pointer;">'+
-          (it.photo?'<div class="sv2-mini-img"><img src="'+esc(it.photo)+'"></div>':'<div class="sv2-mini-img"><svg width="34" height="34" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.4"/></svg></div>')+
+          (it.photo?'<div class="sv2-mini-img" data-foto="'+it.id+'"><img src="'+esc(it.photo)+'"></div>':'<div class="sv2-mini-img" data-foto="'+it.id+'"><svg width="34" height="34" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.4"/></svg></div>')+
           '<div class="sv2-mini-tx"><div class="sv2-mini-nm">'+esc(it.name)+'</div><div class="sv2-mini-st">'+it.stock+' uds.</div></div></div>';
       }).join('')+'</div>';
     } else {
