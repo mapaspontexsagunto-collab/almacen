@@ -400,6 +400,16 @@ async function cloudCfgPut(key,value){
   try{const{error}=await sb.from(WH.tblCfg).upsert({key,value},{onConflict:'key'});if(error)throw error;}
   catch(e){console.warn('cloudCfgPut error',e);}
 }
+// Lee varias claves de configuración en UNA petición. Devuelve un objeto, o undefined si falló.
+async function cloudCfgGetMany(keys){
+  if(!sb)return undefined;
+  try{
+    const{data,error}=await withTimeout(sb.from(WH.tblCfg).select('key,value').in('key',keys),20000,'config');
+    if(error)throw error;
+    const o={};(data||[]).forEach(r=>{o[r.key]=r.value;});
+    return o;
+  }catch(e){console.warn('cloudCfgGetMany',e);return undefined;}
+}
 async function cloudCfgGet(key){
   if(!sb)return null;
   try{const{data,error}=await sb.from(WH.tblCfg).select('value').eq('key',key).maybeSingle();if(error)throw error;return data?data.value:null;}
@@ -588,14 +598,17 @@ async function _syncFromCloud(refrescarTodasFotos){
   await dbReplaceAll(items);
 
   // Config desde la nube
-  const cCats=await cloudCfgGet('categories');
-  const cProviders=await cloudCfgGet('providers');
-  const cShelves=await cloudCfgGet('shelves');
-  const cAisles=await cloudCfgGet('aisles');
-  const cMapSize=await cloudCfgGet('mapSize');
-  const cPrinted=await cloudCfgGet('printedIds');
+  // Toda la configuración de la nube en una sola petición (antes eran nueve seguidas)
+  const _cfg=await cloudCfgGetMany(['categories','providers','shelves','aisles','mapSize','printedIds','modifiedIds','adminPass','loginCfg']);
+  const g=k=>_cfg===undefined?undefined:(k in _cfg?_cfg[k]:null); // undefined = falló, null = no hay fila
+  const cCats=g('categories');
+  const cProviders=g('providers');
+  const cShelves=g('shelves');
+  const cAisles=g('aisles');
+  const cMapSize=g('mapSize');
+  const cPrinted=g('printedIds');
   if(Array.isArray(cPrinted)){printedIds=new Set(cPrinted);await cfgPut('printedIds',cPrinted);}
-  const cModified=await cloudCfgGet('modifiedIds');
+  const cModified=g('modifiedIds');
   if(Array.isArray(cModified)){modifiedIds=new Set(cModified);await cfgPut('modifiedIds',cModified);}
   if(Array.isArray(cCats)){categories=strArr(cCats);await cfgPut('categories',categories);}
   if(Array.isArray(cProviders)){providers=strArr(cProviders);await cfgPut('providers',providers);}
@@ -603,15 +616,85 @@ async function _syncFromCloud(refrescarTodasFotos){
   else if(cShelves!==undefined){await cloudCfgPut('shelves',shelves);} // solo se siembra si la lectura funcionó
   if(Array.isArray(cAisles)){aisles=cleanAisles(cAisles);await cfgPut('aisles',aisles);}
   if(cMapSize&&cMapSize.w&&cMapSize.h){mapSize={w:Math.round(cleanNum(cMapSize.w,10,120,DEFAULT_MAP_SIZE.w)),h:Math.round(cleanNum(cMapSize.h,10,120,DEFAULT_MAP_SIZE.h))};await cfgPut('mapSize',mapSize);}
-  const cAdmin=await cloudCfgGet('adminPass'); if(cAdmin){adminPass=cAdmin;await cfgPut('adminPass',cAdmin);}
-  const cLogin=await cloudCfgGet('loginCfg'); if(cLogin){setLoginCfg(cLogin);await cfgPut('loginCfg',cLogin);}
+  const cAdmin=g('adminPass'); if(cAdmin){adminPass=cAdmin;await cfgPut('adminPass',cAdmin);}
+  const cLogin=g('loginCfg'); if(cLogin){setLoginCfg(cLogin);await cfgPut('loginCfg',cLogin);}
   renderAll();
   if(document.getElementById('page-inicio')?.classList.contains('active'))renderHomeMovements(true);
 
   if(currentItem&&document.getElementById('modal-detail')?.classList.contains('open')&&pendingDelta===0)updateDetailStockUI();
 
   // 2) En segundo plano: bajar las fotos (todas si se pide refresco, o solo las que falten)
-  cargarFotosPendientes(refrescarTodasFotos);
+  // Las fotos se piden bajo demanda (pedirFoto) cuando se van a ver; ya no se bajan todas aquí
+}
+
+// ===== FOTOS BAJO DEMANDA =====
+// Las fotos pesan mucho (≈100 KB cada una): no se bajan todas al arrancar, sino solo las que se van a ver en pantalla.
+// Se guardan en el móvil y no se vuelven a descargar.
+const _fotoPedida=new Set(); // ids ya consultados en la nube en esta sesión
+const _fotoCola=new Set();
+let _fotoTimer=null,_fotoCargando=false;
+function pedirFoto(id){
+  if(!sb||!WH||_fotoPedida.has(id)||noPhotoIds.has(id)||_fotoCola.has(id))return;
+  const it=items.find(x=>x.id===id);
+  if(!it||it.photo)return;
+  _fotoCola.add(id);
+  if(!_fotoTimer)_fotoTimer=setTimeout(vaciarColaFotos,200); // se agrupan varias peticiones en una
+}
+async function vaciarColaFotos(){
+  _fotoTimer=null;
+  if(_fotoCargando){_fotoTimer=setTimeout(vaciarColaFotos,500);return;}
+  const ids=[..._fotoCola].slice(0,16);
+  ids.forEach(id=>_fotoCola.delete(id));
+  if(!ids.length)return;
+  _fotoCargando=true;
+  let cambios=0;
+  try{
+    const fotos=await cloudGetPhotos(ids);
+    for(const id of ids){
+      if(!(id in fotos))continue;           // falló la petición: se reintentará al volver a pintar
+      _fotoPedida.add(id);
+      if(!fotos[id]){noPhotoIds.add(id);continue;} // no tiene foto en la nube
+      const it=items.find(x=>x.id===id);
+      if(it&&!it.photo){it.photo=fotos[id];try{await dbPut(it);}catch(e){}cambios++;}
+    }
+  }finally{_fotoCargando=false;}
+  if(cambios)refreshVisiblePage();          // pinta las fotos recién llegadas
+  if(_fotoCola.size)_fotoTimer=setTimeout(vaciarColaFotos,200);
+}
+// Descarga las fotos que falten de unos artículos y espera a que terminen (para los Excel)
+async function asegurarFotos(ids){
+  if(!sb||!WH)return;
+  const mapa=new Map(items.map(i=>[i.id,i]));
+  const faltan=[...new Set(ids)].filter(id=>{const it=mapa.get(id);return it&&!it.photo&&!noPhotoIds.has(id);});
+  const total=faltan.length;
+  for(let k=0;k<total;k+=16){
+    const lote=faltan.slice(k,k+16);
+    try{toast('⏳ Descargando fotos '+Math.min(k+16,total)+'/'+total+'…');}catch(e){}
+    const fotos=await cloudGetPhotos(lote);
+    for(const id of lote){
+      if(!(id in fotos))continue;
+      _fotoPedida.add(id);
+      if(!fotos[id]){noPhotoIds.add(id);continue;}
+      const it=mapa.get(id);
+      if(it&&!it.photo){it.photo=fotos[id];try{await dbPut(it);}catch(e){}}
+    }
+  }
+}
+// Al abrir un artículo se comprueba su foto (la carga si falta o la actualiza si otra persona la cambió)
+async function refreshDetailPhoto(id){
+  if(!sb)return;
+  const fotos=await cloudGetPhotos([id]);
+  if(!(id in fotos))return;
+  const v=fotos[id];
+  const it=items.find(x=>x.id===id);
+  if(!it||!v||v===it.photo)return;
+  it.photo=v;
+  try{await dbPut(it);}catch(e){}
+  if(currentItem&&currentItem.id===id){
+    const d=document.getElementById('detail-photo');
+    if(d)d.innerHTML='<img src="'+esc(v)+'" onclick="openPhotoViewer(\''+id+'\')" style="cursor:zoom-in;"><div class="zoom-hint">Toca para ampliar</div>';
+  }
+  refreshVisiblePage();
 }
 
 // Descarga en segundo plano fotos. Si todas=true baja todas (para ver cambios de
@@ -829,12 +912,13 @@ async function renderHomeMovements(silent){
 
 function renderMovRows(list,dir){
   if(!list.length)return '<div class="mov-empty">Sin movimientos en los últimos 3 meses.</div>';
-  return list.map(m=>{
+  return list.map((m,idx)=>{
     const signo=m.diferencia>0?'+':'';
     const turnoCorto=String(m.turno||'').split(' ')[0];
     const it=items.find(x=>x.id===m.itemId); // artículo actual (para foto y abrir ficha)
     const foto=it?.photo||null;
-    const thumb=`<div class="mv-thumb">${foto?`<img src="${foto}">`:`<svg width="18" height="18" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>`}</div>`;
+    if(!foto&&it&&idx<30)pedirFoto(it.id); // solo las primeras filas
+    const thumb=`<div class="mv-thumb">${foto?`<img src="${esc(foto)}">`:`<svg width="18" height="18" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>`}</div>`;
     const abrible=it?`onclick="openDetail(${jsq(m.itemId)})" style="cursor:pointer;"`:'';
     return `<div class="mov-row">
       <div class="mv-click" ${abrible}>
@@ -925,9 +1009,11 @@ function toggleShelfGroup(sid){
 }
 
 function itemCardHTML(i){
+  if(!i.photo)pedirFoto(i.id);
   return `<div class="item-card" onclick="openDetail('${i.id}')"><div class="item-photo">${i.photo?`<img src="${esc(i.photo)}" loading="lazy">`:`<div class="ph"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.5"/><path d="M21 15l-5-5L5 21" stroke-width="1.5"/></svg></div>`}</div><div class="item-body"><div class="item-name">${esc(i.name)}</div><div class="item-meta"><span class="badge badge-loc">${esc(i.loc)}</span>${stockBadge(i)}</div></div></div>`;
 }
 function itemRowHTML(i){
+  if(!i.photo)pedirFoto(i.id);
   return `<div class="detail-row" style="padding:13px 16px;cursor:pointer;align-items:center;" onclick="openDetail('${i.id}')"><div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;"><div style="width:44px;height:44px;border-radius:8px;background:var(--surface2);overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;">${i.photo?`<img src="${esc(i.photo)}" style="width:100%;height:100%;object-fit:cover;">`:`<svg width="20" height="20" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>`}</div><div style="min-width:0;"><strong style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(i.name)}</strong><span style="font-size:12px;color:var(--text2);">${esc(i.cat)} · ${esc(i.loc)}${(adminUnlocked&&i.precio!=null)?' · 💶 '+fmtEur(i.precio)+'/u':''}</span></div></div>${stockBadge(i)}</div>`;
 }
 
@@ -1056,6 +1142,7 @@ async function refreshDetailStock(id){
 function openDetail(id){
   _openDetail(id);
   refreshDetailStock(id);
+  refreshDetailPhoto(id);
 }
 function _openDetail(id){
   currentItem=items.find(i=>i.id===id);if(!currentItem)return;const i=currentItem;
@@ -2723,6 +2810,8 @@ async function doExportExcel(scope){
     return;
   }
   const suf = scope==='out'?'_sin_stock':scope==='low'?'_stock_bajo':'';
+  await asegurarFotos(all.map(i=>i.id));
+  {const _fm={};(await dbGetAll()).forEach(x=>{_fm[x.id]=x.photo;});all.forEach(i=>{if(!i.photo)i.photo=_fm[i.id]||null;});}
   toast('⏳ Generando Excel...');
   const btn = document.getElementById('btn-excel');
   if(btn){btn.disabled=true;btn.style.opacity='0.6';}
@@ -2925,6 +3014,7 @@ async function doExportMovimientos(){
   if(btn){btn.disabled=true;btn.style.opacity='0.6';}
   toast('⏳ Generando Excel de movimientos...');
   try{
+    await asegurarFotos([...new Set(movs.map(m=>m.itemId))]);
     const allItems=await dbGetAll();
     const itemMap={};allItems.forEach(i=>itemMap[i.id]=i);
     const wb=new ExcelJS.Workbook();wb.creator=WH?WH.name:'Almacén';wb.created=new Date();
@@ -3508,6 +3598,7 @@ let svSelectedId=null;    // artículo seleccionado para mover (táctil)
 let svDragId=null;        // artículo arrastrándose (ratón)
 
 function svMini(i,org){
+  if(!i.photo)pedirFoto(i.id);
   const img = i.photo
     ? '<img src="'+esc(i.photo)+'">'
     : '<svg width="34" height="34" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.4"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.4"/><path d="M21 15l-5-5L5 21" stroke-width="1.4"/></svg>';
@@ -3584,6 +3675,7 @@ async function ahPlace(){
 }
 function openScannerFor(purpose){ scanPurpose=purpose; openScanner(); }
 function svRow(i){
+  if(!i.photo)pedirFoto(i.id);
   const img = i.photo
     ? '<img src="'+esc(i.photo)+'">'
     : '<svg width="20" height="20" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>';
@@ -3854,6 +3946,7 @@ function schemaOpen(el,sid,balda,cid,label){
       h+='<div style="font-size:12px;color:var(--blue-text);padding:4px 8px 8px;">Toca un artículo para seleccionarlo y moverlo</div>';
       h+='<div class="sch-panel-items">'+its.map(it=>{
         const sel=(svSelectedId===it.id)?' sv2-sel':'';
+        if(!it.photo)pedirFoto(it.id);
         return '<div class="sv2-mini'+sel+'" data-id="'+it.id+'" onclick="svPick(\''+it.id+'\');document.querySelectorAll(\'.sch-cell.sch-sel\').forEach(x=>x.classList.remove(\'sch-sel\'));" style="cursor:pointer;">'+
           (it.photo?'<div class="sv2-mini-img"><img src="'+esc(it.photo)+'"></div>':'<div class="sv2-mini-img"><svg width="34" height="34" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.4"/></svg></div>')+
           '<div class="sv2-mini-tx"><div class="sv2-mini-nm">'+esc(it.name)+'</div><div class="sv2-mini-st">'+it.stock+' uds.</div></div></div>';

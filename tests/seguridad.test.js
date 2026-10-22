@@ -20,7 +20,7 @@ const ctx = vm.createContext({
   Intl, URL, Blob: function () {}, FileReader: function () {}, Image: function () {},
 });
 // Las declaraciones `let/const` de nivel superior no cuelgan del contexto: las exponemos con una función
-vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid,quienMov,whBarHtml,sesStorageKey,logout,isAdminRole,ensureOnline,GUARDED_FUNCS};', ctx);
+vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid,quienMov,whBarHtml,sesStorageKey,logout,isAdminRole,ensureOnline,GUARDED_FUNCS,asegurarFotos,noPhotoIds,pedirFoto};', ctx);
 const t = ctx.__t;
 
 test('ids: solo letras, números, guion y guion bajo', () => {
@@ -235,6 +235,20 @@ test('cleanItems rápido: valida el tipo de foto sin recorrerla entera', () => {
   assert.strictEqual(t.cleanItems([{ id: 'I1', photo: ok }], true)[0].photo, ok);
   assert.strictEqual(t.cleanItems([{ id: 'I1', photo: 'javascript:alert(1)' }], true)[0].photo, null);
   assert.strictEqual(t.cleanItems([{ id: 'I1', photo: 'data:text/html;base64,AAAA' }], true)[0].photo, null);
+});
+
+test('fotos bajo demanda: solo se descargan las que faltan y se recuerdan las que no existen', async () => {
+  vm.runInContext("WH={tblItems:'items'};items=[{id:'I1',photo:'data:image/jpeg;base64,AAAA'},{id:'I2',photo:null},{id:'I3',photo:null}];__llamadas=[];" +
+    "sb={from:()=>({select:()=>({in:async(c,ids)=>{__llamadas.push(ids.join());return {data:ids.map(id=>({id,photo:id==='I2'?'data:image/png;base64,BBBB':null}))};}})})}", ctx);
+  await t.asegurarFotos(['I1', 'I2', 'I3']);
+  assert.strictEqual(vm.runInContext('items[1].photo', ctx), 'data:image/png;base64,BBBB');
+  assert.strictEqual(vm.runInContext('items[2].photo', ctx), null);
+  assert.ok(t.noPhotoIds.has('I3'), 'I3 no tiene foto en la nube: no se vuelve a pedir');
+  assert.strictEqual(vm.runInContext('__llamadas.join("|")', ctx), 'I2,I3'); // I1 ya tenía foto
+  await t.asegurarFotos(['I1', 'I2', 'I3']);
+  assert.strictEqual(vm.runInContext('__llamadas.length', ctx), 1, 'la segunda vez no pide nada');
+  t.noPhotoIds.clear();
+  vm.runInContext('sb=null', ctx);
 });
 
 test('no quedan contraseñas por defecto en el código', () => {
