@@ -265,7 +265,7 @@ function cleanAisles(list){
 }
 
 // ---- Cola de cambios pendientes de subir (offline / fallos de red)
-let dirtyIds=new Set(), dirtyDel=new Set();
+let dirtyIds=new Set(), dirtyDel=new Set(), appReady=false;
 function persistDirty(){cfgPut('dirtyIds',[...dirtyIds]).catch(()=>{});cfgPut('dirtyDel',[...dirtyDel]).catch(()=>{});}
 function markDirty(id){dirtyIds.add(id);dirtyDel.delete(id);persistDirty();}
 function clearDirty(id){if(dirtyIds.delete(id))persistDirty();}
@@ -318,13 +318,20 @@ async function cloudDelete(id){
   }
 }
 // Lee el stock actual de un artículo en la nube y lo copia al objeto local (evita pisar cambios de otros)
+// Lee el stock actual de la nube (sin modificar nada). Devuelve un número o null.
+async function fetchCloudStock(id){
+  if(!sb)return null;
+  try{
+    const{data,error}=await withTimeout(sb.from(WH.tblItems).select('stock').eq('id',id).maybeSingle(),5000,'stock');
+    if(!error&&data&&typeof data.stock==='number')return data.stock;
+  }catch(e){console.warn('fetchCloudStock',e);}
+  return null;
+}
 async function refreshStock(item){
   if(!sb||!item)return;
   if(dirtyIds.has(item.id))return; // hay un cambio local pendiente de subir: manda el valor local
-  try{
-    const{data,error}=await withTimeout(sb.from(WH.tblItems).select('stock').eq('id',item.id).maybeSingle(),5000,'stock');
-    if(!error&&data&&typeof data.stock==='number')item.stock=data.stock;
-  }catch(e){console.warn('refreshStock',e);}
+  const v=await fetchCloudStock(item.id);
+  if(v!=null)item.stock=v;
 }
 // Descarga todas las filas de una consulta paginando (Supabase limita a ~1000 por petición)
 async function fetchAllPages(buildQuery,pageSize=1000,maxPages=200){
@@ -508,6 +515,7 @@ async function init(){
   renderUserBar();
   items=cleanItems(await dbGetAll());
   try{dirtyIds=new Set((await cfgGet('dirtyIds'))||[]);dirtyDel=new Set((await cfgGet('dirtyDel'))||[]);}catch(e){}
+  appReady=true;
   renderAll();
   renderHomeMovements();
   // Sincronizar desde la nube
@@ -539,6 +547,7 @@ async function _syncFromCloud(refrescarTodasFotos){
   const meta=await cloudGetMeta();
   if(meta===null){setCloudStatus(false);updateSyncBadge('off');return;}
   setCloudStatus(true);
+  if(_stockBusy){updateSyncBadge('ok');return;} // hay un movimiento de stock en curso: no se mezcla ahora
 
   // Si la nube devuelve una lista vacía pero hay datos locales (p. ej. sesión caducada), no se borra nada
   if(meta.length===0&&items.length>0){console.warn('La nube devolvió 0 artículos; se conserva lo local');updateSyncBadge('off');return;}
@@ -587,7 +596,9 @@ async function _syncFromCloud(refrescarTodasFotos){
   const cAdmin=await cloudCfgGet('adminPass'); if(cAdmin){adminPass=cAdmin;await cfgPut('adminPass',cAdmin);}
   const cLogin=await cloudCfgGet('loginCfg'); if(cLogin){setLoginCfg(cLogin);await cfgPut('loginCfg',cLogin);}
   renderAll();
-  if(document.getElementById('page-inicio')?.classList.contains('active'))renderHomeMovements();
+  if(document.getElementById('page-inicio')?.classList.contains('active'))renderHomeMovements(true);
+
+  if(currentItem&&document.getElementById('modal-detail')?.classList.contains('open')&&pendingDelta===0)updateDetailStockUI();
 
   // 2) En segundo plano: bajar las fotos (todas si se pide refresco, o solo las que falten)
   cargarFotosPendientes(refrescarTodasFotos);
@@ -596,13 +607,16 @@ async function _syncFromCloud(refrescarTodasFotos){
 // Descarga en segundo plano fotos. Si todas=true baja todas (para ver cambios de
 // otros equipos); si no, solo las que aún no tienen foto local (artículos nuevos)
 let cargandoFotos=false;
+const noPhotoIds=new Set(); // artículos que en la nube no tienen foto (no se vuelven a consultar)
 async function cargarFotosPendientes(todas=false){
   if(cargandoFotos||!sb)return;
-  const objetivo=todas?items.map(i=>i.id):items.filter(i=>!i.photo).map(i=>i.id);
+  if(todas)noPhotoIds.clear();
+  const objetivo=todas?items.map(i=>i.id):items.filter(i=>!i.photo&&!noPhotoIds.has(i.id)).map(i=>i.id);
   if(!objetivo.length)return;
   cargandoFotos=true;
   try{
     const fotos=await cloudGetPhotos(objetivo);
+    objetivo.forEach(id=>{if(id in fotos&&!fotos[id])noPhotoIds.add(id);});
     let cambios=0;
     for(const id in fotos){
       const it=items.find(x=>x.id===id);
@@ -679,6 +693,12 @@ async function pushToCloud(){
     setCloudStatus(true);
     toast('Subidos '+ok+'/'+total+'. Fallaron '+fallos.length+', vuelve a pulsar Subir.');
   }
+}
+// Vuelve a pintar lo que se ve ahora mismo, sin tener que cambiar de pantalla
+function refreshVisiblePage(){
+  try{renderAll();}catch(e){console.warn('refreshVisiblePage',e);}
+  if(document.getElementById('page-inicio')?.classList.contains('active'))Promise.resolve(renderHomeMovements(true)).catch(()=>{});
+  if(document.getElementById('page-costes')?.classList.contains('active'))Promise.resolve(renderCostes()).catch(()=>{});
 }
 function renderAll(){updateStats();renderCats();renderItems();renderMap();renderCatManage();renderShelfSummary();}
 
@@ -774,12 +794,14 @@ async function checkPendingMovs(){
     w.style.display='none';
   }
 }
-async function renderHomeMovements(){
+async function renderHomeMovements(silent){
   const cont1=document.getElementById('home-entradas');
   const cont2=document.getElementById('home-salidas');
   if(!cont1||!cont2)return;
-  cont1.innerHTML='<div class="mov-empty">Cargando...</div>';
-  cont2.innerHTML='<div class="mov-empty">Cargando...</div>';
+  if(!silent){ // en los refrescos automáticos no se vacía la lista (evita parpadeos y saltos)
+    cont1.innerHTML='<div class="mov-empty">Cargando...</div>';
+    cont2.innerHTML='<div class="mov-empty">Cargando...</div>';
+  }
   await checkPendingMovs();
   // Combinar nube + local (para ver siempre los propios aunque aún no hayan subido)
   let movs=await getMergedMovements();
@@ -998,7 +1020,34 @@ function closePhotoViewer(){
   document.getElementById('photo-viewer').classList.remove('open');
 }
 
+function updateDetailStockUI(){
+  if(!currentItem)return;
+  const d=document.getElementById('detail-stock');
+  const mostrado=d?Number(d.textContent):NaN;
+  if(d)d.textContent=currentItem.stock;
+  // El valor del ajuste solo se cambia si el usuario no lo había tocado
+  if(isNaN(mostrado)||adjustValue===mostrado){
+    adjustValue=currentItem.stock;
+    const a=document.getElementById('adjust-val');if(a)a.textContent=adjustValue;
+  }
+  renderPending();
+}
+async function refreshDetailStock(id){
+  if(!sb||_stockBusy||dirtyIds.has(id))return;
+  const v=await fetchCloudStock(id);
+  if(v==null||_stockBusy||dirtyIds.has(id))return; // llegó tarde: ya hay un movimiento en curso
+  const it=items.find(x=>x.id===id);
+  if(!it||it.stock===v)return;
+  it.stock=v;
+  try{await dbPut(it);}catch(e){}
+  if(currentItem&&currentItem.id===id)updateDetailStockUI();
+  refreshVisiblePage();
+}
 function openDetail(id){
+  _openDetail(id);
+  refreshDetailStock(id);
+}
+function _openDetail(id){
   currentItem=items.find(i=>i.id===id);if(!currentItem)return;const i=currentItem;
   document.getElementById('detail-photo').innerHTML=i.photo?`<img src="${esc(i.photo)}" onclick="openPhotoViewer('${i.id}')" style="cursor:zoom-in;"><div class="zoom-hint">Toca para ampliar</div>`:`<div class="ph"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/><circle cx="8.5" cy="8.5" r="1.5" stroke-width="1.5"/><path d="M21 15l-5-5L5 21" stroke-width="1.5"/></svg></div>`;
   document.getElementById('detail-name').textContent=i.name;
@@ -1212,6 +1261,8 @@ async function withFreshStock(fn,opts){
   if(_stockBusy){toast('Procesando…');return;}
   _stockBusy=true;
   try{
+    // Si hay una sincronización en curso, se espera a que termine (al ver _stockBusy no mezclará datos)
+    let w=0;while(_syncing&&w<60){await new Promise(r=>setTimeout(r,200));w++;}
     const antes=currentItem?currentItem.stock:null;
     await refreshStock(currentItem);
     // Ajuste a un valor absoluto: si el stock cambió mientras tanto, se avisa en vez de aplicarlo a ciegas
@@ -1224,6 +1275,7 @@ async function withFreshStock(fn,opts){
       return;
     }
     await fn();
+    refreshVisiblePage();
   }finally{_stockBusy=false;}
 }
 function confirmPending(){return withFreshStock(_confirmPending);}
@@ -1524,7 +1576,7 @@ async function saveItem(){
     const _c=(item.precio!=null)?+(Math.abs(_d)*item.precio).toFixed(2):null;
     await registrarMovimiento(item,_prevStockItem.stock,item.stock,_d>0?'Entrada':'Salida',_c);
   }
-  await dbPut(item);await cloudPut(item,{photo:!!item.photo||photoRemoved});items=await dbGetAll();closeModal('modal-form');
+  await dbPut(item);await cloudPut(item,{photo:!!item.photo||photoRemoved});items=await dbGetAll();closeModal('modal-form');refreshVisiblePage();
   if(etiquetaCambiada){
     modifiedIds.add(editingId);
     await savePrintedIds();
@@ -3109,6 +3161,19 @@ async function logout(){
   }
   location.reload();
 }
+// Sincronización automática (así se ven los cambios de otras personas sin tocar nada)
+function autoSync(){
+  if(typeof appStarted==='undefined'||!appStarted||!appReady||!sb)return;
+  if(document.getElementById('modal-form')?.classList.contains('open'))return; // no interrumpir un formulario abierto
+  if(typeof mapEditing!=='undefined'&&mapEditing)return; // no interrumpir la edición del mapa
+  if(document.visibilityState&&document.visibilityState!=='visible')return;
+  syncFromCloud().catch(()=>{});
+}
+if(typeof window!=='undefined'&&window.addEventListener&&typeof document!=='undefined'&&document.addEventListener){
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')autoSync();});
+  window.addEventListener('online',autoSync);
+  setInterval(()=>{if(document.querySelector('.modal-bg.open'))return;autoSync();},300000);
+}
 // Si se cierra sesión en otra pestaña, esta se recarga para no dejar datos a la vista
 if(typeof window!=='undefined'&&window.addEventListener){
   window.addEventListener('storage',e=>{
@@ -3173,7 +3238,7 @@ function finishUnlock(){
   try{sessionStorage.setItem('almacen_admin_'+(WH?WH.key:''),'1');}catch(e){}
   closeModal('modal-unlock');
   renderUserBar();
-  renderAll();
+  refreshVisiblePage();
   const a=pendingAdminAction;pendingAdminAction=null;
   if(a)a();
 }
