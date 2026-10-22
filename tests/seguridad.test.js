@@ -20,7 +20,7 @@ const ctx = vm.createContext({
   Intl, URL, Blob: function () {}, FileReader: function () {}, Image: function () {},
 });
 // Las declaraciones `let/const` de nivel superior no cuelgan del contexto: las exponemos con una función
-vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid,quienMov,whBarHtml,sesStorageKey,logout,isAdminRole};', ctx);
+vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid,quienMov,whBarHtml,sesStorageKey,logout,isAdminRole,ensureOnline,GUARDED_FUNCS};', ctx);
 const t = ctx.__t;
 
 test('ids: solo letras, números, guion y guion bajo', () => {
@@ -200,6 +200,41 @@ test('isAdminRole: solo el rol admin de Supabase cuenta', async () => {
   set('{useSupabaseAuth:false}', "{user:{app_metadata:{role:'admin'}}}"); // modo antiguo: nunca por rol
   assert.strictEqual(await t.isAdminRole(), false);
   vm.runInContext('WAREHOUSE_CONFIG=undefined; delete globalThis.WAREHOUSE_CONFIG; sb=null', ctx);
+});
+
+test('sin conexión: ensureOnline bloquea, tolera un corte momentáneo y no bloquea con conexión', async () => {
+  vm.runInContext("WH={tblCfg:'config'}", ctx);
+  const mk = (resultados) => "sb={from:()=>({select:()=>({limit:async()=>({error:(__r.shift()?null:{message:'x'})})})})}";
+  const set = (lista) => { ctx.__r = lista; vm.runInContext(mk(), ctx); };
+  set([true]);                         // responde bien al primer intento
+  assert.strictEqual(await t.ensureOnline('x'), true);
+  set([false, true]);                  // falla una vez y se recupera (cambio de repetidor)
+  assert.strictEqual(await t.ensureOnline('x'), true);
+  set([false, false]);                 // sin conexión de verdad
+  assert.strictEqual(await t.ensureOnline('x'), false);
+  vm.runInContext('sb=null', ctx);     // sin librería de Supabase
+  assert.strictEqual(await t.ensureOnline('x'), false);
+});
+
+test('sin conexión: las funciones protegidas están envueltas y no ejecutan nada sin red', async () => {
+  assert.ok(t.GUARDED_FUNCS.length >= 15);
+  for (const [name] of t.GUARDED_FUNCS) {
+    assert.strictEqual(vm.runInContext('typeof ' + name, ctx), 'function', name);
+    assert.ok(vm.runInContext(name + '.toString()', ctx).includes('ensureOnline'), name + ' no está protegida');
+  }
+  ctx.navigator = { onLine: false };
+  const t0 = Date.now();
+  // el original fallaría (no hay formulario): si devuelve undefined, el envoltorio lo ha bloqueado
+  assert.strictEqual(await vm.runInContext('saveItem()', ctx), undefined);
+  assert.ok(Date.now() - t0 < 1000, 'sin red se bloquea al instante');
+  ctx.navigator = {};
+});
+
+test('cleanItems rápido: valida el tipo de foto sin recorrerla entera', () => {
+  const ok = 'data:image/jpeg;base64,/9j/4AAQ';
+  assert.strictEqual(t.cleanItems([{ id: 'I1', photo: ok }], true)[0].photo, ok);
+  assert.strictEqual(t.cleanItems([{ id: 'I1', photo: 'javascript:alert(1)' }], true)[0].photo, null);
+  assert.strictEqual(t.cleanItems([{ id: 'I1', photo: 'data:text/html;base64,AAAA' }], true)[0].photo, null);
 });
 
 test('no quedan contraseñas por defecto en el código', () => {
