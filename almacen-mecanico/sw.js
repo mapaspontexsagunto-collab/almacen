@@ -28,7 +28,7 @@ self.addEventListener('install', (event) => {
   // Un fichero que falle no debe impedir instalar el resto
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) =>
-      Promise.allSettled(PRECACHE_URLS.map((u) => cache.add(u)))
+      Promise.allSettled(PRECACHE_URLS.map((u) => cache.add(u.startsWith('http') ? u : new Request(u, { cache: 'reload' }))))
     )
   );
   self.skipWaiting();
@@ -70,14 +70,16 @@ self.addEventListener('fetch', (event) => {
   // Solo gestionamos peticiones de nuestro propio origen. Las llamadas a Supabase se dejan pasar tal cual.
   if (url.origin !== self.location.origin) return;
 
-  const red = fetch(req, { cache: 'no-cache' }).then((res) => {
-    // Solo se guardan respuestas correctas completas (nunca errores 4xx/5xx ni parciales)
+  const red = fetch(req, { cache: 'no-cache' });
+  // La copia en caché se actualiza siempre, aunque la respuesta llegue tarde (el evento espera a este proceso).
+  // Solo se guardan respuestas correctas completas (nunca errores 4xx/5xx ni parciales).
+  const refresco = red.then((res) => {
     if (res.ok && res.status === 200) {
-      const copia = res.clone();
-      event.waitUntil(caches.open(CACHE_NAME).then((c) => c.put(req, copia)).catch(() => {}));
+      const copia = res.clone(); // se clona enseguida, antes de que nadie lea la respuesta
+      return caches.open(CACHE_NAME).then((c) => c.put(req, copia));
     }
-    return res;
-  });
+  }).catch(() => {});
+  event.waitUntil(refresco);
   red.catch(() => {}); // evita avisos si la red falla después de usar la copia guardada
   const limite = new Promise((resolve) => setTimeout(() => resolve(null), NETWORK_TIMEOUT_MS));
 

@@ -97,7 +97,7 @@ let DB_NAME=(typeof WAREHOUSE_CONFIG!=='undefined'?WAREHOUSE_CONFIG.db:'almacen_
 function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB_NAME,2);r.onupgradeneeded=e=>{const d=e.target.result;if(!d.objectStoreNames.contains(STORE))d.createObjectStore(STORE,{keyPath:'id'});if(!d.objectStoreNames.contains(CFG))d.createObjectStore(CFG,{keyPath:'key'});if(!d.objectStoreNames.contains(MOV))d.createObjectStore(MOV,{keyPath:'id',autoIncrement:true});};r.onsuccess=e=>{db=e.target.result;res();};r.onerror=e=>rej(e);});}
 // Ejecuta una operación y resuelve SOLO cuando la transacción termina; rechaza si falla o se aborta
 function idbRun(store,mode,fn){return new Promise((res,rej)=>{try{const tx=db.transaction(store,mode);const req=fn(tx.objectStore(store));tx.oncomplete=()=>res(req?req.result:undefined);tx.onerror=()=>rej(tx.error||new Error('IndexedDB error'));tx.onabort=()=>rej(tx.error||new Error('IndexedDB abortado'));}catch(e){rej(e);}});}
-function dbGetAll(){return idbRun(STORE,'readonly',s=>s.getAll()).then(r=>cleanItems(r||[]));}
+function dbGetAll(){return idbRun(STORE,'readonly',s=>s.getAll()).then(r=>cleanItems(r||[],true));}
 function dbPut(item){return idbRun(STORE,'readwrite',s=>s.put(item)).then(()=>{});}
 function dbDelete(id){return idbRun(STORE,'readwrite',s=>s.delete(id)).then(()=>{});}
 function dbClear(){return idbRun(STORE,'readwrite',s=>s.clear()).then(()=>{});}
@@ -205,12 +205,12 @@ function jsq(s){return esc(JSON.stringify(String(s==null?'':s)));}
 function cleanText(s){return String(s==null?'':s).replace(/[<>"'&`\\]/g,'');}
 function cleanNum(v,min,max,def){v=Number(v);return Number.isFinite(v)?Math.max(min,Math.min(max,v)):def;}
 function strArr(v){return Array.isArray(v)?v.filter(x=>x!=null).map(x=>String(x)):[];}
-function cleanItem(it){
+function cleanItem(it,fast){
   if(!it||!isSafeId(String(it.id)))return null;
   const m={...it,id:String(it.id)};
   m.loc=cleanText(m.loc);
   if(typeof m.pos==='string')m.pos=cleanText(m.pos);
-  m.photo=safePhoto(m.photo);
+  m.photo=fast?((typeof m.photo==='string'&&/^data:image\/(png|jpe?g|webp|gif);base64,/.test(m.photo))?m.photo:null):safePhoto(m.photo);
   // Tipos esperados (evita que un valor no numérico llegue al HTML)
   m.stock=cleanNum(m.stock,-1e9,1e9,0);
   m.min=cleanNum(m.min,-1e9,1e9,0);
@@ -219,7 +219,7 @@ function cleanItem(it){
   if(m.cats!=null)m.cats=strArr(m.cats);
   return m;
 }
-function cleanItems(list){return (Array.isArray(list)?list:[]).map(cleanItem).filter(Boolean);}
+function cleanItems(list,fast){return (Array.isArray(list)?list:[]).map(it=>cleanItem(it,fast)).filter(Boolean);}
 function cleanBlock(b){
   if(!b||typeof b!=='object')return null;
   const id=String(b.id==null?'':b.id).replace(/[^A-Za-z0-9_-]/g,'').slice(0,64);
@@ -310,11 +310,11 @@ async function cloudPut(item,opts){
 async function cloudDelete(id){
   if(!sb){markDirtyDel(id);return false;}
   try{
-    const{data,error}=await sb.from(WH.tblItems).delete().eq('id',id).select('id');
+    const{data,error}=await withTimeout(sb.from(WH.tblItems).delete().eq('id',id).select('id'),15000,'borrar');
     if(error)throw error;
     if(!data||data.length===0){
       // 0 filas: o ya no existía o la base de datos lo ha rechazado (sin permisos de administrador)
-      const chk=await sb.from(WH.tblItems).select('id').eq('id',id).maybeSingle();
+      const chk=await withTimeout(sb.from(WH.tblItems).select('id').eq('id',id).maybeSingle(),15000,'borrar');
       if(chk.error)throw chk.error;
       if(chk.data){const d=new Error('borrado denegado');d.denied=true;throw d;}
     }
@@ -359,10 +359,11 @@ async function cloudGetAll(){
 // Lanza una promesa con tiempo límite: si tarda demasiado, falla rápido
 // (así una petición colgada no deja la app esperando para siempre)
 function withTimeout(promise, ms, label){
+  let t;
   return Promise.race([
     Promise.resolve(promise),
-    new Promise((_,rej)=>setTimeout(()=>rej(new Error('Tiempo agotado: '+(label||''))), ms))
-  ]);
+    new Promise((_,rej)=>{t=setTimeout(()=>rej(new Error('Tiempo agotado: '+(label||''))), ms);})
+  ]).finally(()=>clearTimeout(t));
 }
 // Descarga SOLO los datos (sin fotos): payload pequeño y rápido, muy fiable
 async function cloudGetMeta(){
@@ -522,7 +523,7 @@ async function init(){
   try{adminUnlocked=sessionStorage.getItem('almacen_admin_'+WH.key)==='1';}catch(e){}
   if(adminUnlocked&&useSbAuth()&&!(await isAdminRole()))adminUnlocked=false;
   renderUserBar();
-  items=cleanItems(await dbGetAll());
+  items=await dbGetAll();
   try{dirtyIds=new Set((await cfgGet('dirtyIds'))||[]);dirtyDel=new Set((await cfgGet('dirtyDel'))||[]);}catch(e){}
   appReady=true;
   renderAll();
@@ -559,7 +560,7 @@ async function _syncFromCloud(refrescarTodasFotos){
   if(_stockBusy){updateSyncBadge('ok');return;} // hay un movimiento de stock en curso: no se mezcla ahora
 
   // Si la nube devuelve una lista vacía pero hay datos locales (p. ej. sesión caducada), no se borra nada
-  if(meta.length===0&&items.length>0){console.warn('La nube devolvió 0 artículos; se conserva lo local');updateSyncBadge('off');return;}
+  if(meta.length===0&&items.length>0){console.warn('La nube devolvió 0 artículos; se conserva lo local');updateSyncBadge('ok');return;}
   // Mapa de fotos locales actuales (para conservarlas y no volver a bajarlas)
   const fotosLocales={};
   items.forEach(i=>{if(i.photo)fotosLocales[i.id]=i.photo;});
@@ -1386,13 +1387,13 @@ function askDelete(){
     document.getElementById('confirm-title').textContent='Eliminar artículo';
     document.getElementById('confirm-msg').textContent='¿Eliminar "'+currentItem.name+'" del inventario? Esta acción no se puede deshacer.';
     const ok=document.getElementById('confirm-ok');
-    ok.onclick=async()=>{const id=currentItem.id;const okc=await cloudDelete(id);if(!okc){closeModal('modal-confirm');if(dirtyDel.has(id))toast('⚠ No se pudo borrar el artículo (sin conexión). Inténtalo de nuevo.');return;}await dbDelete(id);items=await dbGetAll();closeModal('modal-confirm');closeModal('modal-detail');renderAll();toast('Artículo eliminado');};
+    ok.onclick=async()=>{ok.disabled=true;const id=currentItem.id;const okc=await cloudDelete(id);ok.disabled=false;if(!okc){closeModal('modal-confirm');if(dirtyDel.has(id)){clearDirtyDel(id);toast('⚠ No se pudo borrar el artículo (sin conexión). Inténtalo de nuevo.');}return;}await dbDelete(id);items=await dbGetAll();closeModal('modal-confirm');closeModal('modal-detail');renderAll();toast('Artículo eliminado');};
     openModal('modal-confirm');
   });
 }
 
 function openAddForm(){
-  editingId=null;pendingPhoto=null;photoRemoved=false;
+  editingId=null;pendingPhoto=null;photoRemoved=false;_formStock0=null;
   document.getElementById('form-title').textContent='Añadir material';
   rebuildCatSelect();buildShelfOptions();
   ['f-name','f-ref','f-brand','f-machine','f-notes','f-newcat'].forEach(id=>document.getElementById(id).value='');
@@ -1409,7 +1410,7 @@ function openAddForm(){
   renderPhotoZone();resetAiFillStatus();openModal('modal-form');
 }
 function editCurrentItem(){
-  if(!currentItem)return;editingId=currentItem.id;pendingPhoto=currentItem.photo||null;photoRemoved=false;
+  if(!currentItem)return;editingId=currentItem.id;pendingPhoto=currentItem.photo||null;photoRemoved=false;_formStock0=currentItem.stock;
   document.getElementById('form-title').textContent='Editar material';rebuildCatSelect();buildShelfOptions();
   document.getElementById('f-name').value=currentItem.name;document.getElementById('f-cat').value=currentItem.cat;
   document.getElementById('f-ref').value=currentItem.ref||'';document.getElementById('f-brand').value=currentItem.brand||'';
@@ -1554,6 +1555,7 @@ function applyAiFill(r){
   }
   // El stock NO se rellena automáticamente: lo introduce el usuario.
 }
+let _formStock0=null; // stock que tenía el artículo al abrir el formulario de edición
 async function saveItem(){
   const name=document.getElementById('f-name').value.trim();
   let cat=document.getElementById('f-cat').value;
@@ -1570,9 +1572,10 @@ async function saveItem(){
   const item={id:editingId||('I'+Date.now()+Math.floor(Math.random()*1000)),name,cat,cats:extraCats,loc:shelf+'-'+balda,pos:pos,precio:_precio,stock:Math.max(0,parseInt(document.getElementById('f-stock').value)||0),min:minVal,ref:document.getElementById('f-ref').value.trim(),brand:document.getElementById('f-brand').value.trim(),machine:document.getElementById('f-machine').value.trim(),notes:document.getElementById('f-notes').value.trim(),photo:pendingPhoto};
   if(item.precio!=null&&(isNaN(item.precio)||item.precio<0)){toast('⚠ Precio no válido');return;}
   const _prevStockItem=editingId?items.find(x=>x.id===editingId):null;
-  if(_prevStockItem&&item.stock===_prevStockItem.stock&&!dirtyIds.has(item.id)){
+  if(_prevStockItem&&!dirtyIds.has(item.id)){
+    // Si no se tocó el stock en el formulario, se usa el actual de la nube (puede haber cambiado mientras se editaba)
     const _v=await fetchCloudStock(item.id);
-    if(_v!=null){item.stock=_v;_prevStockItem.stock=_v;}
+    if(_v!=null){if(item.stock===_formStock0)item.stock=_v;_prevStockItem.stock=_v;}
   }
   // ¿Es un artículo ya impreso cuya etiqueta ha cambiado?
   // La etiqueta muestra nombre, referencia y ubicación: si alguno cambia, conviene reimprimir.
@@ -3071,13 +3074,12 @@ async function authSessionOk(){
     if(!sb)initSupabase();
     // Sin conexión se permite entrar solo para consultar si ya había una sesión iniciada en este móvil
     const hayToken=(()=>{try{return Object.keys(localStorage).some(k=>/^sb-.*-auth-token$/.test(k));}catch(e){return false;}})();
-    const sinRed=typeof navigator!=='undefined'&&navigator.onLine===false;
-    if(!sb)return hayToken&&sinRed;
+    if(!sb)return hayToken;
     try{
       const{data}=await withTimeout(sb.auth.getSession(),8000,'sesion');
       if(data&&data.session)return true;
-      return hayToken&&sinRed;
-    }catch(e){return hayToken&&sinRed;}
+      return hayToken;
+    }catch(e){return hayToken;}
   }
   return true;
 }
@@ -4101,7 +4103,7 @@ function setOfflineBar(off){
 async function pingCloud(ms){
   if(!sb||!WH)return false;
   try{
-    const{error}=await withTimeout(sb.from(WH.tblCfg).select('key').limit(1),ms||4000,'ping');
+    const{error}=await withTimeout(sb.from(WH.tblCfg).select('key').limit(1),ms||6000,'ping');
     return !error;
   }catch(e){return false;}
 }
@@ -4112,9 +4114,12 @@ async function ensureOnline(que){
     try{toast('📵 Sin conexión: no se puede '+(que||'hacer cambios')+'. Solo consulta; inténtalo cuando vuelva la cobertura.');}catch(e){}
   };
   if(typeof navigator!=='undefined'&&navigator.onLine===false){avisar();return false;}
-  if(await pingCloud()){setOfflineBar(false);return true;}
-  await new Promise(r=>setTimeout(r,1500));
-  if(await pingCloud()){setOfflineBar(false);return true;}
+  const espera=setTimeout(()=>{try{toast('Comprobando conexión…');}catch(e){}},1200);
+  try{
+    if(await pingCloud()){setOfflineBar(false);return true;}
+    await new Promise(r=>setTimeout(r,1500)); // corte momentáneo (cambio de repetidor wifi)
+    if(await pingCloud()){setOfflineBar(false);return true;}
+  }finally{clearTimeout(espera);}
   avisar();
   return false;
 }
@@ -4136,13 +4141,16 @@ GUARDED_FUNCS.forEach(([name,que])=>{
     _guardEnCurso.add(name);
     let ok=false;
     try{ok=await ensureOnline(que);}finally{_guardEnCurso.delete(name);}
-    if(!ok)return;
+    if(!ok){
+      try{const el=args[0]&&args[0].target;if(el&&el.type==='file')el.value='';}catch(e){}
+      return;
+    }
     return orig.apply(this,args);
   };
 });
 if(typeof window!=='undefined'&&window.addEventListener){
   window.addEventListener('offline',()=>setOfflineBar(true));
-  window.addEventListener('online',()=>setOfflineBar(false));
+  window.addEventListener('online',()=>{pingCloud().then(ok=>setOfflineBar(!ok));});
 }
 
 // Registro del Service Worker (PWA): permite instalar la app en el móvil

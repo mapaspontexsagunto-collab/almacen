@@ -216,12 +216,25 @@ test('sin conexión: ensureOnline bloquea, tolera un corte momentáneo y no bloq
   assert.strictEqual(await t.ensureOnline('x'), false);
 });
 
-test('sin conexión: todas las funciones protegidas existen', () => {
+test('sin conexión: las funciones protegidas están envueltas y no ejecutan nada sin red', async () => {
   assert.ok(t.GUARDED_FUNCS.length >= 15);
   for (const [name] of t.GUARDED_FUNCS) {
-    assert.strictEqual(typeof vm.runInContext('typeof ' + name, ctx), 'string');
     assert.strictEqual(vm.runInContext('typeof ' + name, ctx), 'function', name);
+    assert.ok(vm.runInContext(name + '.toString()', ctx).includes('ensureOnline'), name + ' no está protegida');
   }
+  ctx.navigator = { onLine: false };
+  const t0 = Date.now();
+  // el original fallaría (no hay formulario): si devuelve undefined, el envoltorio lo ha bloqueado
+  assert.strictEqual(await vm.runInContext('saveItem()', ctx), undefined);
+  assert.ok(Date.now() - t0 < 1000, 'sin red se bloquea al instante');
+  ctx.navigator = {};
+});
+
+test('cleanItems rápido: valida el tipo de foto sin recorrerla entera', () => {
+  const ok = 'data:image/jpeg;base64,/9j/4AAQ';
+  assert.strictEqual(t.cleanItems([{ id: 'I1', photo: ok }], true)[0].photo, ok);
+  assert.strictEqual(t.cleanItems([{ id: 'I1', photo: 'javascript:alert(1)' }], true)[0].photo, null);
+  assert.strictEqual(t.cleanItems([{ id: 'I1', photo: 'data:text/html;base64,AAAA' }], true)[0].photo, null);
 });
 
 test('no quedan contraseñas por defecto en el código', () => {
