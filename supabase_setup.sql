@@ -1,3 +1,4 @@
+-- ATENCIÓN: FICHERO HEREDADO. El acceso actual usa Supabase Auth (ver SEGURIDAD.md). No hace falta ejecutarlo.
 -- Ejecutar UNA VEZ en el SQL Editor de Supabase (instalación nueva)
 -- Tabla heredada de credenciales (solo se usa si useSupabaseAuth es false en config.js).
 -- RECOMENDADO: usar Supabase Auth y ejecutar después supabase_seguridad.sql (ver SEGURIDAD.md).

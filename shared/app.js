@@ -97,7 +97,7 @@ let DB_NAME=(typeof WAREHOUSE_CONFIG!=='undefined'?WAREHOUSE_CONFIG.db:'almacen_
 function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB_NAME,2);r.onupgradeneeded=e=>{const d=e.target.result;if(!d.objectStoreNames.contains(STORE))d.createObjectStore(STORE,{keyPath:'id'});if(!d.objectStoreNames.contains(CFG))d.createObjectStore(CFG,{keyPath:'key'});if(!d.objectStoreNames.contains(MOV))d.createObjectStore(MOV,{keyPath:'id',autoIncrement:true});};r.onsuccess=e=>{db=e.target.result;res();};r.onerror=e=>rej(e);});}
 // Ejecuta una operación y resuelve SOLO cuando la transacción termina; rechaza si falla o se aborta
 function idbRun(store,mode,fn){return new Promise((res,rej)=>{try{const tx=db.transaction(store,mode);const req=fn(tx.objectStore(store));tx.oncomplete=()=>res(req?req.result:undefined);tx.onerror=()=>rej(tx.error||new Error('IndexedDB error'));tx.onabort=()=>rej(tx.error||new Error('IndexedDB abortado'));}catch(e){rej(e);}});}
-function dbGetAll(){return idbRun(STORE,'readonly',s=>s.getAll()).then(r=>r||[]);}
+function dbGetAll(){return idbRun(STORE,'readonly',s=>s.getAll()).then(r=>cleanItems(r||[]));}
 function dbPut(item){return idbRun(STORE,'readwrite',s=>s.put(item)).then(()=>{});}
 function dbDelete(id){return idbRun(STORE,'readwrite',s=>s.delete(id)).then(()=>{});}
 function dbClear(){return idbRun(STORE,'readwrite',s=>s.clear()).then(()=>{});}
@@ -142,14 +142,21 @@ async function registrarMovimiento(item, anterior, nuevo, tipo, coste, provider)
 }
 
 // Sube a la nube los movimientos locales que aún no se hayan subido (cola de pendientes)
-async function pushPendingMovements(){
+let _pushing=null;
+function pushPendingMovements(){
+  if(_pushing)return _pushing; // ya hay una subida en curso: se espera a esa
+  _pushing=_pushPendingMovements().finally(()=>{_pushing=null;});
+  return _pushing;
+}
+async function _pushPendingMovements(){
   if(!sb||!WH?.tblMov)return;
   const all=await movGetAll();
   const pend=all.filter(m=>m.synced!==true);
   if(!pend.length)return;
   // Evitar duplicados: ver qué movimientos ya existen en la nube
-  const cloud=await cloudMovGetAll();
-  const enNube=new Set((cloud||[]).map(m=>m.ts+'|'+m.itemId));
+  const cloud=await cloudMovGetAll(true);
+  if(cloud===null)return; // no se pudo leer la nube: no se sube nada (evita duplicados)
+  const enNube=new Set(cloud.map(m=>m.ts+'|'+m.itemId));
   for(const m of pend){
     if(enNube.has(m.ts+'|'+m.itemId)){m.synced=true;await movUpdate(m);continue;} // ya estaba subido
     const ok=await cloudMovPut(m);
@@ -297,7 +304,7 @@ async function cloudPut(item,opts){
   cloudItem.categories=item.cats||[];
   delete cloudItem.cats;
   if(!(opts&&opts.photo)&&!cloudItem.photo)delete cloudItem.photo;
-  try{const{error}=await sb.from(WH.tblItems).upsert(cloudItem,{onConflict:'id'});if(error)throw error;cloudOK=true;clearDirty(item.id);return true;}
+  try{const{error}=await withTimeout(sb.from(WH.tblItems).upsert(cloudItem,{onConflict:'id'}),15000,'guardar');if(error)throw error;cloudOK=true;clearDirty(item.id);return true;}
   catch(e){cloudOK=false;console.warn('cloudPut error',e);markDirty(item.id);return false;}
 }
 async function cloudDelete(id){
@@ -395,16 +402,17 @@ async function cloudCfgPut(key,value){
 async function cloudCfgGet(key){
   if(!sb)return null;
   try{const{data,error}=await sb.from(WH.tblCfg).select('value').eq('key',key).maybeSingle();if(error)throw error;return data?data.value:null;}
-  catch(e){console.warn('cloudCfgGet error',e);return null;}
+  catch(e){console.warn('cloudCfgGet error',e);return undefined;} // undefined = falló; null = no hay fila
 }
 async function cloudMovPut(mov){
   if(!sb||!WH?.tblMov)return false;
   const{photo,synced,id,...m}=mov; // quitar campos que no van a la nube
   try{
-    const{error}=await sb.from(WH.tblMov).insert(m);
+    const{error}=await withTimeout(sb.from(WH.tblMov).insert(m),15000,'movimiento');
     if(error)throw error;
     return true;
   }catch(e){
+    if(e&&e.code==='23505')return true; // ya existía en la nube
     console.warn('cloudMovPut error',e, 'payload:', m);
     // Si el fallo es porque la columna "provider" no existe en la tabla (instalación
     // antigua de Supabase donde no se ejecutó el ALTER TABLE), reintentamos sin ella
@@ -421,10 +429,10 @@ async function cloudMovPut(mov){
     return false;
   }
 }
-async function cloudMovGetAll(){
-  if(!sb||!WH?.tblMov)return[];
+async function cloudMovGetAll(strict){
+  if(!sb||!WH?.tblMov)return strict?null:[];
   try{return await fetchAllPages(()=>sb.from(WH.tblMov).select('*').order('ts',{ascending:false}));}
-  catch(e){console.warn('cloudMovGetAll error',e);return[];}
+  catch(e){console.warn('cloudMovGetAll error',e);return strict?null:[];}
 }
 async function cloudMovDelete(ts,itemId){
   if(!sb||!WH?.tblMov)return true;
@@ -476,6 +484,7 @@ function updateSyncBadge(state){
   b.classList.remove('ok','off','syncing');
   b.classList.add(state);
   t.textContent = state==='ok'?'Sincronizado' : state==='syncing'?'Sincronizando…' : 'Sin conexión';
+  if(state==='ok'||state==='off')setOfflineBar(state==='off');
 }
 
 let items=[],categories=[],providers=[],shelves=[],currentView='gallery',currentCat='',currentItem=null,pendingPhoto=null,photoRemoved=false,adjustValue=0,editingId=null,scanner=null,shelfDraft=[],scanPurpose=null,pendingDelta=0;
@@ -584,15 +593,15 @@ async function _syncFromCloud(refrescarTodasFotos){
   const cAisles=await cloudCfgGet('aisles');
   const cMapSize=await cloudCfgGet('mapSize');
   const cPrinted=await cloudCfgGet('printedIds');
-  if(cPrinted){printedIds=new Set(cPrinted);await cfgPut('printedIds',cPrinted);}
+  if(Array.isArray(cPrinted)){printedIds=new Set(cPrinted);await cfgPut('printedIds',cPrinted);}
   const cModified=await cloudCfgGet('modifiedIds');
-  if(cModified){modifiedIds=new Set(cModified);await cfgPut('modifiedIds',cModified);}
+  if(Array.isArray(cModified)){modifiedIds=new Set(cModified);await cfgPut('modifiedIds',cModified);}
   if(Array.isArray(cCats)){categories=strArr(cCats);await cfgPut('categories',categories);}
   if(Array.isArray(cProviders)){providers=strArr(cProviders);await cfgPut('providers',providers);}
   if(cShelves&&cShelves.length){shelves=cleanShelves(cShelves);await cfgPut('shelves',shelves);}
-  else{await cloudCfgPut('shelves',shelves);}
+  else if(cShelves!==undefined){await cloudCfgPut('shelves',shelves);} // solo se siembra si la lectura funcionó
   if(Array.isArray(cAisles)){aisles=cleanAisles(cAisles);await cfgPut('aisles',aisles);}
-  if(cMapSize&&cMapSize.w&&cMapSize.h){mapSize=cMapSize;await cfgPut('mapSize',mapSize);}
+  if(cMapSize&&cMapSize.w&&cMapSize.h){mapSize={w:Math.round(cleanNum(cMapSize.w,10,120,DEFAULT_MAP_SIZE.w)),h:Math.round(cleanNum(cMapSize.h,10,120,DEFAULT_MAP_SIZE.h))};await cfgPut('mapSize',mapSize);}
   const cAdmin=await cloudCfgGet('adminPass'); if(cAdmin){adminPass=cAdmin;await cfgPut('adminPass',cAdmin);}
   const cLogin=await cloudCfgGet('loginCfg'); if(cLogin){setLoginCfg(cLogin);await cfgPut('loginCfg',cLogin);}
   renderAll();
@@ -821,7 +830,7 @@ function renderMovRows(list,dir){
   if(!list.length)return '<div class="mov-empty">Sin movimientos en los últimos 3 meses.</div>';
   return list.map(m=>{
     const signo=m.diferencia>0?'+':'';
-    const turnoCorto=(m.turno||'').split(' ')[0];
+    const turnoCorto=String(m.turno||'').split(' ')[0];
     const it=items.find(x=>x.id===m.itemId); // artículo actual (para foto y abrir ficha)
     const foto=it?.photo||null;
     const thumb=`<div class="mv-thumb">${foto?`<img src="${foto}">`:`<svg width="18" height="18" fill="none" stroke="var(--text3)" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>`}</div>`;
@@ -834,7 +843,7 @@ function renderMovRows(list,dir){
           <div class="mv-meta">${esc(m.fecha||'')} · ${esc(turnoCorto)} ${esc(m.hora||'')}${m.loc?' · '+esc(m.loc):''}${m.ref?' · '+esc(m.ref):''}${(adminUnlocked&&m.usuario)?' · 👤 '+esc(quienMov(m)):''}${m.tipo==='Compra'?' · <span class="mv-compra">📦 Compra'+((adminUnlocked&&m.coste!=null)?' '+fmtEur(m.coste):'')+'</span>':''}</div>
         </div>
       </div>
-      <div class="mv-diff ${dir}">${signo}${m.diferencia}</div>
+      <div class="mv-diff ${dir}">${signo}${Number(m.diferencia)||0}</div>
       <button class="mv-del" title="Borrar línea" onclick="event.stopPropagation();askDeleteMov(${Number(m.ts)||0},${jsq(m.itemId)})"><svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m2 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     </div>`;
   }).join('');
@@ -1081,7 +1090,7 @@ async function renderPriceHistory(itemId){
   const avg=hist.reduce((s,h)=>s+Number(h.price||0),0)/hist.length;
   let h='<div class="price-hist"><div class="price-hist-h">Histórico de precios</div>';
   h+='<div class="price-hist-avg"><span class="k">Precio medio (últimas '+hist.length+')</span><span class="v">'+fmtEur(avg)+'</span></div>';
-  h+=hist.map(p=>'<div class="price-hist-row"><span class="ph-price">'+fmtEur(Number(p.price))+'/u</span><span class="ph-meta">'+esc(p.fecha||'')+(p.provider?' · '+esc(p.provider):'')+' · '+(p.qty||0)+' uds.</span></div>').join('');
+  h+=hist.map(p=>'<div class="price-hist-row"><span class="ph-price">'+fmtEur(Number(p.price))+'/u</span><span class="ph-meta">'+esc(p.fecha||'')+(p.provider?' · '+esc(p.provider):'')+' · '+(Number(p.qty)||0)+' uds.</span></div>').join('');
   h+='</div>';
   box.innerHTML=h;
 }
@@ -1261,6 +1270,7 @@ async function withFreshStock(fn,opts){
   if(_stockBusy){toast('Procesando…');return;}
   _stockBusy=true;
   try{
+    if(!(await ensureOnline('cambiar el stock')))return;
     // Si hay una sincronización en curso, se espera a que termine (al ver _stockBusy no mezclará datos)
     let w=0;while(_syncing&&w<60){await new Promise(r=>setTimeout(r,200));w++;}
     const antes=currentItem?currentItem.stock:null;
@@ -1376,7 +1386,7 @@ function askDelete(){
     document.getElementById('confirm-title').textContent='Eliminar artículo';
     document.getElementById('confirm-msg').textContent='¿Eliminar "'+currentItem.name+'" del inventario? Esta acción no se puede deshacer.';
     const ok=document.getElementById('confirm-ok');
-    ok.onclick=async()=>{const id=currentItem.id;await dbDelete(id);await cloudDelete(id);items=await dbGetAll();closeModal('modal-confirm');closeModal('modal-detail');renderAll();toast('Artículo eliminado');};
+    ok.onclick=async()=>{const id=currentItem.id;const okc=await cloudDelete(id);if(!okc){closeModal('modal-confirm');if(dirtyDel.has(id))toast('⚠ No se pudo borrar el artículo (sin conexión). Inténtalo de nuevo.');return;}await dbDelete(id);items=await dbGetAll();closeModal('modal-confirm');closeModal('modal-detail');renderAll();toast('Artículo eliminado');};
     openModal('modal-confirm');
   });
 }
@@ -1560,6 +1570,10 @@ async function saveItem(){
   const item={id:editingId||('I'+Date.now()+Math.floor(Math.random()*1000)),name,cat,cats:extraCats,loc:shelf+'-'+balda,pos:pos,precio:_precio,stock:Math.max(0,parseInt(document.getElementById('f-stock').value)||0),min:minVal,ref:document.getElementById('f-ref').value.trim(),brand:document.getElementById('f-brand').value.trim(),machine:document.getElementById('f-machine').value.trim(),notes:document.getElementById('f-notes').value.trim(),photo:pendingPhoto};
   if(item.precio!=null&&(isNaN(item.precio)||item.precio<0)){toast('⚠ Precio no válido');return;}
   const _prevStockItem=editingId?items.find(x=>x.id===editingId):null;
+  if(_prevStockItem&&item.stock===_prevStockItem.stock&&!dirtyIds.has(item.id)){
+    const _v=await fetchCloudStock(item.id);
+    if(_v!=null){item.stock=_v;_prevStockItem.stock=_v;}
+  }
   // ¿Es un artículo ya impreso cuya etiqueta ha cambiado?
   // La etiqueta muestra nombre, referencia y ubicación: si alguno cambia, conviene reimprimir.
   let etiquetaCambiada=false;
@@ -2379,7 +2393,7 @@ async function doPrintLabels(){
 }
 
 function showQR(){if(!currentItem)return;document.getElementById('qr-item-name').textContent=currentItem.name+' · '+currentItem.loc;const box=document.getElementById('qr-canvas');box.innerHTML='';new QRCode(box,{text:'ALMACEN:'+currentItem.id,width:200,height:200,colorDark:'#1a1916',colorLight:'#ffffff'});openModal('modal-qr');}
-function openScanner(){openModal('modal-scan');scanner=new Html5Qrcode('qr-reader');scanner.start({facingMode:'environment'},{fps:10,qrbox:220},text=>{if(text.startsWith('ALMACEN:')){const id=text.replace('ALMACEN:','');const purpose=scanPurpose;closeScanner();const found=items.find(i=>i.id===id);if(!found){toast('Componente no encontrado');return;}if(purpose==='addhere'&&addHereTarget){const t=addHereTarget;found.loc=t.sid+'-'+t.balda;found.pos=t.cid||'';Promise.resolve(dbPut(found)).then(()=>cloudPut(found)).then(()=>dbGetAll()).then(r=>{items=r;renderItems();});toast('✓ '+found.name+' colocado aquí');}else{openDetail(id);}}},()=>{}).catch(e=>{toast('No se pudo abrir la cámara');console.error(e);});}
+function openScanner(){openModal('modal-scan');scanner=new Html5Qrcode('qr-reader');scanner.start({facingMode:'environment'},{fps:10,qrbox:220},text=>{if(text.startsWith('ALMACEN:')){const id=text.replace('ALMACEN:','');const purpose=scanPurpose;closeScanner();const found=items.find(i=>i.id===id);if(!found){toast('Componente no encontrado');return;}if(purpose==='addhere'&&addHereTarget){const t=addHereTarget;ensureOnline('colocar el artículo').then(ok=>{if(!ok)return;found.loc=t.sid+'-'+t.balda;found.pos=t.cid||'';Promise.resolve(dbPut(found)).then(()=>cloudPut(found)).then(()=>dbGetAll()).then(r=>{items=r;renderItems();});toast('✓ '+found.name+' colocado aquí');});}else{openDetail(id);}}},()=>{}).catch(e=>{toast('No se pudo abrir la cámara');console.error(e);});}
 function closeScanner(){scanPurpose=null;if(scanner){scanner.stop().then(()=>{scanner.clear();scanner=null;}).catch(()=>{scanner=null;});}closeModal('modal-scan');}
 
 async function cloudCfgGetFrom(tbl,key){
@@ -2399,7 +2413,7 @@ async function collectWarehouse(wh){
   // Otro almacén: desde la nube (fuente compartida)
   let its=[], cats=[], shs=[];
   if(sb){
-    try{const{data,error}=await sb.from(wh.tblItems).select('*').limit(10000);
+    try{const data=await fetchAllPages(()=>sb.from(wh.tblItems).select('*').order('id'));const error=null;
       if(!error&&data){its=data.map(r=>{const o={...r};o.cats=o.categories||[];delete o.categories;return o;});}
     }catch(e){console.warn('collect items',e);}
     const c=await cloudCfgGetFrom(wh.tblCfg,'categories'); if(c)cats=c;
@@ -2438,7 +2452,7 @@ async function importBoth(data){
       await cloudCfgPutTo(wh.tblCfg,'shelves',cleanShelves(wd.shelves));
       if(WH && wh.key===WH.key){
         await dbReplaceAll(cleanItems(wd.items));
-        categories=wd.categories||[];
+        categories=strArr(wd.categories);
         if(wd.shelves&&wd.shelves.length)shelves=cleanShelves(wd.shelves);
         await cfgPut('categories',categories);
         await cfgPut('shelves',shelves);
@@ -2451,7 +2465,7 @@ async function importBoth(data){
   openModal('modal-confirm');
 }
 async function exportData(){const data={version:2,exported:new Date().toISOString(),categories,shelves,items:await dbGetAll()};const blob=new Blob([JSON.stringify(data)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='almacen_backup_'+(WH?WH.key+'_':'')+new Date().toISOString().slice(0,10)+'.json';a.click();toast('✓ Copia descargada');}
-function importData(e){const file=e.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=async ev=>{try{const data=JSON.parse(ev.target.result);if(data.warehouses){return importBoth(data);}if(!data.items)throw new Error('no valid');document.getElementById('confirm-title').textContent='Importar copia';document.getElementById('confirm-msg').textContent='Reemplazará el inventario actual con '+data.items.length+' items. ¿Continuar?';document.getElementById('confirm-ok').onclick=async()=>{await dbReplaceAll(cleanItems(data.items));categories=data.categories||[];if(data.shelves&&data.shelves.length)shelves=cleanShelves(data.shelves);await cfgPut('categories',categories);await cfgPut('shelves',shelves);items=await dbGetAll();closeModal('modal-confirm');renderAll();toast('⏳ Subiendo a la nube...');for(const it of items)await cloudPut(it);await cloudCfgPut('categories',categories);await cloudCfgPut('shelves',shelves);toast('✓ Importado y sincronizado ('+items.length+' items)');};openModal('modal-confirm');}catch(err){toast('Error: archivo no válido');}};reader.readAsText(file);}
+function importData(e){const file=e.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=async ev=>{try{const data=JSON.parse(ev.target.result);if(data.warehouses){return importBoth(data);}if(!data.items)throw new Error('no valid');document.getElementById('confirm-title').textContent='Importar copia';document.getElementById('confirm-msg').textContent='Reemplazará el inventario actual con '+data.items.length+' items. ¿Continuar?';document.getElementById('confirm-ok').onclick=async()=>{await dbReplaceAll(cleanItems(data.items));categories=strArr(data.categories);if(data.shelves&&data.shelves.length)shelves=cleanShelves(data.shelves);await cfgPut('categories',categories);await cfgPut('shelves',shelves);items=await dbGetAll();closeModal('modal-confirm');renderAll();toast('⏳ Subiendo a la nube...');for(const it of items)await cloudPut(it);await cloudCfgPut('categories',categories);await cloudCfgPut('shelves',shelves);toast('✓ Importado y sincronizado ('+items.length+' items)');};openModal('modal-confirm');}catch(err){toast('Error: archivo no válido');}};reader.readAsText(file);}
 // ===== BÚSQUEDA POR FOTO CON IA =====
 function handleAIPhoto(e){
   const file=e.target.files[0];if(!file)return;
@@ -2929,7 +2943,7 @@ async function doExportMovimientos(){
       const esCompra=(m.tipo==='Compra');
       row.getCell(5).font={size:11,bold:true,color:{argb:esCompra?'FF8A5A00':(esEntrada?'FF217346':'FFC00000')}};
       if(esCompra){row.getCell(5).fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFFFF3C4'}};row.getCell(12).font={size:11,bold:true,color:{argb:'FF8A5A00'}};}
-      const itemActual=itemMap[m.itemId];const foto=itemActual?.photo||m.photo||null;
+      const itemActual=itemMap[m.itemId];const foto=safePhoto(itemActual?.photo||m.photo||null);
       if(foto){try{const parts=foto.split(',');const mimeMatch=parts[0].match(/image\/(jpeg|jpg|png|gif|webp)/i);const ext=mimeMatch?(mimeMatch[1]==='jpg'?'jpeg':mimeMatch[1]):'jpeg';const b64=parts[1];const imgId=wb.addImage({base64:b64,extension:ext});const dims=await imgDims(foto);const BOX=100;let pw=BOX,ph=BOX;if(dims&&dims.w&&dims.h){const r=Math.min(BOX/dims.w,BOX/dims.h);pw=Math.round(dims.w*r);ph=Math.round(dims.h*r);}ws.addImage(imgId,{tl:{col:0.08,row:(rowNum-1)+0.06},ext:{width:pw,height:ph},editAs:'oneCell'});}catch(e){console.warn('Imagen no incrustada',e);}}
     }
     ws.views=[{state:'frozen',ySplit:1}];
@@ -3055,8 +3069,15 @@ async function authSessionOk(){
   if(!sessionValid())return false;
   if(useSbAuth()){
     if(!sb)initSupabase();
-    if(!sb)return false;
-    try{const{data}=await sb.auth.getSession();return !!(data&&data.session);}catch(e){return false;}
+    // Sin conexión se permite entrar solo para consultar si ya había una sesión iniciada en este móvil
+    const hayToken=(()=>{try{return Object.keys(localStorage).some(k=>/^sb-.*-auth-token$/.test(k));}catch(e){return false;}})();
+    const sinRed=typeof navigator!=='undefined'&&navigator.onLine===false;
+    if(!sb)return hayToken&&sinRed;
+    try{
+      const{data}=await withTimeout(sb.auth.getSession(),8000,'sesion');
+      if(data&&data.session)return true;
+      return hayToken&&sinRed;
+    }catch(e){return hayToken&&sinRed;}
   }
   return true;
 }
@@ -3134,6 +3155,7 @@ function enterApp(){
   document.getElementById('app-root').style.display='';
   renderUserBar();
   if(useSbAuth()){
+    try{localStorage.removeItem('almacen_auth_cache');localStorage.removeItem('almacen_login');}catch(e){} // restos del acceso antiguo
     document.querySelectorAll('[onclick="openChangePass()"],[onclick="openUsers()"]').forEach(b=>{b.style.display='none';});
     const h=document.getElementById('sec-help');
     if(h)h.textContent='El acceso lo gestiona Supabase: cada persona entra con su propio usuario y los administradores se marcan allí. Usa el candado 🔒 de la parte superior para activar o quitar el modo administrador.';
@@ -4067,6 +4089,61 @@ function bulkMove(){
   });
 }
 // (El almacén correcto se elige en el evento DOMContentLoaded según el config.js de cada carpeta.)
+
+// ===== SIN CONEXIÓN: SOLO CONSULTA =====
+// Cualquier cambio (stock, artículos, ubicaciones, borrados, importaciones...) exige conexión real con la nube.
+// Sin ella la app solo permite consultar. Así no hay cambios atrasados que choquen con los de otras personas.
+function setOfflineBar(off){
+  const b=document.getElementById('offline-bar');
+  if(b)b.style.display=off?'':'none';
+}
+// ¿Se llega de verdad a la nube? (navigator.onLine no es fiable: puede decir "conectado" sin internet)
+async function pingCloud(ms){
+  if(!sb||!WH)return false;
+  try{
+    const{error}=await withTimeout(sb.from(WH.tblCfg).select('key').limit(1),ms||4000,'ping');
+    return !error;
+  }catch(e){return false;}
+}
+// Comprueba la conexión antes de un cambio. Un corte momentáneo (cambio de repetidor wifi) se reintenta una vez.
+async function ensureOnline(que){
+  const avisar=()=>{
+    setOfflineBar(true);
+    try{toast('📵 Sin conexión: no se puede '+(que||'hacer cambios')+'. Solo consulta; inténtalo cuando vuelva la cobertura.');}catch(e){}
+  };
+  if(typeof navigator!=='undefined'&&navigator.onLine===false){avisar();return false;}
+  if(await pingCloud()){setOfflineBar(false);return true;}
+  await new Promise(r=>setTimeout(r,1500));
+  if(await pingCloud()){setOfflineBar(false);return true;}
+  avisar();
+  return false;
+}
+// Acciones que escriben en la nube y qué se muestra si no hay conexión
+const GUARDED_FUNCS=[
+  ['saveItem','guardar el artículo'],['askDelete','borrar el artículo'],['askWipe','borrar el inventario'],
+  ['loadDemo','cargar los datos de ejemplo'],['confirmDeleteMov','borrar la línea del historial'],
+  ['saveEditShelf','guardar la estantería'],['saveShelves','guardar las estanterías'],['saveLayout','guardar la distribución'],
+  ['saveMapLayout','guardar el mapa'],['moveItemToCell','mover el artículo de ubicación'],['ahPlace','colocar el artículo'],
+  ['applyBulkLoc','cambiar la ubicación'],['bulkMove','mover entre almacenes'],['moveToOtherWarehouse','mover entre almacenes'],
+  ['importData','importar la copia'],['importBoth','importar la copia'],['pushToCloud','subir los datos']
+];
+const _guardEnCurso=new Set();
+GUARDED_FUNCS.forEach(([name,que])=>{
+  const orig=globalThis[name];
+  if(typeof orig!=='function')return;
+  globalThis[name]=async function(...args){
+    if(_guardEnCurso.has(name))return;           // doble pulsación mientras se comprueba la conexión
+    _guardEnCurso.add(name);
+    let ok=false;
+    try{ok=await ensureOnline(que);}finally{_guardEnCurso.delete(name);}
+    if(!ok)return;
+    return orig.apply(this,args);
+  };
+});
+if(typeof window!=='undefined'&&window.addEventListener){
+  window.addEventListener('offline',()=>setOfflineBar(true));
+  window.addEventListener('online',()=>setOfflineBar(false));
+}
 
 // Registro del Service Worker (PWA): permite instalar la app en el móvil
 // con icono propio y pantalla completa. No afecta si falla (navegador sin soporte).
