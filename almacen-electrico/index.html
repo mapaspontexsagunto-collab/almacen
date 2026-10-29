@@ -80,6 +80,7 @@
     <div id="home-sync-warn" style="display:none;background:var(--orange-bg,#fff3e0);color:var(--orange-text,#b06000);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:12px;">⚠️ No se ha podido conectar con la nube. Lo que ves puede no incluir movimientos hechos desde otros dispositivos.</div>
     <div id="home-pending-warn" style="display:none;background:var(--orange-bg,#fff3e0);color:var(--orange-text,#b06000);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:12px;"></div>
     <button class="btn btn-block" style="margin-bottom:12px;" onclick="syncAndRenderHome()">🔄 Sincronizar ahora</button>
+    <button class="inv-scan-btn" id="btn-scan-invoice" onclick="aiFillFromInvoice()" style="display:none;"><svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 12h6M9 16h6M4 4h16v16H4z" stroke-width="1.7" stroke-linecap="round"/></svg>Escanear factura con IA</button>
     <div class="stats">
       <div class="stat"><div class="l">Referencias</div><div class="v" id="s-total">0</div></div>
       <div class="stat"><div class="l">Ubicaciones usadas</div><div class="v" id="s-locs">0</div></div>
@@ -402,7 +403,7 @@
     <div class="fg"><label class="fl">Equipo / máquina donde se usa</label><input type="text" class="fi" id="f-machine" placeholder="Ej: Línea 3, prensa hidráulica..."></div>
     <div class="fg"><label class="fl">Notas</label><input type="text" class="fi" id="f-notes" placeholder="Voltaje, amperios, observaciones..."></div>
     <button class="btn btn-block btn-primary" onclick="saveItem()">Guardar</button>
-    <button class="btn btn-block" style="margin-top:10px;" onclick="closeModal('modal-form')">Cancelar</button>
+    <button class="btn btn-block" style="margin-top:10px;" onclick="_invCreateIdx!==null?cancelInvoiceCreate():closeModal('modal-form')">Cancelar</button>
   </div>
 </div>
 
@@ -774,6 +775,30 @@
 
 <div class="toast" id="toast"></div>
 
+<!-- Modal: Escáner de factura -->
+<div class="modal-bg" id="modal-invoice">
+  <div class="modal">
+    <div class="mh"><span class="mh-t">📄 Factura detectada</span><button class="close-btn" onclick="closeModal('modal-invoice')">✕</button></div>
+    <div id="inv-loading" style="display:none;justify-content:center;align-items:center;padding:40px 0;flex-direction:column;gap:12px;"><div class="spinner"></div><span style="font-size:13px;color:var(--text2);">Analizando factura…</span></div>
+    <div id="inv-body">
+      <p style="font-size:12px;color:var(--text2);margin-bottom:4px;" id="inv-summary"></p>
+      <div class="inv-lines-list" id="inv-lines"></div>
+    </div>
+    <button class="btn btn-block" style="margin-top:14px;" onclick="closeModal('modal-invoice')">Cerrar</button>
+  </div>
+</div>
+
+<!-- Modal: Buscar artículo para línea de factura -->
+<div class="modal-bg" id="modal-inv-search">
+  <div class="modal">
+    <div class="mh"><span class="mh-t">Asignar artículo</span><button class="close-btn" onclick="closeModal('modal-inv-search')">✕</button></div>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:8px;" id="inv-srch-line-desc"></p>
+    <input type="hidden" id="inv-srch-idx" value="0">
+    <div class="search-bar" style="margin-bottom:0;"><input type="text" id="inv-srch-q" placeholder="Buscar artículo…" oninput="doInvoiceSearch()" style="flex:1;"></div>
+    <div class="inv-srch-list" id="inv-srch-list"></div>
+    <button class="btn btn-block" style="margin-top:12px;" onclick="closeModal('modal-inv-search')">Cancelar</button>
+  </div>
+</div>
 
 <script src="config.js"></script>
 <script src="../shared/app.js"></script>

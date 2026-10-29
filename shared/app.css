@@ -493,3 +493,23 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .pag-btn:disabled{opacity:0.3;cursor:default;}
 .pag-btn.active{background:var(--accent);color:var(--accent-text);border-color:var(--accent);}
 .pag-info{font-size:13px;color:var(--text2);font-family:'DM Mono',monospace;}
+/* ===== ESCÁNER DE FACTURAS ===== */
+.inv-scan-btn{display:flex;align-items:center;gap:8px;width:100%;margin-bottom:14px;background:var(--surface);border:1px dashed var(--accent);color:var(--accent);border-radius:var(--radius);padding:12px 16px;font-size:14px;font-weight:600;cursor:pointer;justify-content:center;}
+.inv-scan-btn:active{background:var(--accent);color:var(--accent-text);}
+.inv-scan-btn svg{flex-shrink:0;}
+.inv-lines-list{display:flex;flex-direction:column;gap:10px;margin-top:12px;max-height:55vh;overflow-y:auto;}
+.inv-line{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;display:flex;flex-direction:column;gap:6px;}
+.inv-line.done{opacity:0.5;}
+.inv-line-desc{font-size:14px;font-weight:600;color:var(--text);}
+.inv-line-info{font-size:12px;color:var(--text2);font-family:'DM Mono',monospace;}
+.inv-badge{display:inline-block;font-size:11px;font-weight:700;border-radius:99px;padding:2px 9px;margin-top:2px;}
+.inv-badge.pending{background:var(--orange-bg,#fff3e0);color:var(--orange-text,#b06000);}
+.inv-badge.assigned{background:var(--green-bg,#f0fdf4);color:var(--green-text,#16a34a);}
+.inv-badge.ignored{background:var(--surface2);color:var(--text3);}
+.inv-line-acts{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;}
+.inv-line-acts .btn{font-size:12px;padding:5px 10px;}
+.inv-srch-list{display:flex;flex-direction:column;gap:8px;max-height:45vh;overflow-y:auto;margin-top:10px;}
+.inv-srch-item{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 14px;cursor:pointer;}
+.inv-srch-item:active{background:var(--border);}
+.inv-srch-name{font-size:14px;font-weight:600;}
+.inv-srch-sub{font-size:12px;color:var(--text2);}
