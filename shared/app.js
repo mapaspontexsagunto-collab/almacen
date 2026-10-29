@@ -353,7 +353,7 @@ async function fetchAllPages(buildQuery,pageSize=1000,maxPages=200){
 }
 async function cloudGetAll(){
   if(!sb)return null;
-  try{const{data,error}=await sb.from(WH.tblItems).select('*');if(error)throw error;cloudOK=true;return data||[];}
+  try{const{data,error}=await withTimeout(sb.from(WH.tblItems).select('*'),30000,'artículos');if(error)throw error;cloudOK=true;return data||[];}
   catch(e){cloudOK=false;console.warn('cloudGetAll error',e);return null;}
 }
 // Lanza una promesa con tiempo límite: si tarda demasiado, falla rápido
@@ -397,7 +397,7 @@ async function cloudGetPhotos(ids){
 // Config (categorías y estanterías) en tabla aparte 'config'
 async function cloudCfgPut(key,value){
   if(!sb)return;
-  try{const{error}=await sb.from(WH.tblCfg).upsert({key,value},{onConflict:'key'});if(error)throw error;}
+  try{const{error}=await withTimeout(sb.from(WH.tblCfg).upsert({key,value},{onConflict:'key'}),15000,'config');if(error)throw error;}
   catch(e){console.warn('cloudCfgPut error',e);}
 }
 // Lee varias claves de configuración en UNA petición. Devuelve un objeto, o undefined si falló.
@@ -412,7 +412,7 @@ async function cloudCfgGetMany(keys){
 }
 async function cloudCfgGet(key){
   if(!sb)return null;
-  try{const{data,error}=await sb.from(WH.tblCfg).select('value').eq('key',key).maybeSingle();if(error)throw error;return data?data.value:null;}
+  try{const{data,error}=await withTimeout(sb.from(WH.tblCfg).select('value').eq('key',key).maybeSingle(),15000,'config');if(error)throw error;return data?data.value:null;}
   catch(e){console.warn('cloudCfgGet error',e);return undefined;} // undefined = falló; null = no hay fila
 }
 async function cloudMovPut(mov){
@@ -1953,7 +1953,11 @@ function printMap(){
   const cleanup=()=>{if(cleaned)return;cleaned=true;const s=document.getElementById('map-print-page-style');if(s)s.remove();};
   window.addEventListener('afterprint',cleanup,{once:true});
   window.print();
-  cleanup();
+  // No llamar a cleanup() aquí: en iOS Safari window.print() es asíncrono y las estilos
+  // se eliminarían antes de que se muestre la previsualización. El evento afterprint los
+  // limpia cuando el usuario termina. El timeout es solo un seguro para navegadores que
+  // no lanzan afterprint (nunca antes de 90s para no cortar la previsualización de impresión).
+  setTimeout(cleanup,90000);
 }
 function toggleMapEdit(){
   if(mapEditing){return;}
@@ -2170,7 +2174,7 @@ function addShelf(){
 }
 function removeShelf(idx){
   const s=shelfDraft[idx];
-  const used=items.filter(i=>i.loc.startsWith(s.id+'-')).length;
+  const used=items.filter(i=>i.loc&&i.loc.startsWith(s.id+'-')).length;
   document.getElementById('confirm-title').textContent=used>0?'Estantería con material':'Eliminar estantería';
   document.getElementById('confirm-msg').textContent=used>0
     ?`La estantería "${s.name}" tiene ${used} artículo(s). Si la eliminas, esos artículos quedarán sin ubicación válida. ¿Eliminar de todas formas?`
