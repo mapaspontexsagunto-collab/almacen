@@ -6,7 +6,7 @@
   "start_url": "./index.html?wh=mecanico",
   "scope": "./",
   "display": "standalone",
-  "orientation": "portrait-primary",
+  "orientation": "natural",
   "background_color": "#1a1916",
   "theme_color": "#1a1916",
   "icons": [
