@@ -4394,13 +4394,71 @@ function validateAddForm(){
 let _invLines=[];       // [{desc,qty,price,unit,status:'pending'|'assigned'|'ignored',itemId}]
 let _invCreateIdx=null; // índice de línea que está creando un artículo nuevo
 
+async function _pdfToB64(file){
+  if(!window.pdfjsLib){
+    await new Promise((res,rej)=>{
+      const s=document.createElement('script');
+      s.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      s.onload=res;s.onerror=rej;document.head.appendChild(s);
+    });
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+  const pdf=await window.pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;
+  const nPages=Math.min(pdf.numPages,3);
+  const canvases=[];
+  for(let p=1;p<=nPages;p++){
+    const page=await pdf.getPage(p);
+    const vp=page.getViewport({scale:1.8});
+    const cv=document.createElement('canvas');cv.width=vp.width;cv.height=vp.height;
+    await page.render({canvasContext:cv.getContext('2d'),viewport:vp}).promise;
+    canvases.push(cv);
+  }
+  let out;
+  if(canvases.length===1){out=canvases[0];}
+  else{
+    const w=canvases[0].width,h=canvases.reduce((s,c)=>s+c.height,0);
+    out=document.createElement('canvas');out.width=w;out.height=h;
+    const ctx=out.getContext('2d');let y=0;
+    for(const c of canvases){ctx.drawImage(c,0,y);y+=c.height;}
+  }
+  // Escalar a máx 1400px de alto para no enviar imágenes gigantes
+  const MAX=1400;
+  if(out.height>MAX){
+    const s=MAX/out.height,cv2=document.createElement('canvas');
+    cv2.width=Math.round(out.width*s);cv2.height=MAX;
+    cv2.getContext('2d').drawImage(out,0,0,cv2.width,cv2.height);out=cv2;
+  }
+  return out.toDataURL('image/jpeg',0.88).split(',')[1];
+}
+
 async function aiFillFromInvoice(){
   if(!EDGE_URL){toast('⚠ IA no configurada en este almacén');return;}
   const input=document.createElement('input');
-  input.type='file';input.accept='image/*';input.capture='environment';
+  input.type='file';input.accept='image/*,application/pdf';
   input.onchange=async(e)=>{
     const file=e.target.files[0];if(!file)return;
-    const b64=await new Promise(res=>{const r=new FileReader();r.onload=ev=>res(ev.target.result.split(',')[1]);r.readAsDataURL(file);});
+    let b64;
+    const isPdf=file.type==='application/pdf'||file.name.toLowerCase().endsWith('.pdf');
+    if(isPdf){
+      try{b64=await _pdfToB64(file);}
+      catch(err){toast('⚠ No se pudo leer el PDF: '+(err.message||err));return;}
+    }else{
+      b64=await new Promise(res=>{
+        const r=new FileReader();
+        r.onload=ev=>{
+          const img=new Image();
+          img.onload=()=>{
+            const MAX=1200;let w=img.width,h=img.height;
+            if(w>MAX||h>MAX){if(w>h){h=Math.round(h*MAX/w);w=MAX;}else{w=Math.round(w*MAX/h);h=MAX;}}
+            const cv=document.createElement('canvas');cv.width=w;cv.height=h;
+            cv.getContext('2d').drawImage(img,0,0,w,h);
+            res(cv.toDataURL('image/jpeg',0.85).split(',')[1]);
+          };
+          img.src=ev.target.result;
+        };
+        r.readAsDataURL(file);
+      });
+    }
     openModal('modal-invoice');
     document.getElementById('inv-loading').style.display='flex';
     document.getElementById('inv-body').style.display='none';
