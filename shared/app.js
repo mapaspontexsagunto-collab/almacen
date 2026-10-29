@@ -547,7 +547,7 @@ async function init(){
   if(document.getElementById('page-inicio')?.classList.contains('active'))renderHomeMovements();
   if(document.getElementById('page-costes')?.classList.contains('active'))renderCostes();
   const _invBtn=document.getElementById('btn-scan-invoice');
-  if(_invBtn&&EDGE_URL)_invBtn.style.display='flex';
+  if(_invBtn)_invBtn.style.display=(EDGE_URL&&adminUnlocked)?'flex':'none';
 }
 
 // Trae todo desde Supabase. Estrategia rápida y fiable:
@@ -3403,6 +3403,7 @@ function finishUnlock(){
   closeModal('modal-unlock');
   renderUserBar();
   refreshVisiblePage();
+  const _ib=document.getElementById('btn-scan-invoice');if(_ib&&EDGE_URL)_ib.style.display='flex';
   const a=pendingAdminAction;pendingAdminAction=null;
   if(a)a();
 }
@@ -3424,6 +3425,7 @@ async function submitUnlock(){
 function lockAdmin(){
   adminUnlocked=false;
   try{sessionStorage.removeItem('almacen_admin_'+(WH?WH.key:''));}catch(e){}
+  const _ib=document.getElementById('btn-scan-invoice');if(_ib)_ib.style.display='none';
   renderUserBar();
   renderAll();
   toast(useSbAuth()?'🔒 Modo administrador bloqueado':'🔒 Ajustes bloqueados');
