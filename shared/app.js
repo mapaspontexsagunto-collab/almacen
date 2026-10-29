@@ -546,6 +546,8 @@ async function init(){
   const wHome=document.getElementById('home-sync-warn'); if(wHome)wHome.style.display=(sb&&cloudOK)?'none':'';
   if(document.getElementById('page-inicio')?.classList.contains('active'))renderHomeMovements();
   if(document.getElementById('page-costes')?.classList.contains('active'))renderCostes();
+  const _invBtn=document.getElementById('btn-scan-invoice');
+  if(_invBtn)_invBtn.style.display=(EDGE_URL&&adminUnlocked)?'flex':'none';
 }
 
 // Trae todo desde Supabase. Estrategia rápida y fiable:
@@ -1712,7 +1714,9 @@ async function saveItem(){
     try{await registrarMovimiento(item,_prevStockItem.stock,item.stock,_d>0?'Entrada':'Salida',_c);}
     catch(e){item.stock=_prevStockItem.stock;console.error('registrarMovimiento edición',e);toast('⚠ Error al registrar el movimiento de stock');return;}
   }
+  const _savedId=item.id;
   await dbPut(item);await cloudPut(item,{photo:!!item.photo||photoRemoved});items=await dbGetAll();closeModal('modal-form');refreshVisiblePage();
+  await _invoiceAfterSave(_savedId);
   if(etiquetaCambiada){
     modifiedIds.add(editingId);
     await savePrintedIds();
@@ -3399,6 +3403,7 @@ function finishUnlock(){
   closeModal('modal-unlock');
   renderUserBar();
   refreshVisiblePage();
+  const _ib=document.getElementById('btn-scan-invoice');if(_ib&&EDGE_URL)_ib.style.display='flex';
   const a=pendingAdminAction;pendingAdminAction=null;
   if(a)a();
 }
@@ -3420,6 +3425,7 @@ async function submitUnlock(){
 function lockAdmin(){
   adminUnlocked=false;
   try{sessionStorage.removeItem('almacen_admin_'+(WH?WH.key:''));}catch(e){}
+  const _ib=document.getElementById('btn-scan-invoice');if(_ib)_ib.style.display='none';
   renderUserBar();
   renderAll();
   toast(useSbAuth()?'🔒 Modo administrador bloqueado':'🔒 Ajustes bloqueados');
@@ -4381,5 +4387,182 @@ function validateAddForm(){
     const valid=nameVal&&nameVal.length>0;
     btn.style.opacity=valid?'1':'0.5';
     btn.title=valid?'':'El nombre es obligatorio';
+  }
+}
+
+// ===== ESCÁNER DE FACTURAS =====
+let _invLines=[];       // [{desc,qty,price,unit,status:'pending'|'assigned'|'ignored',itemId}]
+let _invCreateIdx=null; // índice de línea que está creando un artículo nuevo
+
+async function aiFillFromInvoice(){
+  if(!EDGE_URL){toast('⚠ IA no configurada en este almacén');return;}
+  const input=document.createElement('input');
+  input.type='file';input.accept='image/*';input.capture='environment';
+  input.onchange=async(e)=>{
+    const file=e.target.files[0];if(!file)return;
+    const b64=await new Promise(res=>{const r=new FileReader();r.onload=ev=>res(ev.target.result.split(',')[1]);r.readAsDataURL(file);});
+    openModal('modal-invoice');
+    document.getElementById('inv-loading').style.display='flex';
+    document.getElementById('inv-body').style.display='none';
+    try{
+      const prompt=`Eres un asistente de almacén. Analiza esta factura y devuelve SOLO JSON sin texto extra, con este formato exacto:
+{"lines":[{"desc":"nombre artículo","qty":1,"price":0.00,"unit":"ud"}]}
+Extrae cada línea de producto. qty=cantidad, price=precio unitario sin IVA o con IVA si no hay dato sin IVA, unit=unidad (ud/m/kg/l/etc). Si no hay precio pon null.`;
+      const data=await aiBuscar(b64,prompt);
+      let parsed={lines:[]};
+      try{
+        const m=data.text.match(/\{[\s\S]*\}/);
+        if(m)parsed=JSON.parse(m[0]);
+      }catch(_){}
+      _invLines=(parsed.lines||[]).map(l=>({...l,status:'pending',itemId:null}));
+      _invCreateIdx=null;
+      renderInvoiceModal();
+    }catch(err){
+      toast('⚠ Error al analizar la factura: '+(err.message||err));
+      closeModal('modal-invoice');
+    }finally{
+      document.getElementById('inv-loading').style.display='none';
+      document.getElementById('inv-body').style.display='block';
+    }
+  };
+  input.click();
+}
+
+function renderInvoiceModal(){
+  renderInvoiceLines();
+  openModal('modal-invoice');
+}
+
+function renderInvoiceLines(){
+  const el=document.getElementById('inv-lines');
+  if(!el)return;
+  if(!_invLines.length){el.innerHTML='<p style="color:var(--text2);font-size:13px;text-align:center;padding:20px 0;">No se detectaron líneas en la factura.</p>';return;}
+  el.innerHTML=_invLines.map((l,i)=>{
+    const priceStr=l.price!=null?`${(+l.price).toFixed(2)} €/${l.unit||'ud'}`:'—';
+    const qtyStr=l.qty!=null?`×${l.qty}`:'';
+    let badgeHtml='',actsHtml='';
+    if(l.status==='assigned'){
+      const it=items.find(x=>x.id===l.itemId);
+      badgeHtml=`<span class="inv-badge assigned">✓ ${it?it.name:'Asignado'}</span>`;
+      actsHtml=`<button class="btn" onclick="invoiceUndo(${i})">Deshacer</button>`;
+    }else if(l.status==='ignored'){
+      badgeHtml=`<span class="inv-badge ignored">Ignorada</span>`;
+      actsHtml=`<button class="btn" onclick="invoiceUndo(${i})">Restaurar</button>`;
+    }else{
+      badgeHtml=`<span class="inv-badge pending">Pendiente</span>`;
+      actsHtml=`<button class="btn btn-primary" onclick="openInvoiceSearch(${i})">Asignar artículo</button><button class="btn" onclick="openInvoiceCreate(${i})">Crear nuevo</button><button class="btn" onclick="invoiceIgnore(${i})">Ignorar</button>`;
+    }
+    return `<div class="inv-line${l.status!=='pending'?' done':''}" id="inv-line-${i}">
+      <div class="inv-line-desc">${esc(l.desc||'Sin descripción')}</div>
+      <div class="inv-line-info">${esc(qtyStr)} &nbsp; ${esc(priceStr)}</div>
+      ${badgeHtml}
+      <div class="inv-line-acts">${actsHtml}</div>
+    </div>`;
+  }).join('');
+  // Resumen
+  const pending=_invLines.filter(l=>l.status==='pending').length;
+  document.getElementById('inv-summary').textContent=pending===0?'✓ Todas las líneas procesadas':`${pending} línea${pending!==1?'s':''} pendiente${pending!==1?'s':''}`;
+}
+
+function openInvoiceSearch(idx){
+  _invCreateIdx=null;
+  const line=_invLines[idx];
+  document.getElementById('inv-srch-idx').value=idx;
+  document.getElementById('inv-srch-q').value=line.desc||'';
+  document.getElementById('inv-srch-line-desc').textContent=line.desc||'';
+  doInvoiceSearch(idx);
+  openModal('modal-inv-search');
+}
+
+function doInvoiceSearch(idx){
+  if(idx==null)idx=+document.getElementById('inv-srch-idx').value;
+  const line=_invLines[idx];
+  const q=(document.getElementById('inv-srch-q').value||line.desc||'').toLowerCase().trim();
+  const results=items.filter(it=>{
+    if(!q)return true;
+    return (it.name||'').toLowerCase().includes(q)||(it.ref||'').toLowerCase().includes(q)||(it.brand||'').toLowerCase().includes(q);
+  }).slice(0,30);
+  const el=document.getElementById('inv-srch-list');
+  if(!results.length){el.innerHTML='<p style="color:var(--text2);font-size:13px;text-align:center;padding:16px 0;">Sin resultados</p>';return;}
+  el.innerHTML=results.map(it=>`<div class="inv-srch-item" onclick="assignInvoiceLine(${idx},${jsq(it.id)})">
+    <div class="inv-srch-name">${esc(it.name)}</div>
+    <div class="inv-srch-sub">${esc(it.ref||'')} ${it.loc?'· '+esc(it.loc):''} · Stock: ${it.stock??0}</div>
+  </div>`).join('');
+}
+
+async function assignInvoiceLine(idx,itemId){
+  const line=_invLines[idx];
+  const it=items.find(x=>x.id===itemId);
+  if(!it){toast('⚠ Artículo no encontrado');return;}
+  // Registrar entrada con datos de la factura
+  const qty=line.qty??1;
+  const price=line.price??null;
+  const coste=price!=null?+(Math.abs(qty)*price).toFixed(2):null;
+  const prevStock=it.stock??0;
+  const newStock=prevStock+qty;
+  it.stock=newStock;
+  try{
+    await registrarMovimiento(it,prevStock,newStock,'Compra',coste,null);
+    await dbPut(it);await cloudPut(it,{photo:false});
+    if(price!=null){await cloudPriceAdd({itemId:it.id,price:+price,ts:Date.now(),provider:''});}
+    items=await dbGetAll();
+  }catch(e){
+    it.stock=prevStock;toast('⚠ Error al registrar: '+(e.message||e));return;
+  }
+  _invLines[idx].status='assigned';
+  _invLines[idx].itemId=itemId;
+  closeModal('modal-inv-search');
+  renderInvoiceLines();
+  toast(`✓ ${it.name} · +${qty} ud`);
+}
+
+function openInvoiceCreate(idx){
+  _invCreateIdx=idx;
+  const line=_invLines[idx];
+  closeModal('modal-invoice');
+  openAddForm();
+  // Pre-fill name and price from invoice line
+  setTimeout(()=>{
+    const nEl=document.getElementById('f-name');if(nEl&&line.desc)nEl.value=line.desc;
+    const pEl=document.getElementById('f-precio');
+    if(pEl&&line.price!=null){pEl.value=(+line.price).toFixed(2);}
+    const sEl=document.getElementById('f-stock');if(sEl&&line.qty!=null)sEl.value=line.qty;
+    validateAddForm();
+  },100);
+}
+
+async function _invoiceAfterSave(savedId){
+  if(_invCreateIdx===null)return;
+  const idx=_invCreateIdx;
+  _invCreateIdx=null;
+  _invLines[idx].status='assigned';
+  _invLines[idx].itemId=savedId;
+  const it=items.find(x=>x.id===savedId);
+  if(it){
+    const qty=_invLines[idx].qty??1;
+    const price=_invLines[idx].price??null;
+    if(price!=null){await cloudPriceAdd({itemId:it.id,price:+price,ts:Date.now(),provider:''});}
+    // stock was already set via saveItem, just show toast
+    toast(`✓ ${it.name} creado y asignado a la factura`);
+  }
+  renderInvoiceModal();
+}
+
+function invoiceIgnore(idx){
+  _invLines[idx].status='ignored';
+  renderInvoiceLines();
+}
+
+function invoiceUndo(idx){
+  _invLines[idx].status='pending';
+  _invLines[idx].itemId=null;
+  renderInvoiceLines();
+}
+
+function cancelInvoiceCreate(){
+  if(_invCreateIdx!==null){
+    _invCreateIdx=null;
+    closeModal('modal-form');
+    renderInvoiceModal();
   }
 }
