@@ -1481,7 +1481,8 @@ async function _applyPurchase(){
   currentItem.stock=anterior+qty;
   if(price!=null)currentItem.precio=price;
   const _coste=price!=null?+(qty*price).toFixed(2):null;
-  await registrarMovimiento(currentItem,anterior,currentItem.stock,'Compra',_coste,provider);
+  try{await registrarMovimiento(currentItem,anterior,currentItem.stock,'Compra',_coste,provider);}
+  catch(e){currentItem.stock=anterior;if(price!=null)currentItem.precio=precioAnterior;console.error('registrarMovimiento compra',e);toast('⚠ Error al registrar el movimiento');return;}
   await dbPut(currentItem);await cloudPut(currentItem);
   if(price!=null){
     const now=new Date();
@@ -1708,7 +1709,8 @@ async function saveItem(){
   if(_prevStockItem&&_prevStockItem.stock!==item.stock){
     const _d=item.stock-_prevStockItem.stock;
     const _c=(item.precio!=null)?+(Math.abs(_d)*item.precio).toFixed(2):null;
-    await registrarMovimiento(item,_prevStockItem.stock,item.stock,_d>0?'Entrada':'Salida',_c);
+    try{await registrarMovimiento(item,_prevStockItem.stock,item.stock,_d>0?'Entrada':'Salida',_c);}
+    catch(e){item.stock=_prevStockItem.stock;console.error('registrarMovimiento edición',e);toast('⚠ Error al registrar el movimiento de stock');return;}
   }
   await dbPut(item);await cloudPut(item,{photo:!!item.photo||photoRemoved});items=await dbGetAll();closeModal('modal-form');refreshVisiblePage();
   if(etiquetaCambiada){
@@ -2132,7 +2134,7 @@ function filterByShelf(sid){
   showPage('buscar');
   renderCats();renderItems();
   // Llevar la vista hasta la estantería abierta
-  setTimeout(()=>{document.querySelector('.shelf-group-head.open')?.scrollIntoView({behavior:'smooth',block:'start'});},60);
+  setTimeout(()=>{document.querySelector('.shelf-group-head.open')?.scrollIntoView({behavior:'smooth',block:'start'});},180);
 }
 
 // ===== GESTOR DE ESTANTERÍAS =====
