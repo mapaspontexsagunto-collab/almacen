@@ -32,7 +32,7 @@ Un corte momentáneo (cambio de repetidor wifi) se reintenta una vez antes de av
 - `supabase_endurecimiento.sql` (ejecutar **después** de los tres anteriores; es idempotente y no borra ni modifica filas): corrige el disparador de `usuario`
   (solo escribe el correo si el rol es `authenticated`; con SQL Editor o restauraciones se respeta el valor), crea índices del histórico de precios,
   quita permisos que sobran (anon sin ninguno en las tablas del almacén; sin TRUNCATE/TRIGGER/REFERENCES para authenticated; EXECUTE de las funciones
-  auxiliares solo para authenticated), cierra `app_auth`, añade límites de tamaño NOT VALID (config < 200000 bytes, foto < 1000000, notas < 2000 caracteres)
+  auxiliares solo para authenticated), cierra `app_auth`, añade límites de tamaño NOT VALID (config: texto del valor < 200000 bytes sin comprimir, `octet_length(value::text)`, que no es el tamaño guardado en disco; foto < 1000000 y notas < 2000 caracteres: la app limita las notas a 1999)
   y termina con una tabla de comprobación (OK / REVISAR). Si se vuelve a ejecutar `supabase_usuario_movimientos.sql`, repetir este fichero, porque
   reinstala la versión antigua del disparador.
 - `supabase_setup.sql`: heredado, no hace falta.
@@ -106,9 +106,13 @@ Un corte momentáneo (cambio de repetidor wifi) se reintenta una vez antes de av
 - La función `bright-worker` tiene ahora su código de referencia en `supabase/functions/bright-worker/index.ts` (con README de despliegue), pero
   **la que responde de verdad vive en el panel de Supabase y hay que desplegarla a mano** (`supabase functions deploy bright-worker`); hasta entonces
   sigue valiendo la versión antigua. La versión del repositorio verifica el token contra Supabase Auth, exige `app_metadata.role = 'admin'` cuando la app
-  manda `purpose: 'factura'` (la app lo manda desde el escáner de facturas y manda `'foto'` en el resto), limita el tamaño (imagen 2,5 M de caracteres,
-  prompt 4000), fija el máximo de salida, rechaza campos desconocidos y limita el uso por usuario y hora **en memoria, de mejor esfuerzo** (cada instancia
-  lleva su cuenta y se reinicia al reciclarse; no frena a un atacante decidido). `purpose` lo envía el cliente: un usuario normal que lo omita no obtiene
+  manda `purpose: 'factura'` (la app lo manda desde el escáner de facturas y manda `'foto'` en el resto), limita el tamaño (imagen 5 M de caracteres base64 comprobada por sus bytes reales JPEG/PNG/WEBP,
+  prompt 4000 y 2200 para quien no es administrador, cuerpo leído con tope real en bytes), fija el máximo de salida, rechaza campos desconocidos y limita el uso
+  por usuario (IA por hora; Brave por hora, 20 por defecto, y por día, 40 por defecto) **en memoria, de mejor esfuerzo** (cada instancia
+  lleva su cuenta y se reinicia al reciclarse; no frena a un atacante decidido). Los rechazos del proveedor (4xx salvo 429) se devuelven como 422
+  `upstream_rejected` (la app no los reintenta) y los fallos transitorios como 502/504; un fallo del proveedor devuelve el hueco del límite.
+  Conviene comprobar en Supabase Auth que "Allow new users to sign up" está desactivado: así no se crean usuarios que puedan usar la función.
+  Los tests de la función se ejecutan con el TypeScript de Node (22.18+); con `REQUIRE_TS_TESTS=1` fallan en lugar de omitirse si ese Node no lo soporta. `purpose` lo envía el cliente: un usuario normal que lo omita no obtiene
   el rol de administrador, pero sí podría mandar un prompt propio con una foto; por eso a quien no es administrador se le aplica una instrucción fija
   (mejor esfuerzo) que limita la función a fotos de componentes. La función acepta el prompt que manda el cliente (necesario para las facturas).
   Fotos de artículos y consultas de búsqueda también salen hacia Gemini y Brave. Antes de esta versión bastaba una sesión de usuario y debía limitar

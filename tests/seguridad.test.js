@@ -2740,7 +2740,13 @@ test('R6 SQL: supabase_endurecimiento.sql es idempotente y no destruye datos', (
   assert.ok(/REVOKE EXECUTE ON FUNCTION public\.es_admin\(\) FROM PUBLIC, anon/.test(codigo) && /GRANT EXECUTE ON FUNCTION public\.es_admin\(\) TO authenticated/.test(codigo));
   assert.ok(/pg_tables WHERE schemaname = 'public' AND NOT rowsecurity/.test(sql));
   assert.ok(/CHECK \(%s\) NOT VALID/.test(codigo));
-  assert.ok(/pg_column_size\(value\) < 200000/.test(codigo) && /length\(photo\) < 1000000/.test(codigo) && /length\(notes\) < 2000/.test(codigo));
+  // S-M1: el limite de config mide el texto sin comprimir (octet_length), no pg_column_size (que mide el tamano comprimido/TOAST)
+  assert.ok(/octet_length\(value::text\) < 200000/.test(codigo) && /length\(photo\) < 1000000/.test(codigo) && /length\(notes\) < 2000/.test(codigo));
+  assert.ok(!/pg_column_size/.test(codigo), 'el codigo no usa pg_column_size (solo puede aparecer en comentarios)');
+  // S-L2: la fila 51 cuenta tablas, no indices
+  assert.ok(/count\(DISTINCT t\.oid\)/.test(codigo), 'fila 51 cuenta tablas distintas');
+  // S-L3/L4: filas informativas documentadas
+  assert.ok(/fila 10[^\n]*informativ/i.test(sql) && /fila 60[^\n]*3 restricciones/i.test(sql), 'comentarios de las filas 10 y 60');
   // nunca se quitan a authenticated los permisos que la app necesita
   assert.ok(!/REVOKE\s+(ALL|SELECT|INSERT|UPDATE|DELETE)[^;]*FROM[^;]*authenticated/i.test(codigo.replace(/REVOKE ALL ON TABLE public\.%I FROM anon, authenticated/g, '')), 'no quita SELECT/INSERT/UPDATE/DELETE a authenticated en las tablas del almacen');
   assert.ok(/^SELECT orden, comprobacion/m.test(sql), 'termina con la tabla de comprobacion');
@@ -2757,7 +2763,7 @@ test('R6 funcion bright-worker: sin claves en el codigo, exige admin para factur
   assert.ok(/purpose === 'factura' && !usuario\.admin/.test(f) && /app_metadata\?\.role === 'admin'/.test(f), 'factura exige app_metadata.role admin');
   assert.ok(/\/auth\/v1\/user/.test(f), 'verifica el token con Supabase Auth');
   assert.ok(/mapaspontexsagunto-collab\.github\.io/.test(f) && !/Allow-Origin['"]\s*:\s*['"]\*/.test(f), 'CORS restringido al origen de la app');
-  assert.ok(/MAX_IMAGEN = 2_500_000/.test(f) && /MAX_PROMPT = 4000/.test(f) && /maxOutputTokens/.test(f));
+  assert.ok(/MAX_IMAGEN = 5_000_000/.test(f) && /MAX_PROMPT = 4000/.test(f) && /maxOutputTokens/.test(f));
   assert.ok(/supabase functions deploy bright-worker/.test(readme));
   for (const n of ['GEMINI_API_KEY', 'BRAVE_API_KEY']) assert.ok(readme.includes(n), n);
 });
@@ -2774,6 +2780,8 @@ async function conFuncion(fn, env) {
     ['n'.repeat(30)]: { id: 'normal-' + Math.random(), app_metadata: {} },
     ['a'.repeat(30)]: { id: 'admin-' + Math.random(), app_metadata: { role: 'admin' } },
     ['o'.repeat(30)]: { id: 'anon-' + Math.random(), app_metadata: {}, is_anonymous: true },
+    // rol 'admin' puesto por el propio usuario en user_metadata (editable por el usuario): NO es administrador
+    ['u'.repeat(30)]: { id: 'umeta-' + Math.random(), app_metadata: {}, user_metadata: { role: 'admin' } },
   };
   const upstream = { gemini: () => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'hola' }, { text: ' mundo' }] } }] }), { status: 200 }), brave: null };
   upstream.brave = () => new Response(JSON.stringify({ web: { results: [{ title: '<b>Ficha</b>', url: 'https://a.com/x', description: 'd <i>x</i>', meta_url: { hostname: 'a.com' } }, { title: 'mala', url: 'javascript:alert(1)' }] } }), { status: 200 });
@@ -2820,7 +2828,7 @@ test('R6 funcion: autenticacion, CORS y validacion de la peticion', { skip: sinT
     assert.strictEqual((await pedir({ image: IMG })).status, 400);
     assert.strictEqual((await pedir({ image: IMG, prompt: 'p', purpose: 'otra' })).status, 400);
     assert.strictEqual((await pedir({ image: IMG, prompt: 'p', purpose: ['factura'] })).status, 400);
-    assert.strictEqual((await pedir({ image: '/9j/' + 'A'.repeat(2_500_000), prompt: 'p' })).status, 413);
+    assert.strictEqual((await pedir({ image: '/9j/' + 'A'.repeat(5_000_000), prompt: 'p' })).status, 413);
     assert.strictEqual((await pedir({ image: IMG, prompt: 'p'.repeat(4001) })).status, 413);
     assert.strictEqual((await pedir({ image: 'AAAA', prompt: 'p' })).status, 415);
     assert.strictEqual((await pedir('{no es json')).status, 400);
@@ -2839,14 +2847,14 @@ test('R6 funcion: purpose factura exige administrador; maxOutputTokens fijo; la 
     const gem = ext('generativelanguage');
     assert.strictEqual(gem.length, 1);
     const cuerpo = JSON.parse(gem[0].op.body);
-    assert.strictEqual(cuerpo.generationConfig.maxOutputTokens, 8192);
+    assert.strictEqual(cuerpo.generationConfig.maxOutputTokens, 16384);
     assert.ok(/solo datos/.test(cuerpo.systemInstruction.parts[0].text), 'instruccion fija contra instrucciones dentro del documento');
     assert.strictEqual(gem[0].op.headers['x-goog-api-key'], SECRETO_G);
     assert.ok(!gem[0].u.includes(SECRETO_G), 'la clave no va en la URL');
     // foto de un usuario normal: instruccion restringida y tope de salida menor
     await pedir({ image: IMG, prompt: 'p', purpose: 'foto' });
     const foto = JSON.parse(ext('generativelanguage')[1].op.body);
-    assert.strictEqual(foto.generationConfig.maxOutputTokens, 4096);
+    assert.strictEqual(foto.generationConfig.maxOutputTokens, 1500);
     assert.ok(/factura/.test(foto.systemInstruction.parts[0].text), 'instruccion restringida a componentes');
     assert.strictEqual(foto.contents[0].parts[1].inline_data.mime_type, 'image/jpeg');
     // un administrador sin purpose (app antigua en cache) no queda restringido
@@ -2898,4 +2906,352 @@ test('R6: SEGURIDAD.md documenta el SQL de endurecimiento y el despliegue de bri
   const s = fs.readFileSync(path.join(__dirname, '..', 'SEGURIDAD.md'), 'utf8');
   assert.ok(s.includes('supabase_endurecimiento.sql') && s.includes('supabase functions deploy bright-worker'));
   assert.ok(/mejor esfuerzo/.test(s) && /purpose/.test(s));
+  // S-M1: SEGURIDAD.md no promete un limite sobre el tamano almacenado (comprimido) de config
+  assert.ok(/octet_length\(value::text\)/.test(s) && !/pg_column_size/.test(s), 'el limite de config se describe sobre el texto sin comprimir');
+  assert.ok(!/config < 200000 bytes/.test(s), 'sin la promesa antigua de bytes almacenados');
+});
+
+// ===== Revision ECC de SQL y funcion (S-*, F-*) =====
+test('R6 ECC F-L7: con REQUIRE_TS_TESTS=1 los tests de la funcion no pueden omitirse en silencio', () => {
+  // Sin la variable, en un Node sin TypeScript los tests de la funcion se omiten (skip). Con REQUIRE_TS_TESTS=1, fallan.
+  if (process.env.REQUIRE_TS_TESTS !== '1') return;
+  assert.ok(process.features.typescript, 'REQUIRE_TS_TESTS=1 pero este Node no ejecuta TypeScript (usa Node 22.18+ o 24)');
+});
+
+test('R6 ECC F-M1: Gemini flash sin tokens de razonamiento, respuesta JSON y topes 16384/1500; los modelos -pro no llevan thinkingBudget', { skip: sinTs && 'Node sin soporte de TypeScript' }, async () => {
+  await conFuncion(async ({ pedir, ext }) => {
+    await pedir({ image: IMG, prompt: 'p', purpose: 'factura' }, 'a'.repeat(30));
+    await pedir({ image: IMG, prompt: 'p', purpose: 'foto' });
+    const g = ext('generativelanguage');
+    const [fac, foto] = g.map(x => JSON.parse(x.op.body).generationConfig);
+    assert.deepStrictEqual(fac.thinkingConfig, { thinkingBudget: 0 });
+    assert.deepStrictEqual(foto.thinkingConfig, { thinkingBudget: 0 });
+    assert.strictEqual(fac.responseMimeType, 'application/json');
+    assert.strictEqual(foto.responseMimeType, 'application/json');
+    assert.strictEqual(fac.maxOutputTokens, 16384);
+    assert.strictEqual(foto.maxOutputTokens, 1500);
+    assert.ok(g[0].u.includes('/models/gemini-2.5-flash:generateContent'));
+  });
+  await conFuncion(async ({ pedir, ext }) => {
+    await pedir({ image: IMG, prompt: 'p' });
+    const gc = JSON.parse(ext('generativelanguage')[0].op.body).generationConfig;
+    assert.strictEqual(gc.thinkingConfig, undefined, 'un modelo -pro no admite thinkingBudget 0');
+    assert.strictEqual(gc.responseMimeType, 'application/json');
+    assert.ok(ext('generativelanguage')[0].u.includes('/models/gemini-2.5-pro:'));
+  }, { GEMINI_MODEL: 'gemini-2.5-pro' });
+  await conFuncion(async ({ pedir, ext }) => {
+    await pedir({ image: IMG, prompt: 'p' });
+    assert.deepStrictEqual(JSON.parse(ext('generativelanguage')[0].op.body).generationConfig.thinkingConfig, { thinkingBudget: 0 });
+  }, { GEMINI_MODEL: 'gemini-2.5-flash-lite' });
+});
+
+test('R6 ECC F-M2: los 4xx del proveedor (salvo 429) dan 422 upstream_rejected; los fallos transitorios 502/504; el 429 sigue siendo 429', { skip: sinTs && 'Node sin soporte de TypeScript' }, async () => {
+  await conFuncion(async ({ pedir, upstream }) => {
+    for (const st of [400, 401, 403, 404, 422]) {
+      upstream.gemini = () => new Response('detalle interno ' + SECRETO_G, { status: st });
+      const r = await pedir({ image: IMG, prompt: 'p' });
+      const t = await r.text();
+      assert.strictEqual(r.status, 422, 'Gemini ' + st);
+      assert.deepStrictEqual(JSON.parse(t), { error: 'upstream_rejected' });
+      assert.ok(!t.includes(SECRETO_G));
+      upstream.brave = () => new Response('x', { status: st });
+      assert.strictEqual((await pedir({ mode: 'web', query: 'x' })).status, 422, 'Brave ' + st);
+    }
+    for (const st of [500, 502, 503]) {
+      upstream.gemini = () => new Response('x', { status: st });
+      const r = await pedir({ image: IMG, prompt: 'p' });
+      assert.strictEqual(r.status, 502, 'Gemini ' + st);
+      assert.deepStrictEqual(await r.json(), { error: 'upstream_error' });
+      upstream.brave = () => new Response('x', { status: st });
+      assert.strictEqual((await pedir({ mode: 'web', query: 'x' })).status, 502, 'Brave ' + st);
+    }
+    upstream.gemini = () => new Response('{}', { status: 429 });
+    const l = await pedir({ image: IMG, prompt: 'p' });
+    assert.strictEqual(l.status, 429);
+    assert.strictEqual(l.headers.get('retry-after'), '60');
+    upstream.gemini = () => { throw new TypeError('fetch failed'); };
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p' })).status, 502, 'fallo de red: 502');
+    upstream.gemini = () => { throw Object.assign(new Error('t'), { name: 'TimeoutError' }); };
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p' })).status, 504);
+    upstream.gemini = () => { throw Object.assign(new Error('a'), { name: 'AbortError' }); };
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p' })).status, 504);
+  }, { RATE_LIMIT_AI_PER_HOUR: '100', RATE_LIMIT_WEB_PER_HOUR: '100', RATE_LIMIT_WEB_PER_DAY: '100' });
+  // el cliente no reintenta el 422 (ver el test del cliente) y el codigo lo documenta
+  const f = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'functions', 'bright-worker', 'index.ts'), 'utf8');
+  assert.ok(/upstream_rejected/.test(f));
+});
+
+test('R6 ECC F-M2: el hueco de limite se devuelve cuando falla el proveedor (502, 504, 422, 429) y se gasta cuando va bien', { skip: sinTs && 'Node sin soporte de TypeScript' }, async () => {
+  await conFuncion(async ({ pedir, upstream }) => {
+    const bienG = upstream.gemini, bienB = upstream.brave;
+    const fallos = [() => new Response('x', { status: 500 }), () => new Response('x', { status: 400 }), () => new Response('x', { status: 429 }),
+      () => { throw Object.assign(new Error('t'), { name: 'TimeoutError' }); }];
+    const esperados = [502, 422, 429, 504];
+    // muchos mas fallos que el limite (2): ninguno llega a dar 429 propio por culpa de los fallos
+    for (let vuelta = 0; vuelta < 3; vuelta++) {
+      for (let i = 0; i < fallos.length; i++) {
+        upstream.gemini = fallos[i];
+        upstream.brave = fallos[i];
+        assert.strictEqual((await pedir({ image: IMG, prompt: 'p' })).status, esperados[i], 'IA fallo ' + i + ' vuelta ' + vuelta);
+        assert.strictEqual((await pedir({ mode: 'web', query: 'x' })).status, esperados[i], 'web fallo ' + i + ' vuelta ' + vuelta);
+      }
+    }
+    // y despues siguen quedando los 2 huecos completos
+    upstream.gemini = bienG; upstream.brave = bienB;
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p' })).status, 200);
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p' })).status, 200);
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p' })).status, 429);
+    assert.strictEqual((await pedir({ mode: 'web', query: 'x' })).status, 200);
+    assert.strictEqual((await pedir({ mode: 'web', query: 'x' })).status, 200);
+    assert.strictEqual((await pedir({ mode: 'web', query: 'x' })).status, 429);
+  }, { RATE_LIMIT_AI_PER_HOUR: '2', RATE_LIMIT_WEB_PER_HOUR: '2', RATE_LIMIT_WEB_PER_DAY: '2' });
+});
+
+test('R6 ECC F-M3: limites por defecto de Brave (20/hora, 40/dia) y ventana diaria propia', { skip: sinTs && 'Node sin soporte de TypeScript' }, async () => {
+  // por hora, por defecto 20
+  await conFuncion(async ({ pedir }) => {
+    for (let i = 0; i < 20; i++) assert.strictEqual((await pedir({ mode: 'web', query: 'x' })).status, 200, 'busqueda ' + i);
+    const r = await pedir({ mode: 'web', query: 'x' });
+    assert.strictEqual(r.status, 429);
+    assert.ok(Number(r.headers.get('retry-after')) >= 1 && Number(r.headers.get('retry-after')) <= 3600);
+  });
+  // por dia, por defecto 40 (con el limite por hora muy alto para aislar el diario)
+  await conFuncion(async ({ pedir }) => {
+    for (let i = 0; i < 40; i++) assert.strictEqual((await pedir({ mode: 'web', query: 'x' })).status, 200, 'busqueda ' + i);
+    const r = await pedir({ mode: 'web', query: 'x' });
+    assert.strictEqual(r.status, 429);
+    assert.ok(Number(r.headers.get('retry-after')) > 3600, 'el aviso del limite diario es de horas, no de minutos');
+  }, { RATE_LIMIT_WEB_PER_HOUR: '1000' });
+  // la ventana diaria sobrevive a la horaria (hora 2, dia 3)
+  await conFuncion(async ({ pedir }) => {
+    const dn = Date.now, t0 = dn.call(Date);
+    let t = t0; Date.now = () => t;
+    try {
+      assert.strictEqual((await pedir({ mode: 'web', query: 'x' })).status, 200);
+      assert.strictEqual((await pedir({ mode: 'web', query: 'x' })).status, 200);
+      assert.strictEqual((await pedir({ mode: 'web', query: 'x' })).status, 429, 'limite horario');
+      t = t0 + 61 * 60 * 1000; // pasada la hora
+      assert.strictEqual((await pedir({ mode: 'web', query: 'x' })).status, 200, 'tercera del dia');
+      const dia = await pedir({ mode: 'web', query: 'x' });
+      assert.strictEqual(dia.status, 429, 'limite diario aunque la hora ya este libre');
+      assert.ok(Number(dia.headers.get('retry-after')) > 3600);
+      t = t0 + 25 * 60 * 60 * 1000; // pasado el dia
+      assert.strictEqual((await pedir({ mode: 'web', query: 'x' })).status, 200);
+    } finally { Date.now = dn; }
+  }, { RATE_LIMIT_WEB_PER_HOUR: '2', RATE_LIMIT_WEB_PER_DAY: '3' });
+});
+
+test('R6 ECC F-M3: prompt acotado para quien no es administrador (foto) y holgura sobre los prompts reales del cliente', { skip: sinTs && 'Node sin soporte de TypeScript' }, async () => {
+  const f = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'functions', 'bright-worker', 'index.ts'), 'utf8');
+  const mx = /MAX_PROMPT_FOTO = (\d[\d_]*)/.exec(f);
+  assert.ok(mx, 'existe MAX_PROMPT_FOTO');
+  const MAX_FOTO = Number(mx[1].replace(/_/g, ''));
+  // Los prompts de foto reales de shared/app.js (con 40 categorias de 15 caracteres) deben caber con un 30 % de holgura
+  const plantillas = [...src.matchAll(/const prompt=`([\s\S]*?)`;/g)].map(m => m[1].replace(/\r\n/g, '\n'));
+  assert.strictEqual(plantillas.length, 2, 'los dos prompts de foto del cliente');
+  for (const p of plantillas) {
+    const real = new Function('expertoEn', 'cats', 'return `' + p + '`')('material mecánico industrial', Array(40).fill('Categoria-12345')).length;
+    assert.ok(real * 1.3 <= MAX_FOTO, 'prompt real de ' + real + ' caracteres con un 30 % de holgura cabe en ' + MAX_FOTO);
+  }
+  assert.ok(MAX_FOTO <= 2500, 'el tope sigue siendo corto (no un prompt libre)');
+  await conFuncion(async ({ pedir, ext }) => {
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p'.repeat(MAX_FOTO) })).status, 200);
+    const r = await pedir({ image: IMG, prompt: 'p'.repeat(MAX_FOTO + 1) });
+    assert.strictEqual(r.status, 413);
+    assert.deepStrictEqual(await r.json(), { error: 'payload_too_large' });
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p'.repeat(MAX_FOTO + 1), purpose: 'foto' })).status, 413);
+    const antes = ext('generativelanguage').length;
+    // el administrador conserva los 4000 de la factura (y un administrador con foto tambien)
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p'.repeat(4000), purpose: 'factura' }, 'a'.repeat(30))).status, 200);
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p'.repeat(4000), purpose: 'foto' }, 'a'.repeat(30))).status, 200);
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p'.repeat(4001), purpose: 'factura' }, 'a'.repeat(30))).status, 413);
+    assert.strictEqual(ext('generativelanguage').length, antes + 2);
+    // la instruccion fija sigue ahi para el usuario normal
+    const ult = JSON.parse(ext('generativelanguage')[0].op.body);
+    assert.ok(/responde únicamente \{\}/.test(ult.systemInstruction.parts[0].text));
+  }, { RATE_LIMIT_AI_PER_HOUR: '100' });
+});
+
+test('R6 ECC F-M4: cuerpo sin Content-Length (chunked) se corta con 413 al pasar el maximo en BYTES; Content-Length no numerico => 400', { skip: sinTs && 'Node sin soporte de TypeScript' }, async () => {
+  await conFuncion(async ({ handler, pedir, ORIGEN }) => {
+    const peticion = (cuerpo, extra) => new Request('https://f.supabase.co/functions/v1/bright-worker', { method: 'POST', duplex: 'half', body: cuerpo,
+      headers: Object.assign({ 'content-type': 'application/json', origin: ORIGEN, authorization: 'Bearer ' + 'n'.repeat(30) }, extra || {}) });
+    // 1) enorme y sin Content-Length: se aborta pronto (no se lee todo)
+    const trozo = new Uint8Array(1_000_000).fill(97);
+    let leidos = 0;
+    const flujo = new ReadableStream({ pull(c) { if (leidos >= 60) { c.close(); return; } leidos++; c.enqueue(trozo); } });
+    const req = peticion(flujo);
+    assert.strictEqual(req.headers.get('content-length'), null, 'sin Content-Length');
+    const r = await handler(req);
+    assert.strictEqual(r.status, 413);
+    assert.deepStrictEqual(await r.json(), { error: 'payload_too_large' });
+    assert.ok(leidos < 20, 'se dejo de leer pronto (' + leidos + ' trozos de 60)');
+    // 2) se cuentan BYTES, no caracteres: 1.800.000 euros = 5,4 MB en 1,8 M de caracteres
+    const enc = new TextEncoder();
+    const bytes = enc.encode('{"a":"' + '€'.repeat(1_800_000) + '"}');
+    assert.ok(bytes.length > 5_100_000 && bytes.length / 3 < 1_800_100);
+    const flujo2 = new ReadableStream({ start(c) { for (let i = 0; i < bytes.length; i += 65536) c.enqueue(bytes.slice(i, i + 65536)); c.close(); } });
+    assert.strictEqual((await handler(peticion(flujo2))).status, 413, 'por bytes');
+    // 3) un cuerpo normal por flujo (sin Content-Length) sigue funcionando, tambien con caracteres de varios bytes
+    const normal = enc.encode(JSON.stringify({ image: IMG, prompt: 'Resistencia de 10 kΩ — ñandú €' }));
+    const flujo3 = new ReadableStream({ start(c) { c.enqueue(normal.slice(0, 7)); c.enqueue(normal.slice(7)); c.close(); } });
+    const ok = await handler(peticion(flujo3));
+    assert.strictEqual(ok.status, 200);
+    // 4) Content-Length no numerico, negativo o con basura: 400; declarado enorme: 413
+    for (const cl of ['abc', '-1', '12abc', '1e3', '']) {
+      const x = await pedir({ image: IMG, prompt: 'p' }, null, { 'content-length': cl, authorization: 'Bearer ' + 'n'.repeat(30) });
+      if (cl === '') continue; // cabecera vacia: el entorno la puede descartar
+      assert.strictEqual(x.status, 400, 'content-length ' + JSON.stringify(cl));
+    }
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p' }, null, { 'content-length': '99999999', authorization: 'Bearer ' + 'n'.repeat(30) })).status, 413);
+    // sin cuerpo: JSON vacio => 400
+    assert.strictEqual((await handler(peticion(null))).status, 400);
+  });
+});
+
+test('R6 ECC F-L1/F-L2: la imagen se valida por bytes reales (JPEG/PNG/WEBP), base64 estandar y longitud multiplo de 4; tope 5 M', { skip: sinTs && 'Node sin soporte de TypeScript' }, async () => {
+  const b64 = a => Buffer.from(a).toString('base64');
+  const jpg = b64([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1]);
+  const png = b64([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]);
+  const webp = b64(Buffer.concat([Buffer.from('RIFF'), Buffer.from([1, 2, 3, 4]), Buffer.from('WEBP')]));
+  assert.ok(jpg.length === 16 && png.length === 16 && webp.length === 16);
+  await conFuncion(async ({ pedir, ext }) => {
+    for (const [im, mime] of [[jpg, 'image/jpeg'], [png, 'image/png'], [webp, 'image/webp'], [IMG, 'image/jpeg']]) {
+      assert.strictEqual((await pedir({ image: im, prompt: 'p' })).status, 200, mime);
+      const g = ext('generativelanguage'); const c = JSON.parse(g[g.length - 1].op.body);
+      assert.strictEqual(c.contents[0].parts[1].inline_data.mime_type, mime);
+    }
+    const llamadas = ext('generativelanguage').length;
+    const malas = {
+      'RIFF pero WAVE': b64(Buffer.concat([Buffer.from('RIFF'), Buffer.from([1, 2, 3, 4]), Buffer.from('WAVE')])),
+      'PNG con firma rota': b64([0x89, 0x50, 0x4e, 0x48, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]),
+      'JPEG con firma rota': b64([0xff, 0xd8, 0x00, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1]),
+      'GIF': b64(Buffer.from('GIF89a\x01\x00\x01\x00\x80\x00\x00\x00')),
+      'base64url (_ en vez de /)': jpg.replace('/', '_'),
+      'base64url (- en vez de +)': b64([0xff, 0xd8, 0xff, 0xfb, 0xff, 0xfe, 0xfb, 0xef, 0xbe, 0xff, 0, 1]).replace(/\+/g, '-').replace(/\//g, '_'),
+      'longitud no multiplo de 4': jpg.slice(0, 14),
+      'longitud 17': jpg + '=',
+      'padding de mas': jpg.slice(0, 12) + '====',
+      'con espacios': jpg.slice(0, 8) + ' ' + jpg.slice(9),
+      'solo prefijo falso': '/9j/AAAA'.slice(0, 7),
+    };
+    for (const [n, im] of Object.entries(malas)) {
+      const r = await pedir({ image: im, prompt: 'p' });
+      assert.strictEqual(r.status, 415, n);
+      assert.deepStrictEqual(await r.json(), { error: 'unsupported_image' });
+    }
+    assert.strictEqual(ext('generativelanguage').length, llamadas, 'nada de eso llega a Gemini');
+    // F-L2: una imagen de 3 M de caracteres (antes 413) ya pasa; por encima de 5 M, 413
+    const grande = '/9j/' + 'A'.repeat(3_000_000 - 4);
+    assert.strictEqual(grande.length % 4, 0);
+    assert.strictEqual((await pedir({ image: grande, prompt: 'p' })).status, 200);
+    assert.strictEqual((await pedir({ image: '/9j/' + 'A'.repeat(5_000_000 - 3), prompt: 'p' })).status, 413);
+  }, { RATE_LIMIT_AI_PER_HOUR: '1000' });
+});
+
+test('R6 ECC F-L7: user_metadata.role admin NO es administrador; admin con foto sin restriccion; purpose exacto; Retry-After', { skip: sinTs && 'Node sin soporte de TypeScript' }, async () => {
+  await conFuncion(async ({ pedir, ext }) => {
+    const u = await pedir({ image: IMG, prompt: 'p', purpose: 'factura' }, 'u'.repeat(30));
+    assert.strictEqual(u.status, 403, 'user_metadata no da permisos');
+    assert.strictEqual(ext('generativelanguage').length, 0);
+    // y con 'foto' queda restringido como cualquier usuario normal
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p', purpose: 'foto' }, 'u'.repeat(30))).status, 200);
+    assert.ok(/responde únicamente \{\}/.test(JSON.parse(ext('generativelanguage')[0].op.body).systemInstruction.parts[0].text));
+    // administrador con purpose foto: instruccion SIN restriccion de componentes (es el diseno: el rol manda)
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p', purpose: 'foto' }, 'a'.repeat(30))).status, 200);
+    const adm = JSON.parse(ext('generativelanguage')[1].op.body);
+    assert.ok(!/responde únicamente \{\}/.test(adm.systemInstruction.parts[0].text));
+    assert.ok(/solo datos/.test(adm.systemInstruction.parts[0].text));
+    assert.strictEqual(adm.generationConfig.maxOutputTokens, 1500, 'el tope depende del purpose, no del rol');
+    // purpose exacto: otras mayusculas, espacios, vacio o nulo => 400
+    for (const p of ['Factura', 'factura ', ' factura', 'FOTO', '', null, 1, {}]) {
+      assert.strictEqual((await pedir({ image: IMG, prompt: 'p', purpose: p }, 'a'.repeat(30))).status, 400, 'purpose ' + JSON.stringify(p));
+    }
+    assert.strictEqual(ext('generativelanguage').length, 2);
+  });
+  await conFuncion(async ({ pedir }) => {
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p' })).status, 200);
+    const r = await pedir({ image: IMG, prompt: 'p' });
+    assert.strictEqual(r.status, 429);
+    const ra = r.headers.get('retry-after');
+    assert.ok(/^\d+$/.test(ra), 'Retry-After en segundos enteros');
+    assert.ok(Number(ra) >= 3590 && Number(ra) <= 3600, 'casi una hora: ' + ra);
+  }, { RATE_LIMIT_AI_PER_HOUR: '1' });
+});
+
+test('R6 ECC F-L4: sinHtml quita etiquetas y luego decodifica las entidades basicas (sin doble decodificacion)', { skip: sinTs && 'Node sin soporte de TypeScript' }, async () => {
+  await conFuncion(async ({ pedir, upstream }) => {
+    upstream.brave = () => new Response(JSON.stringify({ web: { results: [
+      { title: '<b>Tom &amp; Jerry</b> &lt;x&gt; &quot;q&quot; &#39;a&#39; &#x27;b&#x27;', url: 'https://a.com/1', description: '&amp;lt;b&amp;gt; <i>ok</i>' },
+      { title: 'x'.repeat(250), url: 'https://a.com/2', description: 'd' },
+    ] } }), { status: 200 });
+    const d = await (await pedir({ mode: 'web', query: 'x' })).json();
+    assert.strictEqual(d.results[0].title, 'Tom & Jerry <x> "q" \'a\' \'b\'');
+    assert.strictEqual(d.results[0].snippet, '&lt;b&gt; ok', 'un &amp;lt; queda como &lt; (no se decodifica dos veces)');
+    assert.strictEqual(d.results[1].title.length, 200);
+  });
+});
+
+test('R6 ECC: documentacion de la funcion (README) y del SQL actualizada', () => {
+  const dir = path.join(__dirname, '..', 'supabase', 'functions', 'bright-worker');
+  const r = fs.readFileSync(path.join(dir, 'README.md'), 'utf8');
+  assert.ok(/RATE_LIMIT_WEB_PER_DAY/.test(r) && /\b40\b/.test(r) && /\b20\b/.test(r), 'limites de Brave documentados');
+  assert.ok(/Allow new users to sign up/.test(r), 'recordatorio de desactivar los registros');
+  assert.ok(/GEMINI_MODEL/.test(r) && /thinkingBudget/.test(r) && /confirma/i.test(r), 'el modelo debe confirmarse contra el desplegado');
+  assert.ok(/422/.test(r) && /upstream_rejected/.test(r) && /5\s*M|5\.000\.000|5 000 000/.test(r), 'codigos y limite de imagen');
+  assert.ok(/REQUIRE_TS_TESTS/.test(r) || /REQUIRE_TS_TESTS/.test(fs.readFileSync(path.join(__dirname, '..', 'SEGURIDAD.md'), 'utf8')), 'REQUIRE_TS_TESTS documentado');
+});
+
+test('R6 ECC S-L1: el campo Notas del formulario tiene maxlength 1999 en los dos almacenes y cleanItem recorta a 1999', () => {
+  for (const w of ['almacen-electrico', 'almacen-mecanico']) {
+    const h = fs.readFileSync(path.join(__dirname, '..', w, 'index.html'), 'utf8');
+    assert.ok(/<input[^>]*id="f-notes"[^>]*maxlength="1999"/.test(h), 'maxlength en ' + w);
+  }
+  const larga = ev('cleanItem({id:"I1",notes:"x".repeat(2500)})');
+  assert.strictEqual(larga.notes.length, 1999);
+  assert.strictEqual(ev('cleanItem({id:"I1",notes:"x".repeat(1999)})').notes.length, 1999, 'justo en el limite no se toca');
+  assert.strictEqual(ev('cleanItem({id:"I1",notes:"corta"})').notes, 'corta');
+  // no se parte un caracter doble (emoji): quedaria un sustituto suelto que la base de datos rechaza
+  const emoji = ev('cleanItem({id:"I1",notes:"x".repeat(1998)+"\\ud83d\\ude00"+"y".repeat(10)})').notes;
+  assert.strictEqual(emoji.length, 1998);
+  assert.ok(!/[\ud800-\udbff]$/.test(emoji));
+  assert.strictEqual(ev('cleanItem({id:"I1",notes:null})').notes, null);
+});
+
+test('R6 ECC F-L2/F-L3: mensajes del cliente por estado HTTP, tiempo de 70 s y el 422 no se reintenta', async () => {
+  const msg = s => ev('aiErrorMsg({status:' + s + '})');
+  assert.ok(/imagen es demasiado grande/i.test(msg(413)));
+  assert.ok(/formato de imagen no admitido/i.test(msg(415)));
+  assert.ok(/rechaz[oó] la imagen/i.test(msg(422)));
+  assert.ok(/sesi[oó]n ha caducado, vuelve a entrar/i.test(msg(401)));
+  assert.ok(/solo para administradores/i.test(msg(403)));
+  for (const s of [413, 415, 422, 401, 403]) assert.ok(!/dentro de Claude/.test(msg(s)), 'sin el mensaje de Claude para ' + s);
+  assert.ok(/saturado/.test(msg(502)) && /muchas peticiones/.test(msg(429)), 'los mensajes existentes siguen igual');
+  assert.ok(/dentro de Claude/.test(msg(418)), 'el mensaje generico se conserva para el resto');
+  assert.ok(/Sin conexi/.test(ev('aiErrorMsg({kind:"red"})')));
+
+  const fetchAntes = ctx.fetch, abortAntes = ctx.AbortController, stAntes = ctx.setTimeout;
+  ctx.AbortController = AbortController;
+  const esperas = [];
+  ctx.setTimeout = (f, ms) => { esperas.push(ms); if (ms < 10000) f(); return 0; }; // las pausas entre reintentos se ejecutan al momento
+  try {
+    let n = 0;
+    ctx.fetch = async () => { n++; return { ok: true, json: async () => ({ text: 'x' }) }; };
+    await ev('aiBuscar("QUJD", "p")');
+    assert.ok(esperas.includes(70000) && !esperas.includes(60000), 'tiempo del cliente 70 s (la funcion corta a los 50 s)');
+    for (const [st, veces] of [[422, 1], [413, 1], [415, 1], [401, 1], [403, 1], [429, 1], [502, 3], [504, 3]]) {
+      n = 0;
+      ctx.fetch = async () => { n++; return { ok: false, status: st, json: async () => ({}) }; };
+      let err = null;
+      try { await ev('aiBuscar("QUJD", "p")'); } catch (e) { err = e; }
+      assert.ok(err && err.status === st, 'estado ' + st);
+      assert.strictEqual(n, veces, 'intentos con ' + st);
+    }
+    // braveSearch: el 422 tampoco se reintenta
+    n = 0;
+    ctx.fetch = async () => { n++; return { ok: false, status: 422, json: async () => ({}) }; };
+    const r = await ev('braveSearch("x", 4)');
+    assert.strictEqual(n, 1);
+    assert.strictEqual(r.status, 422);
+  } finally { ctx.fetch = fetchAntes; ctx.setTimeout = stAntes; if (abortAntes === undefined) delete ctx.AbortController; else ctx.AbortController = abortAntes; }
 });

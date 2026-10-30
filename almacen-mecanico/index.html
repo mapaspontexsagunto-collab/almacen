@@ -402,7 +402,7 @@
       <div class="fg"><label class="fl">Marca</label><input type="text" class="fi" id="f-brand" placeholder="Ej: Schneider"></div>
     </div>
     <div class="fg"><label class="fl">Equipo / máquina donde se usa</label><input type="text" class="fi" id="f-machine" placeholder="Ej: Línea 3, prensa hidráulica..."></div>
-    <div class="fg"><label class="fl">Notas</label><input type="text" class="fi" id="f-notes" placeholder="Voltaje, amperios, observaciones..."></div>
+    <div class="fg"><label class="fl">Notas</label><input type="text" class="fi" id="f-notes" maxlength="1999" placeholder="Voltaje, amperios, observaciones..."></div>
     <button class="btn btn-block btn-primary" onclick="saveItem()">Guardar</button>
     <button class="btn btn-block" style="margin-top:10px;" onclick="_invCreateIdx!==null?cancelInvoiceCreate():closeModal('modal-form')">Cancelar</button>
   </div>

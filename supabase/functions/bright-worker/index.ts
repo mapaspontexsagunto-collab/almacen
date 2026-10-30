@@ -12,8 +12,11 @@
 //           -> 200 {"text": "<respuesta de Gemini>"}
 //  2) Web:  {"mode": "web", "query": "<texto>", "num": 1..10 (opcional, 4 por defecto)}
 //           -> 200 {"results": [{"title", "link", "display", "snippet"}]}
-//  Errores: {"error": "<código>"} con 400/401/403/405/413/415/429/502/504. Nunca se devuelve texto de errores
+//  Errores: {"error": "<código>"} con 400/401/403/405/413/415/422/429/502/504. Nunca se devuelve texto de errores
 //  internos ni de los proveedores (podría contener datos o claves).
+//   - 422 upstream_rejected: el proveedor (Gemini/Brave) rechazó la petición con un 4xx distinto de 429. NO es
+//     transitorio: la app no lo reintenta. 502 upstream_error / 504 upstream_timeout sí son transitorios.
+//   - Cuando el proveedor falla (cualquier error) se devuelve el hueco del límite de uso: solo cuentan las llamadas que van bien.
 //
 // ---- Seguridad -------------------------------------------------------------------------------------
 //  - Las claves SOLO se leen de los secretos de la función (Deno.env). No hay ninguna en este fichero.
@@ -27,21 +30,35 @@
 //  - Límite de uso por usuario EN MEMORIA y de mejor esfuerzo: cada instancia de la función tiene su propio
 //    contador y se reinicia cuando Supabase la recicla. Frena el abuso normal, no a un atacante decidido
 //    (para eso haría falta una tabla en la base de datos).
-//  - Límites de tamaño: imagen (base64) 2,5 M de caracteres, prompt 4000, búsqueda 200; salida de Gemini fija.
+//  - Límites de tamaño: imagen (base64) 5 M de caracteres, prompt 4000 (2200 para quien no es administrador, que solo
+//    puede pedir fotos), búsqueda 200; salida de Gemini fija. El cuerpo se lee por flujo y se corta con 413 al pasar
+//    el máximo en BYTES, aunque no venga Content-Length. La imagen se valida por sus bytes reales (JPEG/PNG/WEBP).
+//  - Límites de uso por usuario: IA por hora; Brave por hora y por día (una búsqueda de la app son 4 llamadas).
+//  - Gemini 2.5 flash: se desactiva el razonamiento (thinkingBudget 0) porque sus tokens cuentan contra
+//    maxOutputTokens y podrían cortar el JSON; se pide la respuesta como application/json.
 //  - Se rechazan los campos desconocidos y los tipos incorrectos.
 //  - CORS limitado al origen de la app (GitHub Pages) y a los extras de ALLOWED_ORIGINS. CORS solo protege a
 //    los navegadores: la autenticación y los límites son la defensa real.
 
 const ORIGEN_APP = 'https://mapaspontexsagunto-collab.github.io';
 
-const MAX_IMAGEN = 2_500_000;      // caracteres de base64 (unos 1,8 MB de imagen)
-const MAX_PROMPT = 4000;
+const MAX_IMAGEN = 5_000_000;      // caracteres de base64 (unos 3,7 MB de imagen; el límite de Gemini en línea es muy superior)
+const MAX_PROMPT = 4000;           // administradores (el prompt de la factura es largo)
+// Quien no es administrador solo puede pedir fotos de componentes. Los prompts reales de la app miden ~1100 caracteres
+// más la lista de categorías (40 categorías de 15 caracteres = ~600): con un 30 % de holgura salen ~2200.
+const MAX_PROMPT_FOTO = 2200;
 const MAX_QUERY = 200;
 const MAX_CUERPO = MAX_IMAGEN + MAX_PROMPT + 4096; // bytes máximos de la petición
 const VENTANA_MS = 60 * 60 * 1000;
+const VENTANA_DIA_MS = 24 * VENTANA_MS;
 const LIMITE_IA_POR_DEFECTO = 30;  // llamadas a Gemini por usuario y hora
-const LIMITE_WEB_POR_DEFECTO = 60; // una búsqueda de la app hace 4 llamadas a Brave
-const TOKENS_SALIDA: Record<string, number> = { factura: 8192, foto: 4096 }; // maxOutputTokens fijo por propósito
+// Una búsqueda de la app hace 4 llamadas a Brave (datasheet, manual, comprar, general): 20 por hora = 5 búsquedas
+// por hora y 40 por día = 10 búsquedas al día por usuario.
+const LIMITE_WEB_POR_DEFECTO = 20;     // llamadas a Brave por usuario y hora
+const LIMITE_WEB_DIA_POR_DEFECTO = 40; // llamadas a Brave por usuario y día
+// maxOutputTokens fijo por propósito. En Gemini 2.5 los tokens de razonamiento cuentan contra este tope: por eso en los
+// modelos flash se desactivan (thinkingBudget 0). La factura puede ser larga; la ficha de una foto cabe en ~600.
+const TOKENS_SALIDA: Record<string, number> = { factura: 16384, foto: 1500 };
 const PURPOSES = ['factura', 'foto'];
 
 const CAMPOS_IA = ['image', 'prompt', 'purpose'];
@@ -93,8 +110,13 @@ function recortar(v: unknown, max: number): string {
   return typeof v === 'string' ? v.slice(0, max) : '';
 }
 
+// Quita etiquetas y DESPUÉS decodifica las entidades básicas que Brave deja en el texto (&amp; &lt; &gt; &quot; &#39; &#x27;).
+// &amp; se decodifica el último para no decodificar dos veces (&amp;lt; -> &lt;). El texto decodificado puede contener < o >,
+// pero la app lo escapa (esc()) antes de mostrarlo, así que no hay riesgo de inyección en el cliente.
 function sinHtml(v: unknown, max: number): string {
-  return recortar(v, max * 4).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, max);
+  return recortar(v, max * 4).replace(/<[^>]*>/g, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#0*39;|&#x0*27;/gi, "'").replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
 function enlaceHttp(v: unknown): string {
@@ -109,19 +131,27 @@ function enlaceHttp(v: unknown): string {
 // ---------- límite de uso (en memoria, mejor esfuerzo) ----------
 const usos = new Map<string, number[]>();
 
-function permitirUso(clave: string, limite: number, ahora = Date.now()): number {
+function permitirUso(clave: string, limite: number, ventana = VENTANA_MS, ahora = Date.now()): number {
   // Devuelve 0 si se permite (y lo cuenta) o los segundos que faltan para poder reintentar.
-  const recientes = (usos.get(clave) ?? []).filter((t) => ahora - t < VENTANA_MS);
+  const recientes = (usos.get(clave) ?? []).filter((t) => ahora - t < ventana);
   if (recientes.length >= limite) {
     usos.set(clave, recientes);
-    return Math.max(1, Math.ceil((VENTANA_MS - (ahora - recientes[0])) / 1000));
+    return Math.max(1, Math.ceil((ventana - (ahora - recientes[0])) / 1000));
   }
   recientes.push(ahora);
   usos.set(clave, recientes);
-  if (usos.size > 5000) { // limpieza para que la memoria no crezca sin límite
-    for (const [k, v] of usos) if (!v.length || ahora - v[v.length - 1] >= VENTANA_MS) usos.delete(k);
+  if (usos.size > 5000) { // limpieza para que la memoria no crezca sin límite (la ventana más larga es la del día)
+    for (const [k, v] of usos) if (!v.length || ahora - v[v.length - 1] >= VENTANA_DIA_MS) usos.delete(k);
   }
   return 0;
+}
+
+// Devuelve un hueco que se había contado (porque la llamada al proveedor falló y no debe gastar cupo).
+function devolverUso(clave: string, instante: number): void {
+  const lista = usos.get(clave);
+  if (!lista) return;
+  const i = lista.lastIndexOf(instante);
+  if (i >= 0) lista.splice(i, 1);
 }
 
 // ---------- verificación del usuario ----------
@@ -146,10 +176,20 @@ async function verificarUsuario(req: Request): Promise<Usuario | null> {
 }
 
 // ---------- Gemini ----------
+// Tipo de imagen por sus bytes reales: se decodifican los primeros 16 caracteres base64 (12 bytes) y se comprueba la firma.
+// Solo base64 estándar con longitud múltiplo de 4 (sin base64url ni caracteres sueltos); si no, devuelve ''.
 function tipoImagen(b64: string): string {
-  if (b64.startsWith('/9j/')) return 'image/jpeg';
-  if (b64.startsWith('iVBOR')) return 'image/png';
-  if (b64.startsWith('UklGR')) return 'image/webp';
+  if (b64.length < 8 || b64.length % 4 !== 0 || !/^[A-Za-z0-9+\/]+={0,2}$/.test(b64)) return '';
+  let b: number[];
+  try {
+    b = Array.from(atob(b64.slice(0, 16)), (c) => c.charCodeAt(0));
+  } catch (_) {
+    return '';
+  }
+  const tex = (desde: number, t: string) => t.split('').every((c, i) => b[desde + i] === c.charCodeAt(0));
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (b[0] === 0x89 && tex(1, 'PNG') && b[4] === 0x0d && b[5] === 0x0a && b[6] === 0x1a && b[7] === 0x0a) return 'image/png';
+  if (tex(0, 'RIFF') && tex(8, 'WEBP')) return 'image/webp';
   return '';
 }
 
@@ -158,10 +198,19 @@ async function llamarGemini(image: string, prompt: string, purpose: string, rest
   if (!clave) { console.error('GEMINI_API_KEY no configurada'); return new Response(null, { status: 502 }); }
   const modelo = entorno('GEMINI_MODEL') || 'gemini-2.5-flash';
   if (!/^[a-z0-9.\-]+$/.test(modelo)) { console.error('GEMINI_MODEL no válido'); return new Response(null, { status: 502 }); }
+  // Los dos prompts de la app piden JSON, así que se pide la respuesta como application/json. En los modelos flash se
+  // desactiva el razonamiento (thinkingBudget 0): sus tokens cuentan contra maxOutputTokens y podrían truncar el JSON.
+  // Los modelos -pro no admiten thinkingBudget 0, por eso no se envía en ellos.
+  const generationConfig: Record<string, unknown> = {
+    maxOutputTokens: TOKENS_SALIDA[purpose] ?? TOKENS_SALIDA.foto,
+    temperature: 0.1,
+    responseMimeType: 'application/json',
+  };
+  if (modelo.includes('flash') && !modelo.includes('-pro')) generationConfig.thinkingConfig = { thinkingBudget: 0 };
   const cuerpo = {
     systemInstruction: { parts: [{ text: restringir ? INSTRUCCION_FOTO : INSTRUCCION_FACTURA }] },
     contents: [{ role: 'user', parts: [{ text: prompt }, { inline_data: { mime_type: tipoImagen(image), data: image } }] }],
-    generationConfig: { maxOutputTokens: TOKENS_SALIDA[purpose] ?? TOKENS_SALIDA.foto, temperature: 0.1 },
+    generationConfig,
   };
   const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + modelo + ':generateContent', {
     method: 'POST',
@@ -200,6 +249,30 @@ async function llamarBrave(query: string, num: number): Promise<Response | { res
   return { results };
 }
 
+// ---------- lectura del cuerpo ----------
+// Lee el cuerpo por flujo contando BYTES (no caracteres) y devuelve null en cuanto se pasa de MAX_CUERPO, cancelando
+// la lectura. Así un cuerpo enorme sin Content-Length (chunked) no se carga entero en memoria.
+async function leerCuerpo(req: Request): Promise<string | null> {
+  if (!req.body) return '';
+  const lector = req.body.getReader();
+  const trozos: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await lector.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_CUERPO) {
+      try { await lector.cancel(); } catch (_) { /* ya cerrado */ }
+      return null;
+    }
+    trozos.push(value);
+  }
+  const todo = new Uint8Array(total);
+  let pos = 0;
+  for (const t of trozos) { todo.set(t, pos); pos += t.byteLength; }
+  return new TextDecoder().decode(todo);
+}
+
 // ---------- servidor ----------
 export async function handler(req: Request): Promise<Response> {
   const origen = req.headers.get('origin');
@@ -212,10 +285,13 @@ export async function handler(req: Request): Promise<Response> {
   if (!usuario) return responder({ error: 'unauthorized' }, 401, cors);
 
   // Cuerpo: tamaño máximo (cabecera y lectura real) y JSON de objeto simple
-  const declarado = Number(req.headers.get('content-length') ?? '0');
-  if (declarado > MAX_CUERPO) return responder({ error: 'payload_too_large' }, 413, cors);
-  const texto = await req.text();
-  if (texto.length > MAX_CUERPO) return responder({ error: 'payload_too_large' }, 413, cors);
+  const cl = req.headers.get('content-length');
+  if (cl !== null) {
+    if (!/^\d+$/.test(cl.trim())) return responder({ error: 'bad_request' }, 400, cors); // no numérico, negativo o con basura
+    if (Number(cl) > MAX_CUERPO) return responder({ error: 'payload_too_large' }, 413, cors);
+  }
+  const texto = await leerCuerpo(req); // sin Content-Length (chunked) también se corta al pasar el máximo
+  if (texto === null) return responder({ error: 'payload_too_large' }, 413, cors);
   let body: Record<string, unknown>;
   try {
     const b = JSON.parse(texto);
@@ -235,9 +311,17 @@ export async function handler(req: Request): Promise<Response> {
       if (typeof body.num !== 'number' || !Number.isInteger(body.num) || body.num < 1 || body.num > 10) return responder({ error: 'bad_request' }, 400, cors);
       num = body.num;
     }
-    const espera = permitirUso('web:' + usuario.id, entero('RATE_LIMIT_WEB_PER_HOUR', LIMITE_WEB_POR_DEFECTO));
-    if (espera) return responder({ error: 'rate_limited' }, 429, cors, { 'Retry-After': String(espera) });
-    return await enviar(() => llamarBrave(query, num), cors);
+    // Dos contadores: por hora y por día. Si falla el segundo se devuelve el hueco del primero.
+    const t = Date.now();
+    const claveH = 'web:' + usuario.id, claveD = 'webdia:' + usuario.id;
+    const esperaH = permitirUso(claveH, entero('RATE_LIMIT_WEB_PER_HOUR', LIMITE_WEB_POR_DEFECTO), VENTANA_MS, t);
+    if (esperaH) return responder({ error: 'rate_limited' }, 429, cors, { 'Retry-After': String(esperaH) });
+    const esperaD = permitirUso(claveD, entero('RATE_LIMIT_WEB_PER_DAY', LIMITE_WEB_DIA_POR_DEFECTO), VENTANA_DIA_MS, t);
+    if (esperaD) {
+      devolverUso(claveH, t);
+      return responder({ error: 'rate_limited' }, 429, cors, { 'Retry-After': String(esperaD) });
+    }
+    return await enviar(() => llamarBrave(query, num), cors, () => { devolverUso(claveH, t); devolverUso(claveD, t); });
   }
 
   // ----- IA (Gemini) -----
@@ -245,31 +329,42 @@ export async function handler(req: Request): Promise<Response> {
   const { image, prompt } = body;
   if (typeof image !== 'string' || !image || typeof prompt !== 'string' || !prompt.trim()) return responder({ error: 'bad_request' }, 400, cors);
   if (image.length > MAX_IMAGEN || prompt.length > MAX_PROMPT) return responder({ error: 'payload_too_large' }, 413, cors);
-  if (!/^[A-Za-z0-9+\/_-]+={0,2}$/.test(image) || !tipoImagen(image)) return responder({ error: 'unsupported_image' }, 415, cors);
+  if (!tipoImagen(image)) return responder({ error: 'unsupported_image' }, 415, cors); // base64 estándar y firma real JPEG/PNG/WEBP
   let purpose = 'foto';
   if (body.purpose !== undefined) {
     if (typeof body.purpose !== 'string' || !PURPOSES.includes(body.purpose)) return responder({ error: 'bad_request' }, 400, cors);
     purpose = body.purpose;
   }
   if (purpose === 'factura' && !usuario.admin) return responder({ error: 'forbidden' }, 403, cors);
-  const espera = permitirUso('ia:' + usuario.id, entero('RATE_LIMIT_AI_PER_HOUR', LIMITE_IA_POR_DEFECTO));
-  if (espera) return responder({ error: 'rate_limited' }, 429, cors, { 'Retry-After': String(espera) });
-  // Quien no es administrador y no pide 'factura' recibe la instrucción restringida a fotos de componentes.
+  // Quien no es administrador y no pide 'factura' recibe la instrucción restringida a fotos de componentes
+  // y un prompt corto (no puede usar la función como un LLM multimodal general).
   // Un administrador sin 'purpose' (aplicación antigua en caché) sigue funcionando como antes.
   const restringir = !usuario.admin && purpose !== 'factura';
-  return await enviar(() => llamarGemini(image, prompt, purpose, restringir), cors);
+  if (restringir && prompt.length > MAX_PROMPT_FOTO) return responder({ error: 'payload_too_large' }, 413, cors);
+  const t = Date.now();
+  const claveIa = 'ia:' + usuario.id;
+  const espera = permitirUso(claveIa, entero('RATE_LIMIT_AI_PER_HOUR', LIMITE_IA_POR_DEFECTO), VENTANA_MS, t);
+  if (espera) return responder({ error: 'rate_limited' }, 429, cors, { 'Retry-After': String(espera) });
+  return await enviar(() => llamarGemini(image, prompt, purpose, restringir), cors, () => devolverUso(claveIa, t));
 }
 
-// Ejecuta la llamada al proveedor y traduce sus fallos a códigos propios (sin devolver su contenido).
-async function enviar(llamada: () => Promise<Response | Record<string, unknown>>, cors: Record<string, string>): Promise<Response> {
+// Ejecuta la llamada al proveedor y traduce sus fallos a códigos propios (sin devolver su contenido):
+//   - 429 del proveedor -> 429 rate_limited (Retry-After 60)
+//   - otro 4xx del proveedor -> 422 upstream_rejected (NO transitorio: la app no lo reintenta)
+//   - 5xx, red -> 502 upstream_error; tiempo agotado -> 504 upstream_timeout (transitorios: la app los reintenta)
+// Si el proveedor falla, se llama a "devolver" para no gastar el hueco del límite de uso del usuario.
+async function enviar(llamada: () => Promise<Response | Record<string, unknown>>, cors: Record<string, string>, devolver: () => void): Promise<Response> {
   try {
     const r = await llamada();
     if (r instanceof Response) {
+      devolver();
       if (r.status === 429) return responder({ error: 'rate_limited' }, 429, cors, { 'Retry-After': '60' });
+      if (r.status >= 400 && r.status < 500) return responder({ error: 'upstream_rejected' }, 422, cors);
       return responder({ error: 'upstream_error' }, 502, cors);
     }
     return responder(r, 200, cors);
   } catch (e) {
+    devolver();
     const nombre = (e as { name?: string })?.name;
     if (nombre === 'TimeoutError' || nombre === 'AbortError') return responder({ error: 'upstream_timeout' }, 504, cors);
     console.error('Error llamando al proveedor:', nombre ?? 'desconocido');

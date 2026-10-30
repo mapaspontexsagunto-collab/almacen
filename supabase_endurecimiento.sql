@@ -139,9 +139,14 @@ END $$;
 
 -- ============ 5) Límites de tamaño (SEC-M1) ============
 -- Evitan que una sesión (o un fallo) meta filas enormes que llenen la base o ralenticen la app:
---   · config.value        < 200000 bytes
+--   · config.value        < 200000 bytes de TEXTO del valor, sin comprimir: octet_length(value::text)
+--                         (vale para jsonb y para text). Es el tamaño que envía la app, no el que ocupa
+--                         en disco: pg_column_size() mide el valor ya comprimido (TOAST) en las filas que
+--                         existen y sin comprimir en las nuevas, y por eso NO se usa (un valor compresible
+--                         de 534 KB ocupa 14 KB guardado, pasaría la comprobación y luego fallaría al
+--                         volver a guardarlo). Este límite NO acota el tamaño guardado en disco.
 --   · items.photo         < 1000000 caracteres (las fotos de la app ocupan una fracción de eso)
---   · items.notes         < 2000 caracteres
+--   · items.notes         < 2000 caracteres (la app limita el campo a 1999)
 -- Se añaden NOT VALID: no se revisan las filas que ya existen (la operación es instantánea, no
 -- reescribe la tabla), pero sí todo insert/update nuevo.
 -- Protección extra: si YA hay una fila que no cumple el límite, NO se añade esa restricción (porque
@@ -149,7 +154,7 @@ END $$;
 -- Para ver esas filas (cambia la tabla si hace falta):
 --   SELECT id, length(notes) FROM public.items WHERE length(notes) >= 2000;
 --   SELECT id, length(photo) FROM public.items WHERE length(photo) >= 1000000;
---   SELECT key, pg_column_size(value) FROM public.config WHERE pg_column_size(value) >= 200000;
+--   SELECT key, octet_length(value::text) FROM public.config WHERE octet_length(value::text) >= 200000;
 DO $$
 DECLARE s text; r record; t text; n bigint;
 BEGIN
@@ -157,7 +162,7 @@ BEGIN
     FOR r IN SELECT * FROM (VALUES
         ('items',  '_photo_len_chk',  'photo', 'length(photo) < 1000000'),
         ('items',  '_notes_len_chk',  'notes', 'length(notes) < 2000'),
-        ('config', '_value_size_chk', 'value', 'pg_column_size(value) < 200000')
+        ('config', '_value_size_chk', 'value', 'octet_length(value::text) < 200000')
       ) AS v(tabla, restriccion, columna, condicion)
     LOOP
       t := r.tabla || s;
@@ -185,6 +190,11 @@ RESET lock_timeout;
 -- "encontrado" debe ser igual a "esperado". (El editor de Supabase solo muestra el resultado de la
 -- ÚLTIMA consulta; por eso esta es la última y está todo en una.)
 -- Los "esperado" se calculan según las tablas que existan, así que también valen si falta un almacén.
+-- Fila 10: es informativa. Cuenta TODAS las tablas públicas sin RLS del proyecto, también las de otras
+-- apps que compartan la base: si sale REVISAR, mira la consulta del final y valora cada tabla (no es
+-- necesariamente un fallo del almacén; la fila 11 es la que comprueba solo las tablas del almacén).
+-- Fila 60: espera 3 restricciones por cada tabla items que exista (foto, notas y, en su tabla config
+-- hermana, el tamaño del valor): 3 con un almacén, 6 con los dos.
 WITH tablas AS (        -- las tablas del almacén que existen
   SELECT c.oid, c.relname
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -257,7 +267,7 @@ WITH tablas AS (        -- las tablas del almacén que existen
          (SELECT 2 * count(*) FROM tablas WHERE relname LIKE 'price_history%')::int
   UNION ALL
   SELECT 51, 'Claves únicas de un solo campo: items(id) y config(key) (los "upsert" las necesitan)',
-         (SELECT count(*) FROM tablas t JOIN pg_index i ON i.indrelid = t.oid
+         (SELECT count(DISTINCT t.oid) FROM tablas t JOIN pg_index i ON i.indrelid = t.oid
             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
            WHERE t.relname IN ('items', 'items_mec', 'config', 'config_mec')
              AND i.indisunique AND i.indnatts = 1 AND i.indpred IS NULL AND i.indexprs IS NULL

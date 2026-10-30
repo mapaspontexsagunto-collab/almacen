@@ -233,6 +233,8 @@ function cleanItem(it,fast){
     if(m[k]!=null&&typeof m[k]!=='string')m[k]=String(m[k]);
     if(typeof m[k]==='string')m[k]=m[k].replace(/[<>]/g,'');
   });
+  // La base de datos rechaza notas de 2000 caracteres o más (CHECK items.notes): se recorta a 1999 sin partir un emoji
+  if(typeof m.notes==='string'&&m.notes.length>1999){m.notes=m.notes.slice(0,1999);if(/[\ud800-\udbff]$/.test(m.notes))m.notes=m.notes.slice(0,-1);}
   if(m.cats!=null)m.cats=strArr(m.cats);
   return m;
 }
@@ -1868,7 +1870,11 @@ function aiErrorMsg(err){
   if(err&&err.kind==='red') return 'Sin conexión con el servidor. Comprueba tu internet e inténtalo de nuevo.';
   if(s===502||s===503||s===504||s===500) return 'El servidor de IA está saturado o ha dado un error ('+s+'). Espera unos segundos e inténtalo otra vez.';
   if(s===429||s===529) return 'La IA está recibiendo muchas peticiones ahora mismo ('+s+'). Espera unos segundos y reintenta.';
-  if(s===401||s===403) return 'La IA rechazó la petición ('+s+'). Puede ser un problema con la clave o el saldo de la API.';
+  if(s===413) return 'La imagen es demasiado grande para la IA. Prueba con una foto más pequeña.';
+  if(s===415) return 'Formato de imagen no admitido (solo JPEG, PNG o WEBP).';
+  if(s===422) return 'La IA rechazó la imagen. Prueba con otra foto.';
+  if(s===401) return 'La sesión ha caducado, vuelve a entrar.';
+  if(s===403) return 'Esta función es solo para administradores.';
   return 'No se pudo analizar la imagen. Si lo pruebas dentro de Claude es normal: la IA solo funciona en la versión publicada (GitHub) y con conexión.';
 }
 
@@ -1884,7 +1890,8 @@ async function aiBuscar(b64, prompt, purpose){
   let ultimoEstado=0;
   for(let intento=1; intento<=3; intento++){
     let resp;
-    const _ctl=new AbortController();const _t=setTimeout(()=>_ctl.abort(),60000);
+    // 70 s: la función corta a los 50 s con un 504, así que responde antes de que el cliente aborte
+    const _ctl=new AbortController();const _t=setTimeout(()=>_ctl.abort(),70000);
     try{
       resp=await fetch(EDGE_URL,{
         method:'POST',
