@@ -64,6 +64,7 @@ Un corte momentáneo (cambio de repetidor wifi) se reintenta una vez antes de av
   Una línea registrada no se puede repetir ni "deshacer" desde la factura (para corregir, ajusta el stock en la ficha del artículo).
 - Crear un artículo desde una factura registra su compra con el stock final del formulario; con stock 0 no se registra nada y la línea sigue pendiente.
 - Si se cierra la factura o se bloquea el modo administrador mientras la IA analiza, el resultado se descarta.
+- El proveedor detectado se puede corregir o elegir de la lista de proveedores conocidos antes de registrar; se limpia igual que el resto (sin < ni > y máximo 80 caracteres).
 - En los textos de los artículos (nombre, referencia, marca, máquina, notas) se eliminan los caracteres < y > al leerlos.
 - Los PDF se leen con pdf.js 3.11.174 fijado: el script lleva control de integridad (SRI), el worker se verifica por huella antes de usarlo,
   y se abre con `isEvalSupported:false` (mitigación de CVE-2024-4367). Máximo 15 MB y 3 páginas por documento.
