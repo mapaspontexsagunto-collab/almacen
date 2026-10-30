@@ -841,3 +841,485 @@ test('pushToCloud: sincroniza primero, pide confirmación con el número de art�
     assert.strictEqual(ev('__push'), 1);
   });
 });
+
+// ===== Configuración y copias de seguridad (bloque R2) =====
+// Reutiliza el entorno de conNube y además: config local simulada (cfgGet/cfgPut), cola dirtyCfg real y restauración del estado global.
+const ESTADO_R2 = 'shelves,categories,aisles,mapSize,providers,printedIds,modifiedIds,dirtyCfg,dirtyDel,adminUnlocked,_syncing,mapDraftShelves,mapDraftAisles,mapDraftSize,mapEditing,editShelfIdx,shelfDraft,pushPendingMovements,flushDirty,cloudGetMeta,dbReplaceAll,setCloudStatus,cloudCfgGetMany,cfgGet,cloudCfgPut,withTimeout,noPhotoIds';
+// sb simulado: upsert/update registrados en __calls; __ups(tabla,fila) decide la respuesta del upsert
+const SB_R2 = "sb={from:t=>({select:()=>({limit:async()=>({error:null})}),upsert:async(o)=>{__calls.push(['upsert',t,o]);return __ups(t,o);},update:f=>({eq:(c,id)=>({select:async()=>{__calls.push(['update',f,id,t]);return {data:[{id}],error:null};}})})})}";
+async function conR2(opciones, fn) {
+  const real = ev('cloudCfgPut');
+  const nombres = ESTADO_R2.split(',').filter(n => n !== 'noPhotoIds');
+  const orig = ev('({' + nombres.map(n => n + ':' + n).join(',') + '})');
+  ctx.__real = real;
+  ctx.__o2 = orig;
+  try {
+    await conNube(opciones, async () => {
+      ev("cloudCfgPut=__real;__cfg={};cfgGet=async k=>(k in __cfg?__cfg[k]:null);cfgPut=async(k,v)=>{__cfg[k]=JSON.parse(JSON.stringify(v));};dirtyCfg=new Set();dirtyDel=new Set();adminUnlocked=true;_syncing=false;__ups=()=>({error:null});WH={key:'electrico',name:'Almacén Eléctrico',tblCfg:'config',tblItems:'items',tblMov:'movements',tblPrice:'price_history'};");
+      ev(SB_R2);
+      await fn();
+    });
+  } finally {
+    ctx.__o2 = orig;
+    ev(nombres.map(n => n + '=__o2.' + n).join(';'));
+  }
+}
+
+test('config: cloudCfgPut devuelve true/false, usa tiempo límite, encola los fallos y no los traga', async () => {
+  await conR2({}, async () => {
+    assert.strictEqual(await ev("cloudCfgPut('shelves',[{id:'01'}])"), true);
+    assert.deepStrictEqual(JSON.parse(ev('JSON.stringify(__calls)')), [['upsert', 'config', { key: 'shelves', value: [{ id: '01' }] }]]);
+    assert.strictEqual(ev('dirtyCfg.size'), 0, 'si sube bien no queda pendiente');
+    // error devuelto por la nube
+    ev("__ups=()=>({error:{message:'red'}})");
+    assert.strictEqual(await ev("cloudCfgPut('shelves',[])"), false);
+    assert.strictEqual(ev("dirtyCfg.has('shelves')"), true);
+    assert.deepStrictEqual(evj('__cfg.dirtyCfg'), ['shelves'], 'la cola se guarda en el móvil');
+    // excepción
+    ev("dirtyCfg=new Set();__ups=()=>{throw new Error('boom')}");
+    assert.strictEqual(await ev("cloudCfgPut('aisles',[])"), false);
+    assert.strictEqual(ev("dirtyCfg.has('aisles')"), true);
+    // sin permisos (RLS): reintentar no sirve, no se queda encolada
+    ev("dirtyCfg=new Set();__ups=()=>({error:{code:'42501',message:'rls'}})");
+    assert.strictEqual(await ev("cloudCfgPut('adminPass','x')"), false);
+    assert.strictEqual(ev('dirtyCfg.size'), 0);
+    // tiempo agotado
+    ev("__ups=()=>({error:null});withTimeout=()=>Promise.reject(new Error('Tiempo agotado: config'))");
+    assert.strictEqual(await ev("cloudCfgPut('mapSize',{w:1,h:1})"), false);
+    assert.strictEqual(ev("dirtyCfg.has('mapSize')"), true);
+    ev('withTimeout=__o2.withTimeout');
+    // sin nube: false y encolada
+    ev('sb=null;dirtyCfg=new Set()');
+    assert.strictEqual(await ev("cloudCfgPut('providers',['a'])"), false);
+    assert.strictEqual(ev("dirtyCfg.has('providers')"), true);
+  });
+});
+
+test('config: flushDirtyCfg sube el valor local, y la sincronización lo hace ANTES de leer la nube y no pisa claves sucias (E-L18)', async () => {
+  await conR2({}, async () => {
+    ev(`items=[];dirtyIds=new Set();__orden=[];
+      shelves=[{id:'LOCAL',name:'L',baldas:2}];categories=['A'];printedIds=new Set(['I1']);
+      __cfg.shelves=shelves;__cfg.printedIds=['I1'];dirtyCfg=new Set(['shelves','printedIds']);
+      pushPendingMovements=async()=>{};flushDirty=async()=>{};cloudGetMeta=async()=>[];dbReplaceAll=async()=>{};setCloudStatus=()=>{};
+      cloudCfgGetMany=async()=>{__orden.push('leer');return {shelves:[{id:'NUBE',name:'N',baldas:5}],printedIds:['Z'],categories:['B']};};
+      __ups=(t,o)=>{__orden.push('subir:'+o.key);return {error:{message:'red'}};};`);
+    await ev('_syncFromCloud(false)');
+    // la subida de lo pendiente ocurre antes de leer la config de la nube; al fallar no se pisa lo local ni se siembra
+    assert.deepStrictEqual(evj('__orden'), ['subir:shelves', 'subir:printedIds', 'leer']);
+    assert.deepStrictEqual(evj('shelves.map(s=>s.id)'), ['LOCAL']);
+    assert.deepStrictEqual(evj('[...printedIds]'), ['I1']);
+    assert.deepStrictEqual(evj('categories'), ['B'], 'una clave que no está pendiente sí se actualiza desde la nube');
+    assert.strictEqual(ev("dirtyCfg.has('shelves')&&dirtyCfg.has('printedIds')"), true);
+    // si la subida funciona, la cola se vacía y se lee la nube
+    ev("__orden=[];__ups=(t,o)=>{__orden.push('subir:'+o.key);return {error:null};};");
+    await ev('_syncFromCloud(false)');
+    assert.deepStrictEqual(evj('__orden'), ['subir:shelves', 'subir:printedIds', 'leer']);
+    assert.strictEqual(ev('dirtyCfg.size'), 0);
+    // sin valor local no hay nada que subir: se limpia de la cola
+    ev("dirtyCfg=new Set(['providers']);delete __cfg.providers;__orden=[]");
+    await ev('flushDirtyCfg()');
+    assert.strictEqual(ev('dirtyCfg.size'), 0);
+    assert.deepStrictEqual(evj('__orden'), []);
+  });
+});
+
+test('config: la cola dirtyCfg se carga al arrancar antes de la primera sincronización', () => {
+  const ini = src.slice(src.indexOf('async function init()'), src.indexOf('async function _syncFromCloud'));
+  assert.ok(ini.indexOf("cfgGet('dirtyCfg')") > 0, 'se carga');
+  assert.ok(ini.indexOf("cfgGet('dirtyCfg')") < ini.indexOf('await syncFromCloud()'), 'antes de sincronizar');
+});
+
+test('estantería: guardar una estantería NO confirma el resto del borrador del mapa (E-L6)', async () => {
+  await conR2({ dom: { 'es-name': { value: 'A2' }, 'es-code': { value: '01' }, 'es-baldas': { value: '4' } } }, async () => {
+    // guardada: 01 y 02. Borrador: se ha borrado la 02 y se edita la 01
+    ev("items=[];shelves=[{id:'01',name:'A',baldas:3},{id:'02',name:'B',baldas:3}];mapDraftShelves=[{id:'01',name:'A',baldas:3}];editShelfIdx=0;");
+    await ev('saveEditShelf()');
+    assert.deepStrictEqual(evj('shelves.map(s=>s.id)'), ['01', '02'], 'la 02 NO se borra por guardar la 01');
+    assert.strictEqual(ev("shelves.find(s=>s.id==='01').name"), 'A2');
+    assert.strictEqual(ev("shelves.find(s=>s.id==='01').baldas"), 4);
+    const sube = JSON.parse(ev('JSON.stringify(__calls.filter(c=>c[0]==="upsert"))'));
+    assert.deepStrictEqual(sube[0][2].value.map(s => s.id), ['01', '02']);
+    assert.deepStrictEqual(evj('mapDraftShelves.map(s=>s.id)'), ['01'], 'el borrador sigue como estaba (se confirma con Guardar plano)');
+    assert.ok(ev('__toasts.pop()').includes('Guardar plano'));
+    // un código ya usado por una estantería guardada (aunque el borrador la haya quitado) se rechaza
+    ev("document.getElementById('es-code').value='02';__calls=[];editShelfIdx=0;__toasts=[]");
+    await ev('saveEditShelf()');
+    assert.ok(ev('__toasts.pop()').includes('Ya existe'));
+    assert.strictEqual(ev('__calls.length'), 0);
+    assert.strictEqual(ev("shelves.find(s=>s.id==='01').name"), 'A2', 'no se modificó nada');
+  });
+});
+
+test('estantería: si la nube falla se avisa, se encola la config y se conservan los repuestos reubicados', async () => {
+  await conR2({ dom: { 'es-name': { value: 'Nueva' }, 'es-code': { value: '09' }, 'es-baldas': { value: '3' } } }, async () => {
+    ev("items=[{id:'I1',name:'A',stock:3,loc:'01-1',pos:''}];shelves=[{id:'01',name:'E1',baldas:3}];mapDraftShelves=[{id:'01',name:'E1',baldas:3}];editShelfIdx=0;__ups=()=>({error:{message:'red'}})");
+    await ev('saveEditShelf()');
+    assert.strictEqual(ev("items.find(i=>i.id==='I1').loc"), '09-1');
+    assert.deepStrictEqual(evj('shelves.map(s=>s.id)'), ['09'], 'la copia local ya lleva el código nuevo');
+    assert.deepStrictEqual(evj('__cfg.shelves.map(s=>s.id)'), ['09']);
+    assert.strictEqual(ev("dirtyCfg.has('shelves')"), true, 'queda en la cola de configuración');
+    const aviso = ev('__toasts.pop()');
+    assert.ok(aviso.includes('solo se guardó en este dispositivo'), aviso);
+    assert.ok(!aviso.startsWith('✓'), 'no hay toast de éxito');
+  });
+});
+
+test('plano, estanterías, distribución, proveedor y etiquetas: avisan cuando solo se guardó en el dispositivo', async () => {
+  await conR2({}, async () => {
+    // plano
+    ev("mapDraftShelves=[{id:'01',name:'A',baldas:3}];mapDraftAisles=[];mapDraftSize={w:20,h:10};mapEditing=true;__ups=()=>({error:{message:'red'}})");
+    await ev('saveMapLayout()');
+    assert.ok(ev('__toasts.pop()').includes('solo en este dispositivo'));
+    assert.strictEqual(ev("['shelves','aisles','mapSize'].every(k=>dirtyCfg.has(k))"), true);
+    ev("dirtyCfg=new Set();__ups=()=>({error:null});mapDraftShelves=[{id:'01',name:'A',baldas:3}];mapDraftAisles=[];mapDraftSize={w:20,h:10};mapEditing=true");
+    await ev('saveMapLayout()');
+    assert.strictEqual(ev('__toasts.pop()'), '✓ Plano guardado');
+    assert.strictEqual(ev('dirtyCfg.size'), 0);
+    // gestor de estanterías
+    ev("shelfDraft=[{id:'01',name:'A',baldas:3}];__ups=()=>({error:{message:'red'}})");
+    await ev('saveShelves()');
+    assert.ok(ev('__toasts.pop()').includes('solo en este dispositivo'));
+    ev("__ups=()=>({error:null});shelfDraft=[{id:'01',name:'A',baldas:3}]");
+    await ev('saveShelves()');
+    assert.strictEqual(ev('__toasts.pop()'), '✓ Estanterías actualizadas');
+    // proveedor
+    ev("providers=[];__toasts=[];__ups=()=>({error:{message:'red'}})");
+    await ev("addProvider('ACME')");
+    assert.deepStrictEqual(evj('providers'), ['ACME']);
+    assert.ok(ev('__toasts.pop()').includes('solo se guardó en este dispositivo'));
+    ev("__ups=()=>({error:null});__toasts=[]");
+    await ev("addProvider('Otro')");
+    assert.strictEqual(ev('__toasts.length'), 0, 'con éxito no se avisa');
+    // etiquetas impresas
+    ev("printedIds=new Set(['I1']);modifiedIds=new Set();__ups=()=>({error:{message:'red'}})");
+    assert.strictEqual(await ev('savePrintedIds()'), false);
+    assert.strictEqual(ev("dirtyCfg.has('printedIds')&&dirtyCfg.has('modifiedIds')"), true);
+    ev('__ups=()=>({error:null})');
+    assert.strictEqual(await ev('savePrintedIds()'), true);
+  });
+});
+
+test('pushToCloud: tiempo límite, errores registrados y NO se marca "Conectado" si fallan artículos', async () => {
+  const stAntes = ctx.setTimeout;
+  ctx.setTimeout = (f, ms) => setTimeout(f, ms < 5000 ? 0 : ms); // sin esperas reales entre reintentos
+  try {
+    await conR2({}, async () => {
+      ev("items=[{id:'I1',name:'A',stock:1},{id:'I2',name:'B',stock:2}];dirtyIds=new Set(['I1']);__status=[];setCloudStatus=ok=>{__status.push(ok)};categories=['C'];shelves=[{id:'01',name:'A',baldas:1}];aisles=[];printedIds=new Set();__ups=(t,o)=>({error:(t==='items'&&o.id==='I2')?{message:'red'}:null});");
+      await ev('_pushToCloud()');
+      assert.deepStrictEqual(evj('__status'), [false], 'no se declara conectado');
+      const aviso = ev('__toasts.pop()');
+      assert.ok(aviso.includes('Subidos 1/2') && aviso.includes('Fallaron 1') && aviso.includes('pendientes'), aviso);
+      assert.strictEqual(ev("dirtyIds.has('I2')"), true, 'el que falló queda en la cola');
+      assert.strictEqual(ev("dirtyIds.has('I1')"), false, 'el que subió sale de la cola');
+      // un tiempo agotado cuenta como fallo y no cuelga
+      ev("dirtyIds=new Set();__status=[];__ups=()=>({error:null});withTimeout=()=>Promise.reject(new Error('Tiempo agotado: subir'))");
+      await ev('_pushToCloud()');
+      assert.deepStrictEqual(evj('__status'), [false]);
+      ev('withTimeout=__o2.withTimeout');
+      // todo bien
+      ev("dirtyIds=new Set();__status=[];__ups=()=>({error:null});");
+      await ev('_pushToCloud()');
+      assert.deepStrictEqual(evj('__status'), [true]);
+      assert.ok(ev('__toasts.pop()').startsWith('✓ Subidos los 2'));
+      // artículos bien pero la configuración no sube: se dice
+      ev("__status=[];__ups=(t)=>({error:t==='config'?{message:'red'}:null});");
+      await ev('_pushToCloud()');
+      const av2 = ev('__toasts.pop()');
+      assert.ok(av2.startsWith('⚠') && av2.includes('configuración'), av2);
+    });
+  } finally {
+    ctx.setTimeout = stAntes;
+  }
+});
+
+// ---- Copias de seguridad ----
+const MEC_R2 = "{key:'mecanico',name:'Almacén Mecánico',tblItems:'items_mec',tblCfg:'config_mec',tblMov:'movements_mec',tblPrice:'price_history_mec'}";
+const ELE_R2 = "{key:'electrico',name:'Almacén Eléctrico',tblItems:'items',tblCfg:'config',tblMov:'movements',tblPrice:'price_history'}";
+// sb de solo lectura para exportar: tablas {nombre:[filas]}, cfgs {tabla:{clave:valor}}; opts fuerza errores o recuentos distintos
+function sbExport(tablas, cfgs, opts = {}) {
+  const rangos = [];
+  const sb = {
+    rangos,
+    from: tbl => ({
+      select: (cols, o) => {
+        if (o && o.head) return Promise.resolve(opts.countError ? { count: null, error: { message: 'rls' } } : { count: (tablas[tbl] || []).length + (opts.extraCount || 0), error: null });
+        const q = {
+          order: () => q,
+          range: async (a, b) => { rangos.push([tbl, a, b]); if (opts.pageError) return { data: null, error: { message: 'timeout' } }; return { data: (tablas[tbl] || []).slice(a, b + 1), error: null }; },
+          limit: async () => ({ error: null }),
+          in: async () => ({ data: [], error: null }),
+          eq: (c, k) => ({ maybeSingle: async () => { if (opts.cfgError) return { data: null, error: { message: 'x' } }; const c2 = (cfgs || {})[tbl] || {}; return { data: k in c2 ? { value: c2[k] } : null, error: null }; } }),
+        };
+        return q;
+      },
+    }),
+  };
+  return sb;
+}
+const FOTO_R2 = 'data:image/png;base64,AAAA';
+
+test('copias: collectWarehouse lee el otro almacén con páginas pequeñas, cuenta las filas y trae config e historial', async () => {
+  await conR2({}, async () => {
+    const filas = Array.from({ length: 120 }, (_, i) => ({ id: 'M' + i, name: 'n' + i, categories: ['c'], photo: FOTO_R2 }));
+    const s = sbExport({ items_mec: filas, movements_mec: [{ ts: 1, itemId: 'M1' }, { ts: 2, itemId: 'M2' }], price_history_mec: [{ item_id: 'M1', ts: 3 }] },
+      { config_mec: { categories: ['Cat'], shelves: [{ id: '01' }], mapSize: { w: 10, h: 10 } } });
+    ctx.__sbx = s; ev('sb=__sbx');
+    const r = JSON.parse(JSON.stringify(await ev('collectWarehouse(' + MEC_R2 + ')')));
+    assert.strictEqual(r.items.length, 120);
+    assert.deepStrictEqual(r.items[0].cats, ['c']);
+    assert.ok(!('categories' in r.items[0]));
+    assert.deepStrictEqual(r.categories, ['Cat']);
+    assert.deepStrictEqual(r.mapSize, { w: 10, h: 10 });
+    assert.deepStrictEqual(r.aisles, [], 'una clave sin fila queda vacía en la copia');
+    assert.strictEqual(r.movements.length, 2);
+    assert.strictEqual(r.price_history.length, 1);
+    const pagItems = s.rangos.filter(x => x[0] === 'items_mec');
+    assert.ok(pagItems.length >= 3 && pagItems.every(x => x[2] - x[1] + 1 <= 50), 'páginas de 50 filas como máximo (llevan fotos)');
+  });
+});
+
+test('copias: cualquier fallo de lectura del otro almacén lanza error (nunca un almacén vacío)', async () => {
+  await conR2({}, async () => {
+    const filas = [{ id: 'M1', name: 'n', categories: [], photo: FOTO_R2 }];
+    const tablas = { items_mec: filas, movements_mec: [], price_history_mec: [] };
+    const casos = [
+      ['página', sbExport(tablas, {}, { pageError: true })],
+      ['recuento', sbExport(tablas, {}, { countError: true })],
+      ['incompleta', sbExport(tablas, {}, { extraCount: 5 })],
+      ['config', sbExport(tablas, {}, { cfgError: true })],
+      ['vacío', sbExport({ items_mec: [], movements_mec: [], price_history_mec: [] }, {})],
+      ['sin nube', null],
+    ];
+    for (const [nombre, s] of casos) {
+      ctx.__sbx = s; ev('sb=__sbx');
+      let err = null;
+      try { await ev('collectWarehouse(' + MEC_R2 + ')'); } catch (e) { err = e; }
+      assert.ok(err, 'debe fallar: ' + nombre);
+    }
+  });
+});
+
+test('copias: exportBoth aborta con un mensaje claro si no puede leer un almacén y no descarga nada', async () => {
+  const blobAntes = ctx.Blob, urlAntes = ctx.URL;
+  ctx.__blobs = [];
+  ctx.Blob = function (partes) { ctx.__blobs.push(partes[0]); };
+  ctx.URL = { createObjectURL: () => 'blob:x' };
+  try {
+    await conR2({}, async () => {
+      vm.runInContext('globalThis.WAREHOUSE_CONFIG=' + ELE_R2 + ';globalThis.WAREHOUSE_OTHER_CONFIG=' + MEC_R2, ctx);
+      ev("items=[{id:'I1',name:'A',stock:1,photo:'" + FOTO_R2 + "'}];dbGetAll=async()=>items;categories=['X'];shelves=[{id:'01'}];aisles=[];providers=['P'];printedIds=new Set(['I1']);modifiedIds=new Set()");
+      const tablas = { items: [], movements: [{ ts: 5, itemId: 'I1' }], price_history: [], items_mec: [{ id: 'M1', name: 'm', categories: [], photo: FOTO_R2 }], movements_mec: [], price_history_mec: [] };
+      ctx.__sbx = sbExport(tablas, {}, { pageError: true }); ev('sb=__sbx');
+      await ev('exportBoth()');
+      assert.strictEqual(ctx.__blobs.length, 0, 'sin copia');
+      const aviso = ev('__toasts.pop()');
+      assert.ok(aviso.startsWith('⚠ No se pudo leer') && aviso.includes('No se ha generado la copia'), aviso);
+      // todo bien: versión 4 con los dos almacenes, config e historial
+      ctx.__sbx = sbExport(tablas, { config_mec: { shelves: [{ id: '05' }] } }); ev('sb=__sbx');
+      await ev('exportBoth()');
+      assert.strictEqual(ctx.__blobs.length, 1);
+      const j = JSON.parse(ctx.__blobs[0]);
+      assert.strictEqual(j.version, 4);
+      assert.deepStrictEqual(Object.keys(j.warehouses).sort(), ['electrico', 'mecanico']);
+      assert.strictEqual(j.warehouses.electrico.items.length, 1);
+      assert.deepStrictEqual(j.warehouses.electrico.providers, ['P']);
+      assert.deepStrictEqual(j.warehouses.electrico.printedIds, ['I1']);
+      assert.strictEqual(j.warehouses.electrico.movements.length, 1);
+      assert.strictEqual(j.warehouses.mecanico.items.length, 1);
+      assert.deepStrictEqual(j.warehouses.mecanico.shelves, [{ id: '05' }]);
+      assert.ok(ev('__toasts.pop()').includes('movimientos'));
+    });
+  } finally {
+    ctx.Blob = blobAntes; ctx.URL = urlAntes;
+    vm.runInContext('globalThis.WAREHOUSE_CONFIG=undefined;globalThis.WAREHOUSE_OTHER_CONFIG=undefined', ctx);
+  }
+});
+
+test('copias: exportData etiqueta el almacén (v4), incluye historial y config y avisa si no puede', async () => {
+  const blobAntes = ctx.Blob, urlAntes = ctx.URL;
+  ctx.__blobs = [];
+  ctx.Blob = function (partes) { ctx.__blobs.push(partes[0]); };
+  ctx.URL = { createObjectURL: () => 'blob:x' };
+  try {
+    await conR2({}, async () => {
+      ev("items=[{id:'I1',name:'A',stock:1,photo:'" + FOTO_R2 + "'}];dbGetAll=async()=>items;categories=['X'];shelves=[{id:'01'}];aisles=[{label:'P'}];mapSize={w:12,h:9};providers=['P'];printedIds=new Set(['I1']);modifiedIds=new Set(['I1'])");
+      const tablas = { movements: [{ ts: 5, itemId: 'I1' }, { ts: 6, itemId: 'I1' }], price_history: [{ item_id: 'I1', ts: 1 }] };
+      ctx.__sbx = sbExport(tablas, {}); ev('sb=__sbx');
+      await ev('exportData()');
+      let j = JSON.parse(ctx.__blobs.pop());
+      assert.strictEqual(j.version, 4);
+      assert.strictEqual(j.warehouse, 'electrico');
+      assert.deepStrictEqual(j.mapSize, { w: 12, h: 9 });
+      assert.deepStrictEqual(j.aisles, [{ label: 'P' }]);
+      assert.deepStrictEqual(j.providers, ['P']);
+      assert.deepStrictEqual(j.modifiedIds, ['I1']);
+      assert.strictEqual(j.movements.length, 2);
+      assert.strictEqual(j.price_history.length, 1);
+      assert.ok(ev('__toasts.pop()').includes('2 movimientos'));
+      // el historial no se puede leer: no se genera una copia sin él
+      ctx.__sbx = sbExport(tablas, {}, { pageError: true }); ev('sb=__sbx');
+      await ev('exportData()');
+      assert.strictEqual(ctx.__blobs.length, 0);
+      assert.ok(ev('__toasts.pop()').includes('No se pudo leer el historial'));
+      // sin conexión: se genera lo local y se dice que falta el historial
+      ev('sb=null');
+      await ev('exportData()');
+      j = JSON.parse(ctx.__blobs.pop());
+      assert.ok(!('movements' in j));
+      assert.ok(ev('__toasts.pop()').includes('Sin conexión: no incluye movimientos'));
+    });
+  } finally {
+    ctx.Blob = blobAntes; ctx.URL = urlAntes;
+  }
+});
+
+test('fotos de copias y Excel: el aviso dice la causa real (sin conexión / fallo de descarga) y no cuenta artículos sin foto en la nube', async () => {
+  await conR2({}, async () => {
+    ev("items=[{id:'A',photo:null},{id:'B',photo:'" + FOTO_R2 + "'},{id:'C',photo:null},{id:'D',photo:null}];noPhotoIds.clear();noPhotoIds.add('C');dirtyIds=new Set(['D'])");
+    assert.strictEqual(ev('fotosSinDescargar()'), 1, 'solo A: C no tiene foto en la nube y D es un alta local pendiente');
+    const conSb = ev('msgFotosFaltan(1)');
+    assert.ok(conSb.includes('No se pudieron descargar 1 foto'), conSb);
+    ev('sb=null');
+    const sinSb = ev('msgFotosFaltan(3)');
+    assert.ok(sinSb.includes('Sin conexión') && !sinSb.includes('No se pudieron descargar'), sinSb);
+    // exportData sin conexión y con un artículo sin foto local: rechaza con la causa correcta
+    const blobAntes = ctx.Blob;
+    ctx.__blobs = []; ctx.Blob = function (p) { ctx.__blobs.push(p[0]); };
+    try {
+      await ev('exportData()');
+    } finally { ctx.Blob = blobAntes; }
+    assert.strictEqual(ctx.__blobs.length, 0);
+    assert.ok(ev('__toasts.pop()').includes('Sin conexión a la nube'));
+  });
+  ev('noPhotoIds.clear()');
+});
+
+// Fichero de copia simulado: importData lee el texto con FileReader
+async function importarTexto(texto) {
+  const frAntes = ctx.FileReader;
+  ctx.FileReader = function () { this.readAsText = f => { this.onload({ target: { result: f.text } }); }; };
+  ctx.__ev = { target: { files: [{ text: texto }] } };
+  try {
+    await ev('importData(__ev)');
+    await new Promise(r => setTimeout(r, 30));
+  } finally { ctx.FileReader = frAntes; }
+}
+
+test('importar: rechaza copias de otro almacén, de versión futura o que no son JSON; la confirmación es honesta', async () => {
+  await conR2({}, async () => {
+    vm.runInContext('globalThis.WAREHOUSE_CONFIG=' + ELE_R2 + ';globalThis.WAREHOUSE_OTHER_CONFIG=' + MEC_R2, ctx);
+    try {
+      await importarTexto(JSON.stringify({ version: 4, warehouse: 'mecanico', items: [{ id: 'M1' }] }));
+      assert.ok(ev('__toasts.pop()').includes('no de este almacén'));
+      assert.ok(!ev('__opened').includes('modal-confirm'));
+      await importarTexto(JSON.stringify({ version: 9, items: [] }));
+      assert.ok(ev('__toasts.pop()').includes('versión más nueva'));
+      await importarTexto('esto no es json');
+      assert.ok(ev('__toasts.pop()').includes('no es una copia de seguridad'));
+      await importarTexto(JSON.stringify({ version: 4, warehouse: 'electrico' }));
+      assert.ok(ev('__toasts.pop()').includes('lista de artículos'));
+      assert.ok(!ev('__opened').includes('modal-confirm'));
+      // copia antigua (v2, sin etiqueta) con un id inválido: se puede importar y se avisa de ambas cosas
+      await importarTexto(JSON.stringify({ version: 2, items: [{ id: 'I1' }, { id: '<mal>' }], categories: ['A'] }));
+      assert.ok(ev('__opened').includes('modal-confirm'));
+      const msg = ev("document.getElementById('confirm-msg').textContent");
+      assert.ok(msg.includes('fusiona con la nube') && msg.includes('SE CONSERVAN'), msg);
+      assert.ok(!/Reemplazar/i.test(msg), 'ya no dice "Reemplazará"');
+      assert.ok(msg.includes('1 artículo(s) del archivo tienen un código no válido'), msg);
+      assert.ok(msg.includes('sin etiqueta de almacén'), msg);
+      assert.ok(msg.includes('No se restauran los movimientos'), msg);
+      assert.strictEqual(ev('__calls.length'), 0, 'hasta confirmar no se toca nada');
+    } finally {
+      vm.runInContext('globalThis.WAREHOUSE_CONFIG=undefined;globalThis.WAREHOUSE_OTHER_CONFIG=undefined', ctx);
+    }
+  });
+});
+
+test('importar: sube con cloudPut, NO vacía el móvil antes (sin dbReplaceAll) y solo escribe la config que trae la copia', async () => {
+  await conR2({}, async () => {
+    ev("items=[{id:'OLD',name:'viejo',stock:1}];dbGetAll=async()=>items;__replaced=0;dbReplaceAll=async()=>{__replaced++};categories=['Antes'];shelves=[{id:'99',name:'X',baldas:1}]");
+    const copia = { version: 4, warehouse: 'electrico', items: [{ id: 'I1', name: 'A', stock: 2 }, { id: 'I2', name: 'B', stock: 3 }], categories: [], shelves: [{ id: '01', name: 'E1', baldas: 3 }], aisles: [], printedIds: ['I1'] };
+    vm.runInContext('globalThis.WAREHOUSE_CONFIG=' + ELE_R2, ctx);
+    try {
+      await importarTexto(JSON.stringify(copia));
+      await ev("document.getElementById('confirm-ok').onclick()");
+      assert.strictEqual(ev('__replaced'), 0, 'no se reemplaza la base local');
+      assert.deepStrictEqual(evj('__dbPuts'), ['I1', 'I2']);
+      const llamadas = JSON.parse(ev('JSON.stringify(__calls)'));
+      assert.deepStrictEqual(llamadas.filter(c => c[1] === 'items').map(c => c[2].id), ['I1', 'I2']);
+      assert.deepStrictEqual(llamadas.filter(c => c[1] === 'config').map(c => c[2].key).sort(), ['printedIds', 'shelves'], 'ni categorías ni plano vacíos sobre la nube');
+      assert.deepStrictEqual(evj('categories'), ['Antes'], 'las categorías no se tocan');
+      assert.deepStrictEqual(evj('shelves.map(s=>s.id)'), ['01']);
+      assert.strictEqual(ev('_stockBusy'), false);
+      assert.ok(ev('__toasts.pop()').startsWith('✓ Importados 2 artículos (fusionados con la nube)'));
+    } finally {
+      vm.runInContext('globalThis.WAREHOUSE_CONFIG=undefined', ctx);
+    }
+  });
+});
+
+test('importar: cuenta los fallos, avisa "X de N", no toca la config, deja lo pendiente en la cola y se para tras 3 fallos seguidos', async () => {
+  await conR2({}, async () => {
+    vm.runInContext('globalThis.WAREHOUSE_CONFIG=' + ELE_R2, ctx);
+    try {
+      ev("items=[];dbGetAll=async()=>items;__replaced=0;dbReplaceAll=async()=>{__replaced++};dirtyIds=new Set()");
+      const items5 = [1, 2, 3, 4, 5].map(n => ({ id: 'I' + n, name: 'n' + n, stock: n }));
+      // falla solo el segundo
+      ev("__ups=(t,o)=>({error:(t==='items'&&o.id==='I2')?{message:'red'}:null})");
+      await importarTexto(JSON.stringify({ version: 4, warehouse: 'electrico', items: items5.slice(0, 3), shelves: [{ id: '01', name: 'E', baldas: 1 }] }));
+      await ev("document.getElementById('confirm-ok').onclick()");
+      let aviso = ev('__toasts.pop()');
+      assert.ok(aviso.includes('1 de 3 artículos fallaron'), aviso);
+      assert.strictEqual(ev("__calls.filter(c=>c[1]==='config').length"), 0, 'config intacta');
+      assert.strictEqual(ev("dirtyIds.has('I2')"), true);
+      assert.strictEqual(ev('__replaced'), 0);
+      assert.deepStrictEqual(evj('__dbPuts'), ['I1', 'I2', 'I3'], 'los tres quedan en el móvil (el fallido, pendiente)');
+      // la nube cae del todo: tras 3 intentos se para y el resto queda pendiente
+      ev("__calls=[];__dbPuts=[];dirtyIds=new Set();__ups=()=>({error:{message:'red'}})");
+      await importarTexto(JSON.stringify({ version: 4, warehouse: 'electrico', items: items5 }));
+      await ev("document.getElementById('confirm-ok').onclick()");
+      aviso = ev('__toasts.pop()');
+      assert.ok(aviso.includes('5 de 5 artículos fallaron'), aviso);
+      assert.strictEqual(ev("__calls.filter(c=>c[1]==='items').length"), 3, 'no sigue insistiendo');
+      assert.deepStrictEqual(evj('[...dirtyIds].sort()'), ['I1', 'I2', 'I3', 'I4', 'I5']);
+      assert.deepStrictEqual(evj('__dbPuts'), ['I1', 'I2', 'I3', 'I4', 'I5']);
+      assert.strictEqual(ev('_stockBusy'), false);
+      // solo un administrador
+      ev("__calls=[];adminUnlocked=false;__toasts=[]");
+      await ev("document.getElementById('confirm-ok').onclick()");
+      assert.ok(ev('__toasts.pop()').includes('Solo un administrador'));
+      assert.strictEqual(ev('__calls.length'), 0);
+    } finally {
+      vm.runInContext('globalThis.WAREHOUSE_CONFIG=undefined', ctx);
+    }
+  });
+});
+
+test('importar los dos almacenes: el otro se escribe en su tabla, la config vacía no se escribe y un fallo para y avisa', async () => {
+  await conR2({}, async () => {
+    vm.runInContext('globalThis.WAREHOUSE_CONFIG=' + ELE_R2 + ';globalThis.WAREHOUSE_OTHER_CONFIG=' + MEC_R2, ctx);
+    try {
+      ev("items=[];dbGetAll=async()=>items;__replaced=0;dbReplaceAll=async()=>{__replaced++};dirtyIds=new Set()");
+      const copia = { version: 3, warehouses: {
+        electrico: { items: [{ id: 'I1', name: 'A', stock: 1 }], categories: ['X'], shelves: [] },
+        mecanico: { items: [{ id: 'M1', name: 'B', stock: 2 }], categories: [], shelves: [{ id: '05', name: 'E5', baldas: 2 }] },
+        raro: { items: [{ id: 'Z' }] },
+      } };
+      await importarTexto(JSON.stringify(copia));
+      assert.ok(ev("document.getElementById('confirm-msg').textContent").includes('1 almacén(es) del archivo no existen'));
+      await ev("document.getElementById('confirm-ok').onclick()");
+      const ll = JSON.parse(ev('JSON.stringify(__calls)'));
+      assert.deepStrictEqual(ll.map(c => c[1] + ':' + (c[2].id || c[2].key)), ['items:I1', 'config:categories', 'items_mec:M1', 'config_mec:shelves']);
+      assert.strictEqual(ev('__replaced'), 0);
+      assert.deepStrictEqual(evj('__dbPuts'), ['I1'], 'solo el almacén actual se guarda en el móvil');
+      assert.ok(ev('__toasts.pop()').startsWith('✓ Importados 2 artículos'));
+      // el otro almacén falla: se avisa y no se sigue con su configuración
+      ev("__calls=[];__ups=(t)=>({error:t==='items_mec'?{message:'red'}:null})");
+      await ev("document.getElementById('confirm-ok').onclick()");
+      assert.ok(ev('__toasts.pop()').includes('1 de 2 artículos fallaron'));
+      assert.strictEqual(ev("__calls.filter(c=>c[1]==='config_mec').length"), 0);
+    } finally {
+      vm.runInContext('globalThis.WAREHOUSE_CONFIG=undefined;globalThis.WAREHOUSE_OTHER_CONFIG=undefined', ctx);
+    }
+  });
+});

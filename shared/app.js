@@ -281,6 +281,21 @@ function markDirty(id){dirtyIds.add(id);dirtyDel.delete(id);persistDirty();}
 function clearDirty(id){if(dirtyIds.delete(id))persistDirty();}
 function markDirtyDel(id){dirtyDel.add(id);dirtyIds.delete(id);persistDirty();}
 function clearDirtyDel(id){if(dirtyDel.delete(id))persistDirty();}
+// Claves de configuración (categorías, estanterías, plano...) cuyo último valor local aún no está en la nube.
+// Se persiste en cfg como dirtyIds; el valor a subir es siempre la copia local (cfgGet). Una clave sucia no se pisa al sincronizar.
+let dirtyCfg=new Set();
+function persistDirtyCfg(){return cfgPut('dirtyCfg',[...dirtyCfg]).catch(e=>console.warn('dirtyCfg no persistido',e));}
+function markDirtyCfg(key){dirtyCfg.add(key);persistDirtyCfg();}
+function clearDirtyCfg(key){if(dirtyCfg.delete(key))persistDirtyCfg();}
+async function flushDirtyCfg(){
+  if(!sb)return;
+  for(const k of [...dirtyCfg]){
+    let v=null;
+    try{v=await cfgGet(k);}catch(e){console.warn('flushDirtyCfg: lectura local',k,e);continue;}
+    if(v==null){clearDirtyCfg(k);continue;} // sin valor local: nada que subir
+    await cloudCfgPut(k,v); // si falla vuelve a quedar en la cola
+  }
+}
 // Sube a la nube lo que quedó pendiente (devuelve cuando termina)
 async function flushDirty(){
   if(!sb)return;
@@ -386,10 +401,11 @@ async function refreshStock(item){
   return r.missing?'missing':'error';
 }
 // Descarga todas las filas de una consulta paginando (Supabase limita a ~1000 por petición)
-async function fetchAllPages(buildQuery,pageSize=1000,maxPages=200){
+async function fetchAllPages(buildQuery,pageSize=1000,maxPages=200,timeoutMs){
   let all=[];
   for(let pg=0;pg<maxPages;pg++){
-    const{data,error}=await buildQuery().range(pg*pageSize,pg*pageSize+pageSize-1);
+    const q=buildQuery().range(pg*pageSize,pg*pageSize+pageSize-1);
+    const{data,error}=await (timeoutMs?withTimeout(q,timeoutMs,'página '+(pg+1)):q); // timeoutMs opcional: cada página con tiempo límite
     if(error)throw error;
     all=all.concat(data||[]);
     if(!data||data.length<pageSize)break;
@@ -440,10 +456,17 @@ async function cloudGetPhotos(ids){
   return res;
 }
 // Config (categorías y estanterías) en tabla aparte 'config'
+// Devuelve true si se guardó en la nube; false si no (sin conexión, error o tiempo agotado): la clave queda en la cola
+// dirtyCfg y se reintenta al sincronizar (el valor a subir es la copia local, que el llamante ya guardó con cfgPut).
 async function cloudCfgPut(key,value){
-  if(!sb)return;
-  try{const{error}=await withTimeout(sb.from(WH.tblCfg).upsert({key,value},{onConflict:'key'}),15000,'config');if(error)throw error;}
-  catch(e){console.warn('cloudCfgPut error',e);}
+  markDirtyCfg(key); // se anota ANTES de subir: si la app se cierra o una sincronización lee la nube a mitad, no se pierde lo local
+  if(!sb)return false;
+  try{const{error}=await withTimeout(sb.from(WH.tblCfg).upsert({key,value},{onConflict:'key'}),15000,'config');if(error)throw error;clearDirtyCfg(key);return true;}
+  catch(e){
+    console.warn('cloudCfgPut error',key,e);
+    if(e&&e.code==='42501')clearDirtyCfg(key); // sin permisos (RLS): reintentar no serviría
+    return false;
+  }
 }
 // Lee varias claves de configuración en UNA petición. Devuelve un objeto, o undefined si falló.
 async function cloudCfgGetMany(keys){
@@ -554,7 +577,8 @@ async function addProvider(name){
   if(!n||providers.includes(n))return;
   providers.push(n);
   await cfgPut('providers',providers);
-  await cloudCfgPut('providers',providers);
+  const okc=await cloudCfgPut('providers',providers);
+  if(!okc)toast('⚠ El proveedor "'+n+'" solo se guardó en este dispositivo (se subirá al sincronizar)');
 }
 function renderProviderList(){
   const dl=document.getElementById('provider-list');
@@ -580,6 +604,7 @@ async function init(){
   renderUserBar();
   items=await dbGetAll();
   try{dirtyIds=new Set((await cfgGet('dirtyIds'))||[]);dirtyDel=new Set((await cfgGet('dirtyDel'))||[]);}catch(e){}
+  try{dirtyCfg=new Set((await cfgGet('dirtyCfg'))||[]);}catch(e){console.warn('No se pudo leer la cola de configuración pendiente',e);}
   appReady=true;
   renderAll();
   renderHomeMovements();
@@ -611,6 +636,7 @@ async function _syncFromCloud(refrescarTodasFotos){
   updateSyncBadge('syncing');
   await pushPendingMovements(); // subir primero los movimientos que quedaron pendientes
   await flushDirty();           // y los artículos cambiados sin conexión
+  await flushDirtyCfg();        // y la configuración (estanterías, categorías...) que no llegó a la nube
   const meta=await cloudGetMeta();
   if(meta===null){setCloudStatus(false);updateSyncBadge('off');return;}
   setCloudStatus(true);
@@ -647,7 +673,8 @@ async function _syncFromCloud(refrescarTodasFotos){
   // Config desde la nube
   // Toda la configuración de la nube en una sola petición (antes eran nueve seguidas)
   const _cfg=await cloudCfgGetMany(['categories','providers','shelves','aisles','mapSize','printedIds','modifiedIds','adminPass','loginCfg']);
-  const g=k=>_cfg===undefined?undefined:(k in _cfg?_cfg[k]:null); // undefined = falló, null = no hay fila
+  // undefined = falló o la clave sigue pendiente de subir (manda lo local: no se pisa ni se siembra), null = no hay fila
+  const g=k=>(_cfg===undefined||dirtyCfg.has(k))?undefined:(k in _cfg?_cfg[k]:null);
   const cCats=g('categories');
   const cProviders=g('providers');
   const cShelves=g('shelves');
@@ -819,11 +846,13 @@ async function cloudPutRetry(item, intentos=3){
   if(!cloudItem.photo)delete cloudItem.photo; // no borrar la foto de la nube con un null
   for(let n=0;n<intentos;n++){
     try{
-      const{error}=await sb.from(WH.tblItems).upsert(cloudItem,{onConflict:'id'});
-      if(!error){return true;}
-    }catch(e){/* reintentar */}
+      const{error}=await withTimeout(sb.from(WH.tblItems).upsert(cloudItem,{onConflict:'id'}),15000,'subir');
+      if(error)throw error;
+      clearDirty(item.id);return true;
+    }catch(e){console.warn('cloudPutRetry intento '+(n+1)+'/'+intentos+' ('+item.id+')',e);} // se reintenta
     await new Promise(r=>setTimeout(r, 400*(n+1))); // espera creciente
   }
+  markDirty(item.id); // no llegó: queda en la cola y se reintenta al sincronizar
   return false;
 }
 
@@ -872,18 +901,18 @@ async function _pushToCloud(){
     }
   }
   // Config
-  try{
-    await cloudCfgPut('categories',categories);
-    await cloudCfgPut('shelves',shelves);
-    await cloudCfgPut('aisles',aisles);
-    await cloudCfgPut('printedIds',[...printedIds]);
-  }catch(e){}
+  let cfgFallos=0;
+  for(const [k,v] of [['categories',categories],['shelves',shelves],['aisles',aisles],['printedIds',[...printedIds]]]){
+    try{if(!(await cloudCfgPut(k,v)))cfgFallos++;}catch(e){console.warn('_pushToCloud config',k,e);cfgFallos++;}
+  }
+  const _avCfg=cfgFallos?' La configuración ('+cfgFallos+' apartado(s)) no se pudo subir; se reintentará al sincronizar.':'';
   if(fallos.length===0){
     cloudOK=true;setCloudStatus(true);
-    toast('✓ Subidos los '+ok+' repuestos a la nube');
+    toast((cfgFallos?'⚠ Subidos los ':'✓ Subidos los ')+ok+' repuestos a la nube.'+_avCfg);
   }else{
-    setCloudStatus(true);
-    toast('Subidos '+ok+'/'+total+'. Fallaron '+fallos.length+', vuelve a pulsar Subir.');
+    console.warn('_pushToCloud: fallaron '+fallos.length+' artículos',fallos.map(f=>f.id));
+    setCloudStatus(false); // no se marca "Conectado": hay artículos sin subir (quedan en la cola de pendientes)
+    toast('⚠ Subidos '+ok+'/'+total+'. Fallaron '+fallos.length+' (quedan pendientes, se reintentarán al sincronizar): vuelve a pulsar Subir.'+_avCfg);
   }
 }
 // Vuelve a pintar lo que se ve ahora mismo, sin tener que cambiar de pantalla
@@ -1796,7 +1825,8 @@ async function _saveItem(){
     _precio=_precioRaw===''?null:parseFormNum(_precioRaw);
     if(campoNumMalo('f-precio')||(_precio!=null&&(!Number.isFinite(_precio)||_precio<0||_precio>INV_MAX_PRICE))){toast('⚠ Precio no válido');return;}
   }
-  if(cat&&!categories.includes(cat)){categories.push(cat);await cfgPut('categories',categories);await cloudCfgPut('categories',categories);}
+  let _catSoloLocal=false;
+  if(cat&&!categories.includes(cat)){categories.push(cat);await cfgPut('categories',categories);_catSoloLocal=!(await cloudCfgPut('categories',categories));}
   // Familias adicionales (sin incluir la principal ni duplicados)
   const extraCats=[...selectedExtraCats].filter(c=>c&&c!==cat);
   const minRaw=document.getElementById('f-min').value.trim();
@@ -1836,15 +1866,16 @@ async function _saveItem(){
   await _invoiceAfterSave(_savedId,_invIdx);
   if(etiquetaCambiada){
     modifiedIds.add(editingId);
-    await savePrintedIds();
+    const _okp=await savePrintedIds();
     renderAll();
     // Avisar y ofrecer reimprimir directamente
     reimprimirItemId=editingId;
     document.getElementById('reprint-name').textContent=item.name;
     openModal('modal-reprint');
+    if(_catSoloLocal||!_okp)toast('⚠ '+(_catSoloLocal?'La categoría nueva':'El aviso de etiqueta modificada')+' solo se guardó en este dispositivo; se subirá al sincronizar');
   }else{
     renderAll();
-    toast(editingId?'✓ Actualizado':'✓ Añadido al almacén');
+    toast((editingId?'✓ Actualizado':'✓ Añadido al almacén')+(_catSoloLocal?' (la categoría nueva solo se guardó en este dispositivo; se subirá al sincronizar)':''));
   }
 }
 
@@ -2114,16 +2145,16 @@ async function saveMapLayout(){
   shelves=JSON.parse(JSON.stringify(mapDraftShelves));
   aisles=JSON.parse(JSON.stringify(mapDraftAisles));
   if(mapDraftSize)mapSize={...mapDraftSize};
-  await cfgPut('shelves',shelves);await cloudCfgPut('shelves',shelves);
-  await cfgPut('aisles',aisles);await cloudCfgPut('aisles',aisles);
-  await cfgPut('mapSize',mapSize);await cloudCfgPut('mapSize',mapSize);
+  await cfgPut('shelves',shelves);const _o1=await cloudCfgPut('shelves',shelves);
+  await cfgPut('aisles',aisles);const _o2=await cloudCfgPut('aisles',aisles);
+  await cfgPut('mapSize',mapSize);const _o3=await cloudCfgPut('mapSize',mapSize);
   mapEditing=false;mapDraftShelves=null;mapDraftAisles=null;mapDraftSize=null;
   document.getElementById('map-toolbar').style.display='none';
   document.getElementById('map-hint').style.display='none';
   document.getElementById('map-edit-btn').style.display='';
   document.getElementById('map-print-btn').style.display='';
   renderAll();
-  toast('✓ Plano guardado');
+  toast(_o1&&_o2&&_o3?'✓ Plano guardado':'⚠ Plano guardado solo en este dispositivo: no se pudo subir a la nube (se reintentará al sincronizar)');
 }
 function addMapShelf(){
   let max=0;mapDraftShelves.forEach(s=>{const n=parseInt(s.id);if(!isNaN(n)&&n>max)max=n;});
@@ -2183,7 +2214,7 @@ async function saveEditShelf(){
   if(!SAFE_ID_RE.test(newCode)){toast('El código solo puede llevar letras, números, guion y guion bajo');return;}
 
   // Comprobar que el código no choque con otra estantería
-  if(newCode!==oldId && mapDraftShelves.some((o,i)=>i!==editShelfIdx && o.id===newCode)){
+  if(newCode!==oldId && (mapDraftShelves.some((o,i)=>i!==editShelfIdx && o.id===newCode)||(shelves||[]).some(o=>o.id===newCode))){
     toast('Ya existe una estantería con ese código');return;
   }
 
@@ -2211,20 +2242,30 @@ async function saveEditShelf(){
     movedItems=movedItems.filter(i=>items.some(x=>x.id===i.id)); // los borrados por otra persona ya no cuentan
   }
 
-  // Persistir las estanterías de inmediato (nombre/código/baldas), no solo en el borrador,
-  // para que el cambio de código quede sincronizado con los repuestos ya reubicados.
-  shelves=JSON.parse(JSON.stringify(mapDraftShelves));
-  await cfgPut('shelves',shelves);await cloudCfgPut('shelves',shelves);
+  // Persistir de inmediato SOLO esta estantería (nombre/código/baldas/medidas), para que el cambio de código quede
+  // sincronizado con los repuestos ya reubicados. El resto del borrador del mapa (estanterías borradas, movidas...)
+  // NO se confirma aquí: eso solo ocurre con "Guardar plano" (si se pulsa Cancelar se descarta).
+  const _base=JSON.parse(JSON.stringify(shelves||[]));
+  const _ed=JSON.parse(JSON.stringify(s));
+  const _k=_base.findIndex(o=>o.id===oldId);
+  if(_k>=0)_base[_k]=_ed;else _base.push(_ed);
+  const _otros=a=>JSON.stringify(a.filter(o=>o.id!==s.id).sort((p,q)=>p.id<q.id?-1:1));
+  const _pendientes=_otros(mapDraftShelves)!==_otros(_base);
+  shelves=_base;
+  await cfgPut('shelves',shelves);
+  const _okNube=await cloudCfgPut('shelves',shelves);
 
   closeModal('modal-edit-shelf');
   editShelfIdx=null;
   renderMap();
+  const _aviso=(_okNube?'':' ⚠ La estantería solo se guardó en este dispositivo: no se pudo subir a la nube (se reintentará al sincronizar; hasta entonces otros dispositivos pueden ver sus repuestos sin ubicación válida).')
+    +(_pendientes?' Los demás cambios del plano se guardan con "Guardar plano".':'');
   if(movedItems.length){
     items=await dbGetAll();
     renderAll();
-    toast(_locFallos?`⚠ Estantería actualizada, pero ${_locFallos} repuesto(s) no se pudieron guardar en la nube (se reintentará al sincronizar)`:`✓ Estantería actualizada (${movedItems.length} repuesto(s) reubicados)`);
+    toast((_locFallos?`⚠ Estantería actualizada, pero ${_locFallos} repuesto(s) no se pudieron guardar en la nube (se reintentará al sincronizar)`:`${_okNube?'✓':'⚠'} Estantería actualizada (${movedItems.length} repuesto(s) reubicados)`)+_aviso);
   }else{
-    toast('✓ Estantería actualizada');
+    toast((_okNube?'✓ Estantería actualizada':'⚠ Estantería actualizada')+_aviso);
   }
 }
 let editAisleIdx=null;
@@ -2312,10 +2353,10 @@ async function saveShelves(){
   if(!shelfDraft.length){toast('Debe haber al menos una estantería');return;}
   shelves=JSON.parse(JSON.stringify(shelfDraft));
   await cfgPut('shelves',shelves);
-  await cloudCfgPut('shelves',shelves);
+  const _okc=await cloudCfgPut('shelves',shelves);
   closeModal('modal-shelves');
   renderAll();
-  toast('✓ Estanterías actualizadas');
+  toast(_okc?'✓ Estanterías actualizadas':'⚠ Estanterías guardadas solo en este dispositivo: no se pudieron subir a la nube (se reintentará al sincronizar)');
 }
 
 // ===== ETIQUETAS QR =====
@@ -2338,8 +2379,11 @@ async function savePrintedIds(){
   await cfgPut('modifiedIds',[...modifiedIds]);
   // Guardar también en la nube para que el estado impreso/no impreso
   // se vea desde cualquier dispositivo
-  try{await cloudCfgPut('printedIds',[...printedIds]);}catch(e){console.warn('printedIds cloud',e);}
-  try{await cloudCfgPut('modifiedIds',[...modifiedIds]);}catch(e){console.warn('modifiedIds cloud',e);}
+  // Devuelve false si alguno no llegó a la nube (queda en la cola dirtyCfg y no se pisa al sincronizar)
+  let ok=true;
+  try{if(!(await cloudCfgPut('printedIds',[...printedIds])))ok=false;}catch(e){console.warn('printedIds cloud',e);ok=false;}
+  try{if(!(await cloudCfgPut('modifiedIds',[...modifiedIds])))ok=false;}catch(e){console.warn('modifiedIds cloud',e);ok=false;}
+  return ok;
 }
 
 let labelFilterShelf='', labelFilterBalda='', labelFilterCat='';
@@ -2636,9 +2680,10 @@ async function doPrintLabels(){
     window.print();
     // Marcar como impresas y quitar la marca de "modificado"
     sel.forEach(i=>{printedIds.add(i.id);modifiedIds.delete(i.id);});
-    await savePrintedIds();
+    const _okp=await savePrintedIds();
     labelSel=new Set();labelQty={};
     renderLabels();
+    if(!_okp)toast('⚠ El estado "impresa" solo se guardó en este dispositivo: no se pudo subir a la nube (se reintentará al sincronizar)');
   },400);
 }
 
@@ -2658,86 +2703,231 @@ async function placeScannedItem(found,t){
 function openScanner(){openModal('modal-scan');scanner=new Html5Qrcode('qr-reader');scanner.start({facingMode:'environment'},{fps:10,qrbox:220},text=>{if(text.startsWith('ALMACEN:')){const id=text.replace('ALMACEN:','');const purpose=scanPurpose;closeScanner();const found=items.find(i=>i.id===id);if(!found){toast('Componente no encontrado');return;}if(purpose==='addhere'&&addHereTarget){const t=addHereTarget;ensureOnline('colocar el artículo').then(ok=>{if(!ok)return;return placeScannedItem(found,t);});}else{openDetail(id);}}},()=>{}).catch(e=>{toast('No se pudo abrir la cámara');console.error(e);});}
 function closeScanner(){scanPurpose=null;if(scanner){scanner.stop().then(()=>{scanner.clear();scanner=null;}).catch(()=>{scanner=null;});}closeModal('modal-scan');}
 
+// ===== COPIAS DE SEGURIDAD (exportar / importar) =====
+// Versión 4: lleva la etiqueta del almacén (warehouse) y, además de artículos/categorías/estanterías, el plano (aisles, mapSize),
+// proveedores, estado de etiquetas y el historial (movements, price_history). Las versiones 2 y 3 se siguen pudiendo importar.
+const BACKUP_VERSION=4;
+function _allWH(){const a=[];if(typeof WAREHOUSE_CONFIG!=='undefined')a.push(WAREHOUSE_CONFIG);if(typeof WAREHOUSE_OTHER_CONFIG!=='undefined')a.push(WAREHOUSE_OTHER_CONFIG);return a;}
+function _errMsg(e){return (e&&e.message)||String(e);}
+// Artículos cuya foto sigue sin estar en el dispositivo (no cuenta los que en la nube no tienen foto)
+function fotosSinDescargar(){return items.filter(i=>!i.photo&&!noPhotoIds.has(i.id)&&!dirtyIds.has(i.id)).length;}
+function msgFotosFaltan(n){
+  return sb
+    ?'⚠ No se pudieron descargar '+n+' foto(s) de la nube (fallo de red o de lectura). Inténtalo de nuevo para tener una copia completa.'
+    :'⚠ Sin conexión a la nube: no se puede comprobar la foto de '+n+' artículo(s) que no la tienen en este dispositivo. Conéctate para tener una copia completa.';
+}
+// Lee una clave de config de otro almacén. Devuelve el valor, null si no hay fila o undefined si falló la lectura.
 async function cloudCfgGetFrom(tbl,key){
-  if(!sb)return null;
-  try{const{data,error}=await sb.from(tbl).select('value').eq('key',key).maybeSingle();if(error)throw error;return data?data.value:null;}
-  catch(e){return null;}
+  if(!sb)return undefined;
+  try{const{data,error}=await withTimeout(sb.from(tbl).select('value').eq('key',key).maybeSingle(),15000,'config');if(error)throw error;return data?data.value:null;}
+  catch(e){console.warn('cloudCfgGetFrom error',tbl,key,e);return undefined;}
 }
+// Escribe una clave de config en la tabla de otro almacén. Devuelve true/false (no hay cola para otro almacén: se repite la importación).
 async function cloudCfgPutTo(tbl,key,value){
-  if(!sb)return;
-  try{const{error}=await sb.from(tbl).upsert({key,value},{onConflict:'key'});if(error)throw error;}
-  catch(e){console.warn('cloudCfgPutTo error',e);}
+  if(!sb)return false;
+  try{const{error}=await withTimeout(sb.from(tbl).upsert({key,value},{onConflict:'key'}),15000,'config');if(error)throw error;return true;}
+  catch(e){console.warn('cloudCfgPutTo error',tbl,key,e);return false;}
 }
+// Lectura ESTRICTA de una tabla entera: cuenta las filas, lee por páginas pequeñas (con tiempo límite) y lanza un error si
+// algo falla o si faltan filas. Nunca devuelve una lectura parcial.
+async function leerTablaEstricta(tbl,orden,pageSize,timeoutMs){
+  const{count,error:ce}=await withTimeout(sb.from(tbl).select('*',{count:'exact',head:true}),20000,'recuento de '+tbl);
+  if(ce)throw ce;
+  if(typeof count!=='number')throw new Error('no se pudo contar '+tbl);
+  const mk=()=>{let q=sb.from(tbl).select('*');for(const c of orden)q=q.order(c);return q;};
+  const rows=await fetchAllPages(mk,pageSize,Math.ceil(count/pageSize)+2,timeoutMs);
+  if(rows.length<count)throw new Error('lectura incompleta de '+tbl+' ('+rows.length+' de '+count+' filas)');
+  return rows;
+}
+// Movimientos e historial de precios de un almacén, desde la nube (lanza un error si no se pueden leer enteros)
+async function leerHistorialNube(wh){
+  const o={movements:[],price_history:[]};
+  if(wh.tblMov)o.movements=await leerTablaEstricta(wh.tblMov,['ts','itemId'],1000,30000);
+  if(wh.tblPrice)o.price_history=await leerTablaEstricta(wh.tblPrice,['ts','item_id'],1000,30000);
+  return o;
+}
+const CFG_BACKUP_KEYS=['categories','shelves','aisles','mapSize','providers','printedIds','modifiedIds'];
+// Reúne todos los datos de un almacén. Lanza un error (nunca devuelve un almacén vacío por un fallo de lectura).
 async function collectWarehouse(wh){
-  if(WH && wh.key===WH.key){
+  const esActual=!!(WH&&wh.key===WH.key);
+  const o={};
+  if(esActual){
     await asegurarFotos(items.map(i=>i.id));
-    return {items: completarFotos(await dbGetAll()), categories: categories||[], shelves: shelves||[]};
+    o.items=completarFotos(await dbGetAll());
+    o.categories=categories||[];o.shelves=shelves||[];o.aisles=aisles||[];o.mapSize=mapSize||null;
+    o.providers=providers||[];o.printedIds=[...printedIds];o.modifiedIds=[...modifiedIds];
+  }else{
+    // Otro almacén: desde la nube (fuente compartida)
+    if(!sb)throw new Error('sin conexión a la nube');
+    const rows=await leerTablaEstricta(wh.tblItems,['id'],50,60000); // con fotos: páginas pequeñas
+    o.items=rows.map(r=>{const x={...r};x.cats=x.categories||[];delete x.categories;return x;});
+    for(const k of CFG_BACKUP_KEYS){
+      const v=await cloudCfgGetFrom(wh.tblCfg,k);
+      if(v===undefined)throw new Error('no se pudo leer la configuración ('+k+')');
+      o[k]=v==null?(k==='mapSize'?null:[]):v;
+    }
   }
-  // Otro almacén: desde la nube (fuente compartida)
-  let its=[], cats=[], shs=[];
-  if(sb){
-    try{const data=await fetchAllPages(()=>sb.from(wh.tblItems).select('*').order('id'));const error=null;
-      if(!error&&data){its=data.map(r=>{const o={...r};o.cats=o.categories||[];delete o.categories;return o;});}
-    }catch(e){console.warn('collect items',e);}
-    const c=await cloudCfgGetFrom(wh.tblCfg,'categories'); if(c)cats=c;
-    const sh=await cloudCfgGetFrom(wh.tblCfg,'shelves'); if(sh)shs=sh;
-  }
-  return {items:its, categories:cats, shelves:shs};
+  if(!o.items.length)throw new Error('0 artículos (almacén vacío o sin permiso de lectura)');
+  return Object.assign(o,await leerHistorialNube(wh));
 }
 async function exportBoth(){
   if(!sb){toast('Para la copia de los dos almacenes necesitas conexión a internet');return;}
   noPhotoIds.clear();
   toast('⏳ Preparando copia de los dos almacenes...');
-  const out={version:3, exported:new Date().toISOString(), warehouses:{}};
-  const _allWH=[];if(typeof WAREHOUSE_CONFIG!=='undefined')_allWH.push(WAREHOUSE_CONFIG);if(typeof WAREHOUSE_OTHER_CONFIG!=='undefined')_allWH.push(WAREHOUSE_OTHER_CONFIG);
-  for(const wh of _allWH){
-    out.warehouses[wh.key]=await collectWarehouse(wh);
+  const out={version:BACKUP_VERSION, exported:new Date().toISOString(), warehouses:{}};
+  for(const wh of _allWH()){
+    try{out.warehouses[wh.key]=await collectWarehouse(wh);}
+    catch(err){console.warn('exportBoth',wh.key,err);toast('⚠ No se pudo leer el '+wh.name+': '+_errMsg(err)+'. No se ha generado la copia; inténtalo de nuevo.');return;}
   }
-  {const _fal=items.filter(i=>!i.photo&&!noPhotoIds.has(i.id)&&!dirtyIds.has(i.id)).length;
-   if(_fal){toast('⚠ No se pudieron descargar '+_fal+' fotos (¿sin conexión?). Inténtalo de nuevo para tener una copia completa.');return;}}
-  const e=(out.warehouses.electrico.items||[]).length, m=(out.warehouses.mecanico.items||[]).length;
+  const _fal=fotosSinDescargar();
+  if(_fal){toast(msgFotosFaltan(_fal));return;}
+  const ks=Object.keys(out.warehouses);
+  if(ks.length<2){toast('⚠ Faltan datos de uno de los almacenes: no se ha generado la copia');return;}
+  const e=out.warehouses.electrico?out.warehouses.electrico.items.length:0, m=out.warehouses.mecanico?out.warehouses.mecanico.items.length:0;
   const blob=new Blob([JSON.stringify(out)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);
   a.download='almacen_backup_AMBOS_'+new Date().toISOString().slice(0,10)+'.json';a.click();
-  toast('✓ Copia de los dos almacenes ('+e+' eléctrico, '+m+' mecánico)');
+  toast('✓ Copia de los dos almacenes ('+e+' eléctrico, '+m+' mecánico), con movimientos e historial de precios');
 }
-async function importBoth(data){
-  const keys=Object.keys(data.warehouses||{});
-  let total=0; keys.forEach(k=>total+=((data.warehouses[k].items)||[]).length);
-  document.getElementById('confirm-title').textContent='Importar copia (2 almacenes)';
-  document.getElementById('confirm-msg').textContent='Reemplazará el inventario de los DOS almacenes con '+total+' artículos en total y lo subirá a la nube. ¿Continuar?';
+// Claves de configuración que trae una copia (solo las que tienen contenido: NUNCA se escribe una lista vacía sobre la nube)
+function cfgDeCopia(wd){
+  const cfg={};
+  const cats=strArr(wd.categories);if(cats.length)cfg.categories=cats;
+  const sh=Array.isArray(wd.shelves)?cleanShelves(wd.shelves):[];if(sh.length)cfg.shelves=sh;
+  const ai=Array.isArray(wd.aisles)?cleanAisles(wd.aisles):[];if(ai.length)cfg.aisles=ai;
+  const ms=wd.mapSize;if(ms&&ms.w&&ms.h)cfg.mapSize={w:Math.round(cleanNum(ms.w,10,120,DEFAULT_MAP_SIZE.w)),h:Math.round(cleanNum(ms.h,10,120,DEFAULT_MAP_SIZE.h))};
+  const pv=strArr(wd.providers);if(pv.length)cfg.providers=pv;
+  const pi=strArr(wd.printedIds).filter(isSafeId);if(pi.length)cfg.printedIds=pi;
+  const mo=strArr(wd.modifiedIds).filter(isSafeId);if(mo.length)cfg.modifiedIds=mo;
+  return cfg;
+}
+function _aplicarCfgLocal(k,v){
+  if(k==='categories')categories=v;else if(k==='shelves')shelves=v;else if(k==='aisles')aisles=v;else if(k==='mapSize')mapSize=v;
+  else if(k==='providers')providers=v;else if(k==='printedIds')printedIds=new Set(v);else if(k==='modifiedIds')modifiedIds=new Set(v);
+}
+// Sube a la nube los datos de una copia para UN almacén, fusionando por código de artículo (no borra nada).
+// Para el almacén actual usa cloudPut (lo que falle queda en la cola de pendientes) y guarda cada artículo también en el dispositivo
+// SIN vaciarlo antes. Tras 3 fallos seguidos deja de intentarlo (el resto queda pendiente). La configuración solo se escribe si todos los
+// artículos subieron. Acumula los resultados en res.
+async function importarAlmacen(wh,wd,limpios,res){
+  const esActual=!!(WH&&wh.key===WH.key);
+  let seguidos=0,cortado=false;
+  for(const it of limpios){
+    if(esActual)await dbPut(it);
+    let ok=false;
+    if(!cortado){
+      ok=esActual?await cloudPut(it):await cloudPutTo(wh.tblItems,it);
+      seguidos=ok?0:seguidos+1;
+      if(seguidos>=3)cortado=true;
+    }else if(esActual){markDirty(it.id);}
+    if(!ok)res.fallos++;
+  }
+  if(esActual)items=await dbGetAll();
+  if(res.fallos)return;
+  const cfg=cfgDeCopia(wd);
+  for(const k of Object.keys(cfg)){
+    let ok;
+    if(esActual){_aplicarCfgLocal(k,cfg[k]);await cfgPut(k,cfg[k]);ok=await cloudCfgPut(k,cfg[k]);}
+    else ok=await cloudCfgPutTo(wh.tblCfg,k,cfg[k]);
+    if(!ok)res.cfgFallos++;
+  }
+}
+// Pide confirmación y ejecuta la importación de un plan [{wh,wd,limpios}]
+function confirmarImportacion(titulo,plan,extras){
+  const n=plan.reduce((s,p)=>s+p.limpios.length,0);
+  let t='Se subirán '+n+' artículos a la nube'+(plan.length>1?' ('+plan.length+' almacenes)':'')+', creando o actualizando cada uno por su código (también su stock). Los artículos de la nube que no estén en el archivo SE CONSERVAN: no se borra nada (se fusiona con la nube). ';
+  t+='De la configuración, lo que traiga el archivo (categorías, estanterías, plano, proveedores, etiquetas) sustituye a lo actual; lo que no traiga no se toca. No se restauran los movimientos ni el historial de precios (se conservan los de la nube). ';
+  if(extras.descartados)t+='⚠ '+extras.descartados+' artículo(s) del archivo tienen un código no válido y se descartarán. ';
+  if(extras.sinEtiqueta)t+='Es una copia antigua sin etiqueta de almacén: asegúrate de que es de este almacén. ';
+  if(extras.ignorados)t+=extras.ignorados+' almacén(es) del archivo no existen aquí y se ignoran. ';
+  document.getElementById('confirm-title').textContent=titulo;
+  document.getElementById('confirm-msg').textContent=t+'¿Continuar?';
   document.getElementById('confirm-ok').onclick=async()=>{
     closeModal('modal-confirm');
-    if(!sb){toast('Necesitas conexión para importar los dos almacenes');return;}
-    toast('⏳ Importando ambos almacenes...');
-    for(const k of keys){
-      const wh=[...(typeof WAREHOUSE_CONFIG!=='undefined'?[WAREHOUSE_CONFIG]:[]),...(typeof WAREHOUSE_OTHER_CONFIG!=='undefined'?[WAREHOUSE_OTHER_CONFIG]:[])].find(w=>w.key===k); if(!wh)continue;
-      const wd=data.warehouses[k]||{};
-      for(const it of cleanItems(wd.items)){ await cloudPutTo(wh.tblItems,it); }
-      await cloudCfgPutTo(wh.tblCfg,'categories',wd.categories||[]);
-      await cloudCfgPutTo(wh.tblCfg,'shelves',cleanShelves(wd.shelves));
-      if(WH && wh.key===WH.key){
-        await dbReplaceAll(cleanItems(wd.items));
-        categories=strArr(wd.categories);
-        if(wd.shelves&&wd.shelves.length)shelves=cleanShelves(wd.shelves);
-        await cfgPut('categories',categories);
-        await cfgPut('shelves',shelves);
-        items=await dbGetAll();
-      }
-    }
-    renderAll();
-    toast('✓ Importados los dos almacenes ('+total+' artículos)');
+    await ejecutarImportacion(plan,extras);
   };
   openModal('modal-confirm');
+}
+async function ejecutarImportacion(plan,extras){
+  if(!adminUnlocked){toast('⚠ Solo un administrador puede importar una copia');return;}
+  if(!sb){toast('Necesitas conexión para importar la copia');return;}
+  if(_stockBusy||_syncing){toast('Hay una operación en curso. Inténtalo en unos segundos');return;}
+  _stockBusy=true; // mientras se importa no se sincroniza ni se cambia stock
+  const res={total:0,fallos:0,cfgFallos:0};
+  try{
+    toast('⏳ Importando...');
+    for(const p of plan){
+      res.total+=p.limpios.length;
+      await importarAlmacen(p.wh,p.wd,p.limpios,res);
+      if(res.fallos||res.cfgFallos)break; // se para en el primer almacén con fallos
+    }
+  }catch(err){
+    console.error('importar',err);
+    try{items=await dbGetAll();renderAll();}catch(e2){console.warn('importar: releer',e2);}
+    toast('⚠ Error al importar: '+_errMsg(err)+'. La importación se ha parado; revisa los datos y vuelve a intentarlo.');
+    return;
+  }finally{_stockBusy=false;}
+  try{renderAll();}catch(e2){console.warn('importar: pintar',e2);}
+  if(res.fallos){
+    toast('⚠ '+res.fallos+' de '+res.total+' artículos fallaron al subir; la importación se ha parado y no se ha tocado la configuración. Los de este almacén quedan pendientes y se reintentarán al sincronizar (los del otro almacén: repite la importación).');
+  }else if(res.cfgFallos){
+    toast('⚠ Se importaron '+res.total+' artículos, pero '+res.cfgFallos+' apartado(s) de la configuración no se pudieron subir (se reintentan al sincronizar los de este almacén; si no, repite la importación).');
+  }else{
+    toast('✓ Importados '+res.total+' artículos (fusionados con la nube)'+(extras.descartados?'. Se descartaron '+extras.descartados+' con código no válido':''));
+  }
+}
+async function importBoth(data){
+  const whs=_allWH();
+  const keys=Object.keys(data.warehouses||{});
+  const conocidos=keys.filter(k=>whs.some(w=>w.key===k));
+  if(!conocidos.length||conocidos.some(k=>!data.warehouses[k]||!Array.isArray(data.warehouses[k].items))){toast('⚠ Archivo no válido: faltan los artículos de algún almacén');return;}
+  const plan=[];let descartados=0;
+  for(const k of conocidos){
+    const wd=data.warehouses[k];
+    const limpios=cleanItems(wd.items);
+    descartados+=wd.items.length-limpios.length;
+    plan.push({wh:whs.find(w=>w.key===k),wd,limpios});
+  }
+  confirmarImportacion('Importar copia (2 almacenes)',plan,{descartados,ignorados:keys.length-conocidos.length});
 }
 async function exportData(){
   // Una copia de seguridad debe llevar TODAS las fotos: se descargan las que falten y, si no se puede, no se genera incompleta
   noPhotoIds.clear(); // por si alguien ha añadido fotos desde la última comprobación
   await asegurarFotos(items.map(i=>i.id));
-  const _fal=items.filter(i=>!i.photo&&!noPhotoIds.has(i.id)&&!dirtyIds.has(i.id)).length;
-  if(_fal){toast('⚠ No se pudieron descargar '+_fal+' fotos (¿sin conexión?). Inténtalo de nuevo para tener una copia completa.');return;}
-  const data={version:2,exported:new Date().toISOString(),categories,shelves,items:completarFotos(await dbGetAll())};const blob=new Blob([JSON.stringify(data)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='almacen_backup_'+(WH?WH.key+'_':'')+new Date().toISOString().slice(0,10)+'.json';a.click();toast('✓ Copia descargada');}
-function importData(e){const file=e.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=async ev=>{try{const data=JSON.parse(ev.target.result);if(data.warehouses){return importBoth(data);}if(!data.items)throw new Error('no valid');document.getElementById('confirm-title').textContent='Importar copia';document.getElementById('confirm-msg').textContent='Reemplazará el inventario actual con '+data.items.length+' items. ¿Continuar?';document.getElementById('confirm-ok').onclick=async()=>{await dbReplaceAll(cleanItems(data.items));categories=strArr(data.categories);if(data.shelves&&data.shelves.length)shelves=cleanShelves(data.shelves);await cfgPut('categories',categories);await cfgPut('shelves',shelves);items=await dbGetAll();closeModal('modal-confirm');renderAll();toast('⏳ Subiendo a la nube...');for(const it of items)await cloudPut(it);await cloudCfgPut('categories',categories);await cloudCfgPut('shelves',shelves);toast('✓ Importado y sincronizado ('+items.length+' items)');};openModal('modal-confirm');}catch(err){toast('Error: archivo no válido');}};reader.readAsText(file);}
+  const _fal=fotosSinDescargar();
+  if(_fal){toast(msgFotosFaltan(_fal));return;}
+  // Con conexión la copia lleva también los movimientos y el historial de precios (lectura estricta: si falla, no se genera)
+  let hist=null;
+  if(sb&&WH){
+    try{hist=await leerHistorialNube(WH);}
+    catch(err){console.warn('exportData historial',err);toast('⚠ No se pudo leer el historial de la nube ('+_errMsg(err)+'). No se ha generado la copia; inténtalo de nuevo.');return;}
+  }
+  const data={version:BACKUP_VERSION,warehouse:WH?WH.key:null,exported:new Date().toISOString(),categories,shelves,aisles,mapSize,providers,printedIds:[...printedIds],modifiedIds:[...modifiedIds],items:completarFotos(await dbGetAll())};
+  if(hist){data.movements=hist.movements;data.price_history=hist.price_history;}
+  const blob=new Blob([JSON.stringify(data)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='almacen_backup_'+(WH?WH.key+'_':'')+new Date().toISOString().slice(0,10)+'.json';a.click();
+  toast(hist?'✓ Copia descargada ('+data.items.length+' artículos, '+hist.movements.length+' movimientos, '+hist.price_history.length+' precios)':'✓ Copia descargada ('+data.items.length+' artículos). Sin conexión: no incluye movimientos ni historial de precios');
+}
+function importData(e){
+  const file=e.target.files[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=async ev=>{
+    let data;
+    try{data=JSON.parse(ev.target.result);}catch(err){toast('⚠ Archivo no válido: no es una copia de seguridad (JSON)');return;}
+    try{
+      if(!data||typeof data!=='object'){toast('⚠ Archivo no válido');return;}
+      if(data.version>BACKUP_VERSION){toast('⚠ Esta copia se creó con una versión más nueva de la aplicación: actualiza la aplicación para importarla');return;}
+      if(data.warehouses)return importBoth(data);
+      if(!Array.isArray(data.items)){toast('⚠ Archivo no válido: no contiene la lista de artículos');return;}
+      if(data.warehouse&&WH&&data.warehouse!==WH.key){
+        const otro=_allWH().find(w=>w.key===data.warehouse);
+        toast('⚠ Esta copia es del '+(otro?otro.name:'almacén "'+String(data.warehouse).slice(0,30)+'"')+', no de este almacén ('+WH.name+'). No se importa.');return;
+      }
+      const limpios=cleanItems(data.items);
+      confirmarImportacion('Importar copia',[{wh:WH,wd:data,limpios}],{descartados:data.items.length-limpios.length,sinEtiqueta:!data.warehouse});
+    }catch(err){console.error('importData',err);toast('⚠ Error al preparar la importación: '+_errMsg(err));}
+  };
+  reader.readAsText(file);
+}
 // ===== BÚSQUEDA POR FOTO CON IA =====
 function handleAIPhoto(e){
   const file=e.target.files[0];if(!file)return;
@@ -2994,6 +3184,8 @@ async function doExportExcel(scope){
   const suf = scope==='out'?'_sin_stock':scope==='low'?'_stock_bajo':'';
   const _extra=await asegurarFotos(all.map(i=>i.id));
   {const _fm={};(await dbGetAll()).forEach(x=>{_fm[x.id]=x.photo;});all.forEach(i=>{if(!i.photo)i.photo=_fm[i.id]||_extra[i.id]||null;});}
+  // Artículos que saldrán SIN imagen porque su foto no se pudo descargar (los que en la nube no tienen foto no cuentan)
+  const _sinImg=all.filter(i=>!i.photo&&!noPhotoIds.has(i.id)&&!dirtyIds.has(i.id)).length;
   toast('⏳ Generando Excel...');
   const btn = document.getElementById('btn-excel');
   if(btn){btn.disabled=true;btn.style.opacity='0.6';}
@@ -3102,7 +3294,9 @@ async function doExportExcel(scope){
     a.href = URL.createObjectURL(blob);
     a.download = 'inventario_' + (WH?WH.key:'') + suf + '_' + new Date().toISOString().slice(0,10) + '.xlsx';
     a.click();
-    toast('✓ Excel exportado con imágenes');
+    toast(_sinImg
+      ?'⚠ Excel exportado, pero '+_sinImg+' artículo(s) salen sin imagen: '+(sb?'no se pudo descargar su foto (fallo de red). Vuelve a exportar para completarlas':'sin conexión no se puede comprobar su foto')
+      :'✓ Excel exportado con imágenes');
   }catch(err){
     console.error(err);
     toast('Error al generar Excel');
@@ -3246,7 +3440,7 @@ async function loadDemo(){
     {name:'Sensor inductivo M12 PNP',cat:'Sensores',loc:'04-2',stock:11,min:5,ref:'IND-M12',brand:'Sick',machine:'',notes:''},
   ];
   for(const d of demo){const item={...d,id:'I'+Date.now()+Math.floor(Math.random()*10000),photo:null};await dbPut(item);await cloudPut(item);if(!categories.includes(d.cat))categories.push(d.cat);}
-  await cfgPut('categories',categories);await cloudCfgPut('categories',categories);items=await dbGetAll();renderAll();toast('✓ Datos de ejemplo cargados');
+  await cfgPut('categories',categories);const _okc=await cloudCfgPut('categories',categories);items=await dbGetAll();renderAll();toast(_okc?'✓ Datos de ejemplo cargados':'⚠ Datos de ejemplo cargados; las categorías solo se guardaron en este dispositivo (se subirán al sincronizar)');
 }
 
 // Estado de stock. Si el mínimo es 0, el artículo NO genera alertas (descatalogado / ya no se tiene).
@@ -3295,7 +3489,8 @@ document.addEventListener('keydown',function(e){
     active=null;
   },{passive:true});
 })();
-function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}
+let _toastT=null;
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(_toastT);_toastT=setTimeout(()=>t.classList.remove('show'),String(msg).length>80?6000:2500);} // los avisos largos (fallos de guardado) tardan más en leerse
 // Las ventanas NO se cierran al tocar fuera: solo se cierran con su botón,
 // para que no se cierren por accidente mientras consultas o añades.
 // (Antes un toque en el fondo oscuro cerraba el modal.)
@@ -3591,9 +3786,9 @@ async function saveAdminPass(){
   if(nu!==n2){toast('Las dos contraseñas nuevas no coinciden');return;}
   adminPass=await sha256(nu); // se guarda solo la huella, nunca la contraseña
   await cfgPut('adminPass',adminPass);
-  await cloudCfgPut('adminPass',adminPass);
+  const _okc=await cloudCfgPut('adminPass',adminPass);
   closeModal('modal-change-pass');
-  toast('✓ Contraseña actualizada');
+  toast(_okc?'✓ Contraseña actualizada':'⚠ Contraseña cambiada solo en este dispositivo: no se pudo guardar en la nube (los demás dispositivos conservan la anterior)');
 }
 
 // Usuario y contraseñas de los almacenes (login)
@@ -3632,7 +3827,7 @@ async function cloudPutTo(table,item){
   if(!sb)return false;
   const ci={...item}; ci.categories=item.cats||[]; delete ci.cats;
   if(!ci.photo)delete ci.photo;
-  try{const{error}=await sb.from(table).upsert(ci,{onConflict:'id'});if(error)throw error;return true;}
+  try{const{error}=await withTimeout(sb.from(table).upsert(ci,{onConflict:'id'}),15000,'guardar');if(error)throw error;return true;}
   catch(e){console.warn('cloudPutTo error',e);return false;}
 }
 function moveToOtherWarehouse(){
@@ -4255,10 +4450,10 @@ async function saveLayout(){
   Object.keys(layoutDraft).forEach(k=>{if(layoutDraft[k]&&layoutDraft[k].length)clean[k]=layoutDraft[k];});
   sh.layout=clean;
   await cfgPut('shelves',shelves);
-  await cloudCfgPut('shelves',shelves);
+  const _okc=await cloudCfgPut('shelves',shelves);
   closeModal('modal-layout');
   renderItems();
-  toast('✓ Distribución guardada');
+  toast(_okc?'✓ Distribución guardada':'⚠ Distribución guardada solo en este dispositivo: no se pudo subir a la nube (se reintentará al sincronizar)');
 }
 
 

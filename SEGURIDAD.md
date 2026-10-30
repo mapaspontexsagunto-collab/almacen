@@ -51,6 +51,17 @@ Un corte momentáneo (cambio de repetidor wifi) se reintenta una vez antes de av
 - El stock se corrige leyendo el valor actual antes de cada cambio; dos personas actuando en el mismo segundo sobre el mismo
   artículo podrían pisarse. Editar el formulario de un artículo guarda también el stock que tenía al abrirlo.
 - Copias de seguridad: el plan gratuito de Supabase no permite recuperar un punto anterior. Exporta desde Ajustes de vez en cuando.
+  - La copia (versión 4) lleva la etiqueta del almacén, artículos con fotos, categorías, estanterías, plano, proveedores, estado de
+    etiquetas, movimientos e historial de precios. La lectura es estricta: si no se puede leer algo entero (o un almacén sale vacío),
+    no se genera la copia. Sin conexión solo se exporta lo local (sin movimientos ni historial de precios) y el aviso lo dice.
+  - Importar solo lo puede hacer un administrador y **fusiona** con la nube: crea o actualiza cada artículo por su código (también su stock)
+    y NO borra los que no estén en el archivo. La configuración que traiga la copia sustituye a la actual; lo que no traiga (o traiga vacío)
+    no se toca. NO restaura movimientos ni historial de precios (el trigger de movimientos pondría como autor a quien importa).
+    Una copia de otro almacén se rechaza; las copias antiguas (versión 2 y 3, sin etiqueta) se aceptan avisando de que no se puede comprobar.
+    Si algún artículo falla al subir, se para y se avisa "X de N"; los del almacén actual quedan en la cola de pendientes.
+- La configuración (categorías, estanterías, plano, proveedores, etiquetas impresas) que no llega a la nube queda en una cola local
+  (dirtyCfg) que se reintenta al sincronizar y no se pisa con el valor de la nube mientras esté pendiente; la app avisa de que
+  "solo se guardó en este dispositivo". Si dos dispositivos cambian la misma clave sin conexión, gana el último que sincroniza.
 
 ## Escáner de facturas (IA)
 - Solo para administradores (modo administrador activado) y con conexión. Al bloquear el modo administrador se cierra y se olvida la factura.
