@@ -2,6 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="object-src 'none'; base-uri 'self'; form-action 'self'">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -46,7 +47,7 @@
     <!-- Esta copia de la app es exclusiva del Almacén Eléctrico; no se permite cambiar de almacén -->
   </div>
 </div>
-<div class="app" id="app-root" style="display:none;">
+<div class="app" id="app-root" style="display:none;"><div id="init-error" role="alert" style="display:none;background:#fee2e2;color:#991b1b;border-radius:10px;padding:10px 14px;font-size:13px;margin:8px;"><b>⚠ No se pudo iniciar la app.</b> <span id="init-error-msg"></span> <button class="btn" onclick="arrancar()">Reintentar</button></div>
   <div class="topbar">
     <div class="logo" id="topbar-logo">⚡ Almacén Eléctrico</div>
     <div class="actions">
@@ -215,11 +216,9 @@
         <button class="btn btn-block btn-danger" onclick="askWipe()">Borrar todo el inventario</button>
       </div>
     </div>
-    <div class="card"><div class="card-h">Seguridad y contraseñas</div>
+    <div class="card"><div class="card-h">Seguridad y acceso</div>
       <div style="padding:16px;">
-        <p id="sec-help" style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.5;">Una sola contraseña protege Ajustes, eliminar artículos y movimientos, y mover material entre almacenes. Aquí puedes cambiarla y gestionar los accesos de los almacenes.</p>
-        <button class="btn btn-block btn-primary" style="margin-bottom:10px;" onclick="openChangePass()">Cambiar contraseña de Ajustes</button>
-        <button class="btn btn-block" style="margin-bottom:10px;" onclick="openUsers()">Usuario y contraseñas de almacenes</button>
+        <p id="sec-help" style="font-size:13px;color:var(--text2);margin-bottom:14px;line-height:1.5;">El acceso lo gestiona Supabase: cada persona entra con su propio usuario y los administradores se marcan allí. Usa el candado 🔒 de la parte superior para activar o quitar el modo administrador.</p>
         <button class="btn btn-block" onclick="lockAdmin()">Bloquear Ajustes ahora</button>
       </div>
     </div>
@@ -384,7 +383,7 @@
     </div>
     <div class="fg"><label class="fl">Nombre *</label><input type="text" class="fi" id="f-name" placeholder="Ej: Relé térmico Schneider LRD10" oninput="validateAddForm()"></div>
     <div class="fg"><label class="fl">Categoría *</label><select class="fi" id="f-cat" onchange="checkNewCat();renderCatChips();"></select></div>
-    <div class="fg" id="newcat-zone" style="display:none;"><label class="fl">Nueva categoría</label><input type="text" class="fi" id="f-newcat" placeholder="Nombre de la nueva categoría"></div>
+    <div class="fg" id="newcat-zone" style="display:none;"><label class="fl">Nueva categoría</label><input type="text" class="fi" id="f-newcat" maxlength="60" placeholder="Nombre de la nueva categoría"></div>
     <div class="fg"><label class="fl">Familias adicionales (opcional)</label><div class="msub" style="margin:0 0 8px;">Toca para añadir el material a más familias. Aparecerá al filtrar por cualquiera de ellas.</div><div id="f-cats-chips" class="cats-chips"></div></div>
     <div class="fr">
       <div class="fg"><label class="fl">Estantería *</label><select class="fi" id="f-shelf" onchange="updateBaldaOptions()"></select></div>
@@ -666,37 +665,6 @@
     <div id="layout-editor"></div>
     <button class="btn btn-block btn-primary" style="margin-top:14px;" onclick="saveLayout()">Guardar distribución</button>
     <button class="btn btn-block" style="margin-top:10px;" onclick="closeModal('modal-layout')">Cancelar</button>
-  </div>
-</div>
-
-<!-- CAMBIAR CONTRASEÑA DE AJUSTES -->
-<div class="modal-bg center" id="modal-change-pass">
-  <div class="modal small">
-    <h2>Cambiar contraseña de Ajustes</h2>
-    <div class="msub">Es la contraseña única que protege Ajustes, eliminar artículos y movimientos, y mover material entre almacenes.</div>
-    <div class="fg"><label class="fl">Contraseña actual</label><input type="password" class="fi" id="cp-cur" placeholder="Actual"></div>
-    <div class="fg"><label class="fl">Nueva contraseña</label><input type="password" class="fi" id="cp-new" placeholder="Nueva"></div>
-    <div class="fg"><label class="fl">Repite la nueva</label><input type="password" class="fi" id="cp-new2" placeholder="Repite la nueva"></div>
-    <div class="fr">
-      <button class="btn" onclick="closeModal('modal-change-pass')">Cancelar</button>
-      <button class="btn btn-primary" onclick="saveAdminPass()">Guardar</button>
-    </div>
-  </div>
-</div>
-
-<!-- USUARIOS Y CONTRASEÑAS DE LOS ALMACENES -->
-<div class="modal-bg center" id="modal-users">
-  <div class="modal small">
-    <h2>Usuario y contraseñas de almacenes</h2>
-    <div class="msub">Son los datos que se piden al entrar en cada almacén. El usuario es común a los dos.</div>
-    <div class="fg"><label class="fl">Usuario (común)</label><input type="text" class="fi" id="us-user"></div>
-    <div class="fg"><label class="fl">Contraseña · ⚡ Almacén Eléctrico</label><input type="password" class="fi" id="us-pass-e" autocomplete="new-password"></div>
-    <div class="fg"><label class="fl">Contraseña · 🔧 Almacén Mecánico</label><input type="password" class="fi" id="us-pass-m" autocomplete="new-password"></div>
-    <div style="font-size:12px;color:var(--text3);margin-bottom:12px;line-height:1.4;">El cambio se aplica en este dispositivo al instante y se sincroniza con los demás cuando descargan de la nube.</div>
-    <div class="fr">
-      <button class="btn" onclick="closeModal('modal-users')">Cancelar</button>
-      <button class="btn btn-primary" onclick="saveUsers()">Guardar</button>
-    </div>
   </div>
 </div>
 

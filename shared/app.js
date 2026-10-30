@@ -1,52 +1,27 @@
-// ===== CREDENCIALES DESDE SUPABASE =====
-async function fetchAuthFromSupabase(){
-  if(typeof WAREHOUSE_CONFIG!=='undefined'&&WAREHOUSE_CONFIG.useSupabaseAuth)return null; // con Supabase Auth ya no se usa app_auth
-  const _url='https://pttopgjtndbhtvrkuppk.supabase.co';
-  const _key='sb_publishable_x2BxA94JGgKWqNR1tYXYPA_2s-C_wEy';
-  try{
-    const res=await fetch(_url+'/rest/v1/app_auth?select=key,value',{
-      headers:{'apikey':_key,'Authorization':'Bearer '+_key}
-    });
-    if(!res.ok)return null;
-    const rows=await res.json();
-    if(!rows||!rows.length)return null;
-    const auth={};rows.forEach(r=>{auth[r.key]=r.value;});return auth;
-  }catch(e){return null;}
-}
-async function loadAuthCredentials(){
-  const AUTH_CACHE_KEY='almacen_auth_cache';
-  const AUTH_CACHE_TTL=7*24*60*60*1000;
-  const H=async v=>v?await sha256(v):''; // hash solo si hay valor (nunca el hash de una cadena vacía)
-  let cached=null;
-  try{const raw=localStorage.getItem(AUTH_CACHE_KEY);if(raw){const obj=JSON.parse(raw);if(Date.now()-obj.ts<AUTH_CACHE_TTL)cached=obj.data;}}catch(e){}
-  const fromSupabase=await fetchAuthFromSupabase();
-  if(fromSupabase){
-    const cacheData={
-      user:fromSupabase.auth_user||'',
-      pass_electrico:await H(fromSupabase.auth_pass_electrico),
-      pass_mecanico:await H(fromSupabase.auth_pass_mecanico),
-      admin_pass:await H(fromSupabase.admin_pass)
-    };
-    try{localStorage.setItem(AUTH_CACHE_KEY,JSON.stringify({ts:Date.now(),data:cacheData}));}catch(e){}
-    return cacheData;
-  }
-  if(cached)return cached;
-  return {user:'',pass_electrico:'',pass_mecanico:'',admin_pass:''};
-}
-async function saveAuthToSupabase(cfg){
-  const _url='https://pttopgjtndbhtvrkuppk.supabase.co';
-  const _key='sb_publishable_x2BxA94JGgKWqNR1tYXYPA_2s-C_wEy';
-  try{
-    const updates=[{key:'auth_user',value:cfg.user||''},{key:'auth_pass_electrico',value:cfg.raw_pass_electrico||''},{key:'auth_pass_mecanico',value:cfg.raw_pass_mecanico||''}];
-    for(const u of updates.filter(x=>x.value)){ // solo lo que se ha rellenado
-      await fetch(_url+'/rest/v1/app_auth?key=eq.'+u.key,{method:'PATCH',headers:{'apikey':_key,'Authorization':'Bearer '+_key,'Content-Type':'application/json','Prefer':'return=minimal'},body:JSON.stringify({value:u.value})}).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);});
-    }
-    _authCredentials=await loadAuthCredentials();
+// ===== ARRANQUE =====
+// Un cierre de sesión interrumpido (app cerrada o muerta antes de vaciar el móvil) deja la marca almacen_borrar_pendiente: se vacía ANTES de mirar
+// la sesión o abrir/leer la base local. Devuelve true si se puede seguir arrancando; con un fallo muestra un aviso que bloquea el arranque.
+async function _borradoPendienteAlArrancar(){
+  let marca=null;
+  try{marca=localStorage.getItem(BORRAR_FLAG);}catch(e){return true;}
+  if(!marca)return true;
+  let r=null;
+  try{r=await borrarDatosLocales(true);}catch(e){console.warn('Arranque: no se pudieron borrar los datos pendientes de borrar',e);}
+  if(r&&!Object.keys(r).some(k=>r[k]==='error')){
+    try{localStorage.removeItem(BORRAR_FLAG);}catch(e){console.warn('Arranque: no se pudo quitar la marca de borrado pendiente',e);}
     return true;
-  }catch(e){console.warn('No se pudo guardar en Supabase:',e);return false;}
+  }
+  try{
+    const d=document.createElement('div');
+    d.id='borrado-pendiente-aviso';
+    d.style.cssText='position:fixed;left:0;top:0;right:0;bottom:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:24px;background:#7f1d1d;color:#fff;font:600 18px/1.4 sans-serif;text-align:center;';
+    d.textContent='No se pudieron borrar los datos del usuario anterior, cierra la app y vuelve a abrirla';
+    document.body.appendChild(d);
+  }catch(e){console.warn('Arranque: no se pudo mostrar el aviso de borrado pendiente',e);try{alert('No se pudieron borrar los datos del usuario anterior, cierra la app y vuelve a abrirla');}catch(_){}}
+  return false;
 }
-let _authCredentials=null;
 document.addEventListener('DOMContentLoaded',async function(){
+  if(!(await _borradoPendienteAlArrancar()))return; // quedan datos de la persona anterior: no se sigue (ni sesión ni base local)
   if(typeof WAREHOUSE_CONFIG!=='undefined'){
     WH=WAREHOUSE_CONFIG;DB_NAME=WH.db;applyBranding();
     document.getElementById('warehouse-screen').style.display='none';
@@ -54,47 +29,10 @@ document.addEventListener('DOMContentLoaded',async function(){
     if(ok){document.getElementById('login-screen').style.display='none';enterApp();}
     else{document.getElementById('login-error').textContent='';document.getElementById('login-pass').value='';document.getElementById('login-screen').style.display='flex';setTimeout(()=>document.getElementById('login-user').focus(),100);}
   }else{showWarehouseSelector();}
-  _authCredentials=await loadAuthCredentials();
 });
-async function sha256(msg){
-  if(typeof crypto!=='undefined'&&crypto.subtle){
-    try{
-      const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(msg));
-      return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
-    }catch(e){}
-  }
-  // Fallback JS puro (para data:/file:// sin secure context)
-  function _sha256(ascii){
-    function rr(v,n){return(v>>>n)|(v<<(32-n));}
-    var H=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
-    var K=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
-    var hash=H.slice(),words=[],bitLen=ascii.length*8,i,j,a,b,c,d,e,f,g,h,t1,t2,w,oh;
-    ascii+='\x80';
-    while(ascii.length%64!==56)ascii+='\x00';
-    for(i=0;i<ascii.length;i++)words[i>>2]|=ascii.charCodeAt(i)<<((3-i%4)*8);
-    words.push(0,bitLen);
-    for(j=0;j<words.length;j+=16){
-      w=words.slice(j,j+16);
-      oh=hash.slice();
-      a=hash[0];b=hash[1];c=hash[2];d=hash[3];e=hash[4];f=hash[5];g=hash[6];h=hash[7];
-      for(i=0;i<64;i++){
-        if(i>=16){var p=w[i-15],q=w[i-2];w[i]=(w[i-16]+(rr(p,7)^rr(p,18)^(p>>>3))+w[i-7]+(rr(q,17)^rr(q,19)^(q>>>10)))|0;}
-        t1=(h+(rr(e,6)^rr(e,11)^rr(e,25))+((e&f)^(~e&g))+K[i]+(w[i]|0))|0;
-        t2=((rr(a,2)^rr(a,13)^rr(a,22))+((a&b)^(a&c)^(b&c)))|0;
-        h=g;g=f;f=e;e=(d+t1)|0;d=c;c=b;b=a;a=(t1+t2)|0;
-      }
-      hash[0]=(oh[0]+a)|0;hash[1]=(oh[1]+b)|0;hash[2]=(oh[2]+c)|0;hash[3]=(oh[3]+d)|0;
-      hash[4]=(oh[4]+e)|0;hash[5]=(oh[5]+f)|0;hash[6]=(oh[6]+g)|0;hash[7]=(oh[7]+h)|0;
-    }
-    var res='';
-    for(i=0;i<8;i++)for(j=3;j>=0;j--){var byte=(hash[i]>>(j*8))&255;res+=(byte<16?'0':'')+byte.toString(16);}
-    return res;
-  }
-  return _sha256(msg);
-}
 let db;
 let DB_NAME=(typeof WAREHOUSE_CONFIG!=='undefined'?WAREHOUSE_CONFIG.db:'almacen_db');const STORE='items',CFG='config',MOV='movements';
-function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB_NAME,2);r.onupgradeneeded=e=>{const d=e.target.result;if(!d.objectStoreNames.contains(STORE))d.createObjectStore(STORE,{keyPath:'id'});if(!d.objectStoreNames.contains(CFG))d.createObjectStore(CFG,{keyPath:'key'});if(!d.objectStoreNames.contains(MOV))d.createObjectStore(MOV,{keyPath:'id',autoIncrement:true});};r.onsuccess=e=>{db=e.target.result;res();};r.onerror=e=>rej(e);});}
+function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB_NAME,2);r.onupgradeneeded=e=>{const d=e.target.result;if(!d.objectStoreNames.contains(STORE))d.createObjectStore(STORE,{keyPath:'id'});if(!d.objectStoreNames.contains(CFG))d.createObjectStore(CFG,{keyPath:'key'});if(!d.objectStoreNames.contains(MOV))d.createObjectStore(MOV,{keyPath:'id',autoIncrement:true});};r.onsuccess=e=>{db=e.target.result;res();};r.onerror=e=>rej(r.error||e);r.onblocked=()=>{try{toast('⚠ La base de datos del móvil está bloqueada por otra pestaña de la app: ciérrala para continuar');}catch(_){}};});}
 // Ejecuta una operación y resuelve SOLO cuando la transacción termina; rechaza si falla o se aborta
 function idbRun(store,mode,fn){return new Promise((res,rej)=>{try{const tx=db.transaction(store,mode);const req=fn(tx.objectStore(store));tx.oncomplete=()=>res(req?req.result:undefined);tx.onerror=()=>rej(tx.error||new Error('IndexedDB error'));tx.onabort=()=>rej(tx.error||new Error('IndexedDB abortado'));}catch(e){rej(e);}});}
 function dbGetAll(){return idbRun(STORE,'readonly',s=>s.getAll()).then(r=>cleanItems(r||[],true));}
@@ -202,7 +140,8 @@ function initSupabase(){
   if(sb)return true;
   try{
     if(window.supabase&&window.supabase.createClient){
-      sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+      // detectSessionInUrl:false: un enlace con #access_token=... no puede sustituir la sesión de quien lo abre. flowType 'pkce' por si algún día se usan enlaces de acceso.
+      sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{detectSessionInUrl:false,flowType:'pkce'}});
       return true;
     }
   }catch(e){console.warn('Supabase init falló',e);}
@@ -218,7 +157,13 @@ function safeUrl(u){return (typeof u==='string'&&/^https?:\/\//i.test(u))?u:'#';
 function jsq(s){return esc(JSON.stringify(String(s==null?'':s)));}
 function cleanText(s){return String(s==null?'':s).replace(/[<>"'&`\\]/g,'');}
 function cleanNum(v,min,max,def){v=Number(v);return Number.isFinite(v)?Math.max(min,Math.min(max,v)):def;}
-function strArr(v){return Array.isArray(v)?v.filter(x=>x!=null).map(x=>String(x)):[];}
+// Listas de texto que llegan de la nube o de una copia: con tope de cantidad y de longitud (una lista gigante congelaría la app en todos los móviles)
+function strArr(v,max=20000,len=200){return Array.isArray(v)?v.filter(x=>x!=null).map(x=>String(x).slice(0,len)).slice(0,max):[];}
+// Nombres (categorías, proveedores, familias de un artículo): máximo 500 de 60 caracteres, sin repetidos
+function cleanNames(v){return [...new Set(strArr(v,Infinity,60))].slice(0,MAX_NOMBRES);}
+// Límites del plano: estanterías y pasillos, bloques por balda y cajones (filas x columnas) de un gavetero.
+// Son lo que el editor deja crear de verdad (40 bloques por balda; 12 x 12 = 144 cajones): un límite menor recortaría datos legítimos en silencio.
+const MAX_ESTANTERIAS=500,MAX_PASILLOS=500,MAX_BLOQUES=40,MAX_CAJONES=144,MAX_NOMBRES=500;
 function cleanItem(it,fast){
   if(!it||!isSafeId(String(it.id)))return null;
   const m={...it,id:String(it.id)};
@@ -231,11 +176,11 @@ function cleanItem(it,fast){
   m.precio=(m.precio==null||!Number.isFinite(Number(m.precio)))?null:Number(m.precio);
   ['name','cat','ref','brand','machine','notes'].forEach(k=>{
     if(m[k]!=null&&typeof m[k]!=='string')m[k]=String(m[k]);
-    if(typeof m[k]==='string')m[k]=m[k].replace(/[<>]/g,'');
+    if(typeof m[k]==='string')m[k]=(k==='cat'?m[k].slice(0,60):m[k]).replace(/[<>]/g,''); // la categoría se corta como los nombres de la lista (cleanNames) para que siga coincidiendo
   });
   // La base de datos rechaza notas de 2000 caracteres o más (CHECK items.notes): se recorta a 1999 sin partir un emoji
   if(typeof m.notes==='string'&&m.notes.length>1999){m.notes=m.notes.slice(0,1999);if(/[\ud800-\udbff]$/.test(m.notes))m.notes=m.notes.slice(0,-1);}
-  if(m.cats!=null)m.cats=strArr(m.cats);
+  if(m.cats!=null)m.cats=cleanNames(m.cats);
   return m;
 }
 function cleanItems(list,fast){return (Array.isArray(list)?list:[]).map(it=>cleanItem(it,fast)).filter(Boolean);}
@@ -247,6 +192,7 @@ function cleanBlock(b){
   if(b.n!=null)o.n=Math.round(cleanNum(b.n,1,40,1));
   if(b.rows!=null)o.rows=Math.round(cleanNum(b.rows,1,40,1));
   if(b.cols!=null)o.cols=Math.round(cleanNum(b.cols,1,40,1));
+  if(o.rows!=null&&o.cols!=null&&o.rows*o.cols>MAX_CAJONES)o.cols=Math.max(1,Math.floor(MAX_CAJONES/o.rows)); // filas x columnas <= MAX_CAJONES (144)
   if(b.name!=null)o.name=cleanText(b.name).slice(0,60);
   return o;
 }
@@ -255,15 +201,14 @@ function cleanLayout(l){
   if(!l||typeof l!=='object')return out;
   Object.keys(l).forEach(k=>{
     if(!/^\d{1,2}$/.test(k))return;
-    const arr=Array.isArray(l[k])?l[k].map(cleanBlock).filter(Boolean).slice(0,40):[];
+    const arr=Array.isArray(l[k])?l[k].map(cleanBlock).filter(Boolean).slice(0,MAX_BLOQUES):[];
     if(arr.length)out[k]=arr;
   });
   return out;
 }
 // Estanterías: código solo con letras, números, guion y guion bajo; números acotados; distribución validada
 function cleanShelves(list){
-  return (Array.isArray(list)?list:[]).map(s=>{
-    if(!s||typeof s!=='object')return null;
+  return (Array.isArray(list)?list:[]).filter(s=>s&&typeof s==='object').slice(0,MAX_ESTANTERIAS).map(s=>{ // se recorta antes de limpiar: una lista enorme no gasta tiempo
     const id=String(s.id==null?'':s.id).replace(/[^A-Za-z0-9_-]/g,'').slice(0,64);
     if(!id)return null;
     const o={};
@@ -283,11 +228,52 @@ function cleanShelves(list){
   }).filter(Boolean);
 }
 function cleanAisles(list){
-  return (Array.isArray(list)?list:[]).filter(a=>a&&typeof a==='object').map(a=>({
+  return (Array.isArray(list)?list:[]).filter(a=>a&&typeof a==='object').slice(0,MAX_PASILLOS).map(a=>({
     label:cleanText(a.label==null?'Pasillo':a.label).slice(0,60),
     x:cleanNum(a.x,-10000,100000,0),y:cleanNum(a.y,-10000,100000,0),
     w:cleanNum(a.w,0,100000,0),h:cleanNum(a.h,0,100000,0)
   }));
+}
+// ---- Recortes de configuración: lo que cuenta una configuración antes y después de limpiarla (para avisar de lo que los límites quitan)
+// c={categories,providers,shelves,aisles,printedIds,modifiedIds} (lo que falte cuenta 0). Cuenta lo que hay SIN aplicar los topes de cantidad.
+function _tamCfg(c){
+  const lista=v=>Array.isArray(v)?v:[];
+  const objs=v=>lista(v).filter(s=>s&&typeof s==='object');
+  const idOk=x=>String(x==null?'':x).replace(/[^A-Za-z0-9_-]/g,'').length>0; // mismo criterio que cleanShelves / cleanBlock
+  const r={categories:0,providers:0,shelves:0,aisles:0,blocks:0,drawers:0,printedIds:0,modifiedIds:0};
+  r.categories=new Set(strArr(c.categories,Infinity,60)).size;
+  r.providers=new Set(strArr(c.providers,Infinity,60)).size;
+  r.aisles=objs(c.aisles).length;
+  r.printedIds=lista(c.printedIds).filter(x=>x!=null).length;
+  r.modifiedIds=lista(c.modifiedIds).filter(x=>x!=null).length;
+  objs(c.shelves).filter(s=>idOk(s.id)).forEach(s=>{
+    r.shelves++;
+    const l=s.layout;
+    if(!l||typeof l!=='object')return;
+    Object.keys(l).forEach(k=>{
+      if(!/^\d{1,2}$/.test(k))return;
+      objs(l[k]).filter(b=>idOk(b.id)).forEach(b=>{
+        r.blocks++;
+        if(b.rows!=null&&b.cols!=null)r.drawers+=Math.round(cleanNum(b.rows,1,40,1))*Math.round(cleanNum(b.cols,1,40,1));
+      });
+    });
+  });
+  return r;
+}
+const _ETQ_CFG={categories:['categoría','categorías'],providers:['proveedor','proveedores'],shelves:['estantería','estanterías'],aisles:['pasillo','pasillos'],blocks:['bloque','bloques'],drawers:['cajón','cajones'],printedIds:['etiqueta impresa','etiquetas impresas'],modifiedIds:['artículo modificado','artículos modificados']};
+// Lista de lo que quita la limpieza: ['100 estanterías','3 categorías',...] (vacía si no se pierde nada)
+function _recortesCfg(crudo,limpio){
+  const a=_tamCfg(crudo||{}),b=_tamCfg(limpio||{}),out=[];
+  Object.keys(_ETQ_CFG).forEach(k=>{const d=a[k]-b[k];if(d>0)out.push(d+' '+_ETQ_CFG[k][d===1?0:1]);});
+  return out;
+}
+// Al cargar o sincronizar: si la limpieza ha quitado algo, queda en consola y se avisa UNA vez por sesión. Nunca se sube nada a la nube desde aquí.
+let _recorteAviso=false;
+function _avisarRecorte(crudo,limpio){
+  const d=_recortesCfg(crudo,limpio);
+  if(!d.length)return;
+  console.warn('Configuración recortada al cargarla (solo en este móvil, no se sube a la nube): '+d.join(', '));
+  if(!_recorteAviso){_recorteAviso=true;try{toast('⚠ Se han recortado datos de configuración demasiado grandes; revisa estanterías/categorías');}catch(_){}}
 }
 
 // ---- Cola de cambios pendientes de subir (offline / fallos de red)
@@ -295,7 +281,13 @@ function cleanAisles(list){
 // (id -> {columna:valor}, solo stock/precio/loc/pos): se suben con update y nunca recrean un artículo borrado.
 let dirtyIds=new Set(), dirtyDel=new Set(), dirtyFields=Object.create(null), appReady=false;
 const DIRTY_COLS=['stock','precio','loc','pos'];
-function persistDirty(){cfgPut('dirtyIds',[...dirtyIds]).catch(()=>{});cfgPut('dirtyDel',[...dirtyDel]).catch(()=>{});cfgPut('dirtyFields',{...dirtyFields}).catch(()=>{});}
+// Un fallo al guardar o leer las colas en el móvil no se traga: se deja en consola y se avisa una vez (si la app se cierra antes de subir, se perderían)
+let _dirtyAviso=false;
+function _dirtyFallo(e,que){console.warn('Cola de pendientes ('+que+')',e);if(!_dirtyAviso){_dirtyAviso=true;try{toast('⚠ No se pudo '+que+' la lista de cambios pendientes en este móvil: si cierras la app antes de que se suban, podrían perderse');}catch(_){}}}
+// Devuelve una promesa que NUNCA rechaza (quien necesite esperar a que se guarde puede usar await)
+function persistDirty(){return Promise.all([['dirtyIds',()=>[...dirtyIds]],['dirtyDel',()=>[...dirtyDel]],['dirtyFields',()=>({...dirtyFields})]].map(([k,v])=>{
+  try{return Promise.resolve(cfgPut(k,v())).catch(e=>_dirtyFallo(e,'guardar'));}catch(e){_dirtyFallo(e,'guardar');return Promise.resolve();}
+}));}
 function markDirty(id){dirtyIds.add(id);dirtyDel.delete(id);persistDirty();}
 function clearDirty(id){const f=id in dirtyFields;if(f)delete dirtyFields[id];if(dirtyIds.delete(id)||f)persistDirty();}
 function markDirtyDel(id){dirtyDel.add(id);dirtyIds.delete(id);delete dirtyFields[id];persistDirty();}
@@ -347,7 +339,7 @@ function stockPendiente(id){return dirtyIds.has(id)||!!(dirtyFields[id]&&'stock'
 function hayPendientes(){return dirtyIds.size>0||dirtyDel.size>0||Object.keys(dirtyFields).length>0||dirtyCfg.size>0;}
 // Carga las colas guardadas en el móvil (artículos y configuración; antes de la primera sincronización). Los valores se validan por tipo.
 async function loadDirty(){
-  try{dirtyIds=new Set((await cfgGet('dirtyIds'))||[]);dirtyDel=new Set((await cfgGet('dirtyDel'))||[]);}catch(e){}
+  try{dirtyIds=new Set((await cfgGet('dirtyIds'))||[]);dirtyDel=new Set((await cfgGet('dirtyDel'))||[]);}catch(e){_dirtyFallo(e,'leer');}
   try{dirtyCfg=new Set((await cfgGet('dirtyCfg'))||[]);}catch(e){console.warn('No se pudo leer la cola de configuración pendiente',e);}
   dirtyFields=Object.create(null);
   try{
@@ -365,7 +357,7 @@ async function loadDirty(){
       }
       if(Object.keys(f).length)dirtyFields[id]=f;
     }
-  }catch(e){}
+  }catch(e){_dirtyFallo(e,'leer');}
 }
 // Sube a la nube lo que quedó pendiente (devuelve cuando termina)
 async function flushDirty(){
@@ -385,7 +377,7 @@ async function flushDirty(){
     const r=await cloudUpdateFields(id,{...f});
     if(r==='missing')await dropMissingItem(id); // confirmado con la prueba de lectura: ya no existe
   }
-  persistDirty();
+  await persistDirty();
 }
 // Token a enviar a la Edge Function: el del usuario (si usa Supabase Auth) o la clave pública
 async function authBearer(){
@@ -711,7 +703,7 @@ function defaultShelves(){const a=[];for(let i=1;i<=26;i++){const n=String(i).pa
 // Devuelve true (guardado o ya existía) o false (no se pudo guardar en el móvil o en la nube; si falló la nube queda en la
 // cola dirtyCfg y se sube al sincronizar). NO avisa: lo hace quien llama con sufijoHist() para que el aviso no se tape.
 async function addProvider(name){
-  const n=(name||'').trim();
+  const n=(name||'').trim().slice(0,60); // el mismo tope que al leer la lista (cleanNames)
   if(!n||providers.includes(n))return true;
   providers.push(n);
   let okl=true;
@@ -724,20 +716,35 @@ function renderProviderList(){
   if(dl)dl.innerHTML=providers.map(p=>'<option value="'+esc(p)+'">').join('');
 }
 
+// Arranque con aviso visible: si falla (modo privado, base bloqueada, sin espacio...) la app no se queda en blanco sin explicación
+let _falloBD=false; // true si el último fallo de arranque vino de abrir la base local (openDB)
+function arrancar(){
+  _falloBD=false;
+  const b=document.getElementById('init-error');
+  if(b)b.style.display='none';
+  return init().catch(e=>{
+    console.error('init',e);
+    const m=document.getElementById('init-error-msg');
+    if(m)m.textContent='('+String((e&&(e.message||e.name))||e||'error desconocido').slice(0,160)+') '+(_falloBD?'Los datos de este móvil no se han podido abrir. Si usas el modo privado del navegador, sal de él.':'La aplicación no ha podido arrancar. Si sigue igual, ciérrala del todo y vuelve a abrirla.');
+    if(b)b.style.display='';
+    try{toast('⚠ No se pudo iniciar la app: toca Reintentar');}catch(_){}
+  });
+}
 async function init(){
-  await openDB();
+  try{await openDB();}catch(e){_falloBD=true;throw e;}
   initSupabase();
   // Cargar primero lo local (rápido), luego intentar la nube
-  categories=strArr(await cfgGet('categories'));
-  providers=strArr(await cfgGet('providers'));
+  const _rCats=await cfgGet('categories'),_rProv=await cfgGet('providers'),_rAis=await cfgGet('aisles'); // lo guardado, antes de limpiarlo (para avisar si los límites recortan algo)
+  categories=cleanNames(_rCats);
+  providers=cleanNames(_rProv);
   shelves=await cfgGet('shelves');
+  const _rSh=shelves;
   if(Array.isArray(shelves))shelves=cleanShelves(shelves);
-  aisles=cleanAisles(await cfgGet('aisles'));
+  aisles=cleanAisles(_rAis);
+  _avisarRecorte({categories:_rCats,providers:_rProv,shelves:_rSh,aisles:_rAis},{categories,providers,shelves:Array.isArray(_rSh)?shelves:[],aisles}); // solo aviso: init no sube nada a la nube
   mapSize=await cfgGet('mapSize')||{...DEFAULT_MAP_SIZE};
   await loadPrintedIds();
   if(!shelves||!shelves.length){shelves=defaultShelves();}
-  adminPass=(await cfgGet('adminPass'))||ADMIN_PASS_DEFAULT;
-  const _lc=await cfgGet('loginCfg'); if(_lc)setLoginCfg(_lc);
   try{adminUnlocked=sessionStorage.getItem('almacen_admin_'+WH.key)==='1';}catch(e){}
   if(adminUnlocked&&useSbAuth()&&!(await isAdminRole()))adminUnlocked=false;
   renderUserBar();
@@ -761,15 +768,16 @@ async function init(){
 // Trae todo desde Supabase. Estrategia rápida y fiable:
 //  1) Descarga SOLO los datos (sin fotos) → rápido, casi nunca falla
 //  2) Las fotos que falten en local se bajan después en segundo plano
-let _syncing=false;
+let _syncing=false,_nubeVaciaAviso=false;
 async function syncFromCloud(refrescarTodasFotos=false){
   if(!sb){setCloudStatus(false);return;}
-  if(_syncing||_stockBusy)return; // evita dos sincronizaciones a la vez y pisar un cambio de stock en curso
+  if(_syncing||_stockBusy||_cerrando)return; // evita dos sincronizaciones a la vez, pisar un cambio de stock en curso o escribir mientras se cierra la sesión
   _syncing=true;
   try{await _syncFromCloud(refrescarTodasFotos);}
-  catch(e){console.warn('Error al sincronizar',e);cloudOK=false;try{updateSyncBadge('off');}catch(_){}}
+  catch(e){console.warn('Error al sincronizar',e);cloudOK=false;try{setCloudStatus(false);}catch(_){}} // también el texto "Conectado" de Ajustes y el aviso de Inicio
   finally{_syncing=false;}
 }
+function _cfgSiNoCierra(k,v){return _cerrando?Promise.resolve():cfgPut(k,v);} // durante el cierre de sesión no se escribe en la base local que se va a vaciar
 async function _syncFromCloud(refrescarTodasFotos){
   updateSyncBadge('syncing');
   await pushPendingMovements(); // subir primero los movimientos que quedaron pendientes
@@ -781,7 +789,8 @@ async function _syncFromCloud(refrescarTodasFotos){
   if(_stockBusy){updateSyncBadge('ok');return;} // hay un movimiento de stock en curso: no se mezcla ahora
 
   // Si la nube devuelve una lista vacía pero hay datos locales (p. ej. sesión caducada), no se borra nada
-  if(meta.length===0&&items.length>0){console.warn('La nube devolvió 0 artículos; se conserva lo local');updateSyncBadge('ok');return;}
+  // No se marca "Sincronizado": no se sabe si la nube está de verdad vacía o si la sesión ha caducado (RLS devuelve vacío sin error)
+  if(meta.length===0&&items.length>0){console.warn('La nube devolvió 0 artículos; se conserva lo local');updateSyncBadge('off');if(!_nubeVaciaAviso){_nubeVaciaAviso=true;try{toast('⚠ La nube no devolvió ningún artículo: se conservan los de este móvil. Si la sesión caducó, ciérrala y vuelve a entrar');}catch(_){}}return;}
   // Mapa de fotos locales actuales (para conservarlas y no volver a bajarlas)
   const fotosLocales={};
   items.forEach(i=>{if(i.photo)fotosLocales[i.id]=i.photo;});
@@ -791,8 +800,10 @@ async function _syncFromCloud(refrescarTodasFotos){
   const localById={};items.forEach(i=>{localById[i.id]=i;});
   const seen=new Set();
   const merged=[];
+  let _idsMalos=0;
   meta.forEach(it=>{
-    if(!isSafeId(it.id)||dirtyDel.has(it.id))return;
+    if(!isSafeId(it.id)){_idsMalos++;return;}
+    if(dirtyDel.has(it.id))return;
     seen.add(it.id);
     if(dirtyIds.has(it.id)&&localById[it.id]){merged.push(localById[it.id]);return;}
     const m={...it};
@@ -803,16 +814,20 @@ async function _syncFromCloud(refrescarTodasFotos){
     merged.push(m);
   });
   items.forEach(i=>{if(dirtyIds.has(i.id)&&!seen.has(i.id))merged.push(i);}); // altas locales aún sin subir
-  items=merged.map(cleanItem).filter(Boolean);
+  if(_idsMalos)console.warn('Sincronizar: '+_idsMalos+' artículo(s) de la nube descartados por tener un código no válido');
+  // Las fotos de "merged" son siempre las ya guardadas en el móvil (la de la nube no se copia): validación rápida para todos.
+  // (map(cleanItem) pasaba el índice como segundo argumento: el artículo 0 se validaba a fondo y el resto no.)
+  items=merged.map(it=>cleanItem(it,true)).filter(Boolean);
   if(currentItem){const n=items.find(x=>x.id===currentItem.id);if(n)currentItem=n;}
 
-  // Guardar en local en una sola transacción
+  // Guardar en local en una sola transacción (si mientras tanto empezó el cierre de sesión, no se reescribe lo que se va a vaciar)
+  if(_cerrando)return;
   await dbReplaceAll(items);
 
   // Config desde la nube
   // Toda la configuración de la nube en una sola petición (antes eran nueve seguidas)
   const _s0={..._cfgSeq}; // contadores antes de leer: una clave guardada durante la lectura (aunque ya haya subido) no se pisa con lo leído
-  const _cfg=await cloudCfgGetMany(['categories','providers','shelves','aisles','mapSize','printedIds','modifiedIds','adminPass','loginCfg']);
+  const _cfg=await cloudCfgGetMany(['categories','providers','shelves','aisles','mapSize','printedIds','modifiedIds']);
   // undefined = falló, la clave sigue pendiente de subir o cambió durante la lectura (manda lo local: no se pisa ni se siembra), null = no hay fila
   const g=k=>(_cfg===undefined||dirtyCfg.has(k)||(_cfgSeq[k]||0)!==(_s0[k]||0))?undefined:(k in _cfg?_cfg[k]:null);
   const cCats=g('categories');
@@ -820,18 +835,19 @@ async function _syncFromCloud(refrescarTodasFotos){
   const cShelves=g('shelves');
   const cAisles=g('aisles');
   const cMapSize=g('mapSize');
-  const cPrinted=g('printedIds');
-  if(Array.isArray(cPrinted)){printedIds=new Set(cPrinted);await cfgPut('printedIds',cPrinted);}
+  const cPrinted=g('printedIds'); // (si la orden de cerrar sesión llega mientras se lee la nube, _cfgSiNoCierra no escribe nada de lo siguiente en el móvil)
+  if(Array.isArray(cPrinted)){printedIds=new Set(cPrinted);await _cfgSiNoCierra('printedIds',cPrinted);}
   const cModified=g('modifiedIds');
-  if(Array.isArray(cModified)){modifiedIds=new Set(cModified);await cfgPut('modifiedIds',cModified);}
-  if(Array.isArray(cCats)){categories=strArr(cCats);await cfgPut('categories',categories);}
-  if(Array.isArray(cProviders)){providers=strArr(cProviders);await cfgPut('providers',providers);}
-  if(cShelves&&cShelves.length){shelves=cleanShelves(cShelves);await cfgPut('shelves',shelves);}
+  if(Array.isArray(cModified)){modifiedIds=new Set(cModified);await _cfgSiNoCierra('modifiedIds',cModified);}
+  // Lo que la limpieza recorta (límites de cantidad) solo se avisa: aquí NUNCA se sube a la nube una lista recortada (cloudCfgPut es solo de ediciones del usuario y de la siembra de estanterías)
+  const _crudo={},_limpio={}; // lo recibido y lo que queda tras limpiarlo, para un único aviso por lectura
+  if(Array.isArray(cCats)){categories=cleanNames(cCats);_crudo.categories=cCats;_limpio.categories=categories;await _cfgSiNoCierra('categories',categories);}
+  if(Array.isArray(cProviders)){providers=cleanNames(cProviders);_crudo.providers=cProviders;_limpio.providers=providers;await _cfgSiNoCierra('providers',providers);}
+  if(cShelves&&cShelves.length){shelves=cleanShelves(cShelves);_crudo.shelves=cShelves;_limpio.shelves=shelves;await _cfgSiNoCierra('shelves',shelves);}
   else if(cShelves!==undefined){await cloudCfgPut('shelves',shelves);} // solo se siembra si la lectura funcionó
-  if(Array.isArray(cAisles)){aisles=cleanAisles(cAisles);await cfgPut('aisles',aisles);}
-  if(cMapSize&&cMapSize.w&&cMapSize.h){mapSize={w:Math.round(cleanNum(cMapSize.w,10,120,DEFAULT_MAP_SIZE.w)),h:Math.round(cleanNum(cMapSize.h,10,120,DEFAULT_MAP_SIZE.h))};await cfgPut('mapSize',mapSize);}
-  const cAdmin=g('adminPass'); if(cAdmin){adminPass=cAdmin;await cfgPut('adminPass',cAdmin);}
-  const cLogin=g('loginCfg'); if(cLogin){setLoginCfg(cLogin);await cfgPut('loginCfg',cLogin);}
+  if(Array.isArray(cAisles)){aisles=cleanAisles(cAisles);_crudo.aisles=cAisles;_limpio.aisles=aisles;await _cfgSiNoCierra('aisles',aisles);}
+  _avisarRecorte(_crudo,_limpio);
+  if(cMapSize&&cMapSize.w&&cMapSize.h){mapSize={w:Math.round(cleanNum(cMapSize.w,10,120,DEFAULT_MAP_SIZE.w)),h:Math.round(cleanNum(cMapSize.h,10,120,DEFAULT_MAP_SIZE.h))};await _cfgSiNoCierra('mapSize',mapSize);}
   renderAll();
   if(document.getElementById('page-inicio')?.classList.contains('active'))renderHomeMovements(true);
 
@@ -1840,7 +1856,7 @@ function editCurrentItem(){
   selectedExtraCats=new Set(currentItem.cats||[]);renderCatChips();
   document.getElementById('newcat-zone').style.display='none';renderPhotoZone();resetAiFillStatus();closeModal('modal-detail');openModal('modal-form');
 }
-function renderPhotoZone(){const z=document.getElementById('photo-zone');z.innerHTML=pendingPhoto?`<div class="photo-preview"><img src="${pendingPhoto}"><button class="rotate" onclick="rotatePhoto()" title="Girar imagen"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 12a9 9 0 11-2.64-6.36M21 3v5h-5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="remove" onclick="removePhoto()">×</button></div>`:`<div class="photo-input" onclick="document.getElementById('photo-file').click()"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 9a2 2 0 012-2h.93a2 2 0 001.66-.9l.82-1.2A2 2 0 0110.07 4h3.86a2 2 0 011.66.9l.82 1.2a2 2 0 001.66.9H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z" stroke-width="1.7"/><circle cx="12" cy="13" r="3" stroke-width="1.7"/></svg><p>Tocar para hacer foto o elegir imagen</p></div>`;}
+function renderPhotoZone(){const z=document.getElementById('photo-zone');z.innerHTML=pendingPhoto?`<div class="photo-preview"><img src="${esc(pendingPhoto)}"><button class="rotate" onclick="rotatePhoto()" title="Girar imagen"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 12a9 9 0 11-2.64-6.36M21 3v5h-5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="remove" onclick="removePhoto()">×</button></div>`:`<div class="photo-input" onclick="document.getElementById('photo-file').click()"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 9a2 2 0 012-2h.93a2 2 0 001.66-.9l.82-1.2A2 2 0 0110.07 4h3.86a2 2 0 011.66.9l.82 1.2a2 2 0 001.66.9H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z" stroke-width="1.7"/><circle cx="12" cy="13" r="3" stroke-width="1.7"/></svg><p>Tocar para hacer foto o elegir imagen</p></div>`;}
 function removePhoto(){pendingPhoto=null;photoRemoved=true;renderPhotoZone();}
 // Gira la foto 90° en sentido horario
 function rotatePhoto(){
@@ -2000,7 +2016,7 @@ async function _saveItem(){
   const _invIdx=(!editingId&&_invCreateIdx!==null)?_invCreateIdx:null; // línea de factura que se está creando (si procede)
   const name=document.getElementById('f-name').value.trim();
   let cat=document.getElementById('f-cat').value;
-  if(cat==='__new__')cat=document.getElementById('f-newcat').value.trim();
+  if(cat==='__new__')cat=document.getElementById('f-newcat').value.trim().slice(0,60); // el mismo tope que al leer la lista (cleanNames) y que cleanItem
   const shelf=document.getElementById('f-shelf').value,balda=document.getElementById('f-balda').value;
   if(!name||!cat){toast('⚠ Nombre y categoría obligatorios');return;}
   // Stock y precio se validan ANTES de guardar nada: un valor vacío o no válido ya no se convierte en 0
@@ -2022,6 +2038,7 @@ async function _saveItem(){
     if(campoNumMalo('f-precio')||(_precio!=null&&(!Number.isFinite(_precio)||_precio<0||_precio>INV_MAX_PRICE))){toast('⚠ Precio no válido');return;}
   }
   let _catSoloLocal=false;
+  if(cat&&!categories.includes(cat)&&categories.length>=MAX_NOMBRES){toast('⚠ Ya hay '+MAX_NOMBRES+' categorías (el máximo): elige una existente'); return;} // la lista se recortaría al leerla
   if(cat&&!categories.includes(cat)){categories.push(cat);await cfgPut('categories',categories);_catSoloLocal=!(await cloudCfgPut('categories',categories));}
   // Familias adicionales (sin incluir la principal ni duplicados)
   const extraCats=[...selectedExtraCats].filter(c=>c&&c!==cat);
@@ -2834,6 +2851,8 @@ function renderStartGrid(){
 function setStartPos(n){startPos=n;renderStartGrid();}
 
 async function doPrintLabels(){
+  // Si antes se imprimió el mapa y "afterprint" no llegó a dispararse, su hoja de estilos seguiría activa (se imprimiría el mapa en vez de las etiquetas)
+  const _mapSt=document.getElementById('map-print-page-style');if(_mapSt)_mapSt.remove();
   const sel=items.filter(i=>labelSel.has(i.id));
   if(!sel.length){closeModal('modal-start-pos');return;}
   const cfg=LABEL_SIZES[labelSize];
@@ -2902,8 +2921,34 @@ async function placeScannedItem(found,t){
   try{renderItems();}catch(e){console.warn('colocar aquí: pintar',e);}
   toast(r===true?'✓ '+found.name+' colocado aquí':'⚠ '+found.name+' colocado aquí, pero no se pudo subir a la nube: se reintentará al sincronizar');
 }
-function openScanner(){openModal('modal-scan');scanner=new Html5Qrcode('qr-reader');scanner.start({facingMode:'environment'},{fps:10,qrbox:220},text=>{if(text.startsWith('ALMACEN:')){const id=text.replace('ALMACEN:','');const purpose=scanPurpose;closeScanner();const found=items.find(i=>i.id===id);if(!found){toast('Componente no encontrado');return;}if(purpose==='addhere'&&addHereTarget){const t=addHereTarget;ensureOnline('colocar el artículo').then(ok=>{if(!ok)return;return placeScannedItem(found,t);});}else{openDetail(id);}}},()=>{}).catch(e=>{toast('No se pudo abrir la cámara');console.error(e);});}
-function closeScanner(){scanPurpose=null;if(scanner){scanner.stop().then(()=>{scanner.clear();scanner=null;}).catch(()=>{scanner=null;});}closeModal('modal-scan');}
+// Para la cámara y limpia el visor (idempotente). Si el arranque aún no ha terminado, espera a que termine para poder pararla
+// (si no, la cámara quedaría encendida). Devuelve una promesa que no rechaza; openScanner la espera antes de crear otro escáner.
+let _scannerStop=Promise.resolve();
+// Si el aviso de permiso de la cámara sigue sin contestarse, start() no termina nunca: se espera como máximo este tiempo para no bloquear el siguiente escaneo
+let SCANNER_ARRANQUE_MS=3000;
+function _esperarArranque(s){
+  let t;
+  const limite=new Promise(r=>{t=setTimeout(()=>r(false),SCANNER_ARRANQUE_MS);});
+  return Promise.race([Promise.resolve(s._arranque).then(()=>true,()=>true),limite]).then(listo=>{
+    clearTimeout(t);
+    if(!listo){console.warn('detenerScanner: la cámara no ha arrancado (¿permiso sin contestar?); se parará cuando arranque');Promise.resolve(s._arranque).then(()=>s.stop()).catch(()=>{});}
+    return listo;
+  });
+}
+function detenerScanner(){
+  const s=scanner;scanner=null;
+  if(!s)return _scannerStop;
+  _scannerStop=_scannerStop.then(()=>_esperarArranque(s)).then(listo=>listo?s.stop():null).catch(e=>console.warn('detenerScanner',e)).then(()=>{try{s.clear();}catch(e){console.warn('detenerScanner (limpiar)',e);}});
+  return _scannerStop;
+}
+async function openScanner(){
+  openModal('modal-scan');
+  await detenerScanner(); // cualquier cámara anterior se para y se espera antes de crear otra instancia en #qr-reader
+  if(!document.getElementById('modal-scan').classList.contains('open')||scanner)return; // se cerró (o ya abrió otra llamada) mientras esperaba
+  scanner=new Html5Qrcode('qr-reader');
+  const mio=scanner;
+  mio._arranque=scanner.start({facingMode:'environment'},{fps:10,qrbox:220},text=>{if(scanner!==mio)return;/* ya cerrado: se ignoran lecturas tardías */if(text.startsWith('ALMACEN:')){const id=text.replace('ALMACEN:','');const purpose=scanPurpose;closeScanner();const found=items.find(i=>i.id===id);if(!found){toast('Componente no encontrado');return;}if(purpose==='addhere'&&addHereTarget){const t=addHereTarget;ensureOnline('colocar el artículo').then(ok=>{if(!ok)return;return placeScannedItem(found,t);});}else{openDetail(id);}}},()=>{}).catch(e=>{toast('No se pudo abrir la cámara');console.error(e);});}
+function closeScanner(){closeModal('modal-scan');} // closeModal ya para la cámara y olvida el propósito del escaneo
 
 // ===== COPIAS DE SEGURIDAD (exportar / importar) =====
 // Versión 4: lleva la etiqueta del almacén (warehouse) y, además de artículos/categorías/estanterías, el plano (aisles, mapSize),
@@ -3027,11 +3072,11 @@ async function exportBoth(){
 // Claves de configuración que trae una copia (solo las que tienen contenido: NUNCA se escribe una lista vacía sobre la nube)
 function cfgDeCopia(wd){
   const cfg={};
-  const cats=strArr(wd.categories);if(cats.length)cfg.categories=cats;
+  const cats=cleanNames(wd.categories);if(cats.length)cfg.categories=cats;
   const sh=Array.isArray(wd.shelves)?cleanShelves(wd.shelves):[];if(sh.length)cfg.shelves=sh;
   const ai=Array.isArray(wd.aisles)?cleanAisles(wd.aisles):[];if(ai.length)cfg.aisles=ai;
   const ms=wd.mapSize;if(ms&&ms.w&&ms.h)cfg.mapSize={w:Math.round(cleanNum(ms.w,10,120,DEFAULT_MAP_SIZE.w)),h:Math.round(cleanNum(ms.h,10,120,DEFAULT_MAP_SIZE.h))};
-  const pv=strArr(wd.providers);if(pv.length)cfg.providers=pv;
+  const pv=cleanNames(wd.providers);if(pv.length)cfg.providers=pv;
   const pi=strArr(wd.printedIds).filter(isSafeId);if(pi.length)cfg.printedIds=pi;
   const mo=strArr(wd.modifiedIds).filter(isSafeId);if(mo.length)cfg.modifiedIds=mo;
   return cfg;
@@ -3077,6 +3122,9 @@ function confirmarImportacion(titulo,plan,extras){
   if(extras.descartados)t+='⚠ '+extras.descartados+' artículo(s) del archivo tienen un código no válido y se descartarán. ';
   if(extras.sinEtiqueta)t+='Es una copia antigua sin etiqueta de almacén: asegúrate de que es de este almacén. ';
   if(extras.ignorados)t+=extras.ignorados+' almacén(es) del archivo no existen aquí y se ignoran. ';
+  // Lo que la limpieza (límites de la app) quitaría de la configuración de la copia: se dice exactamente qué, porque sustituye a la de la nube
+  const recortes=plan.map(p=>({n:p.wh&&p.wh.name,r:_recortesCfg(p.wd,cfgDeCopia(p.wd||{}))})).filter(x=>x.r.length);
+  if(recortes.length)t+='⚠ Se recortarán: '+(plan.length>1?recortes.map(x=>x.n+' ('+x.r.join(', ')+')').join('; '):recortes[0].r.join(', '))+' (superan los límites de la app y se perderían al sustituir la configuración de la nube). ';
   document.getElementById('confirm-title').textContent=titulo;
   document.getElementById('confirm-msg').textContent=t+'¿Continuar?';
   document.getElementById('confirm-ok').onclick=async()=>{
@@ -3347,6 +3395,13 @@ async function braveSearch(query,num){
   return {error:'http', status:ultimoEstado};
 }
 
+// Dominio del fabricante que devuelve la IA (dato no fiable): solo se acepta un nombre de dominio (letras, cifras y guiones
+// separadas por puntos, terminado en letras); sin ruta, arroba, dos puntos ni espacios. Devuelve '' si no vale; el enlace se construye como https://<dominio>.
+function webFabricante(v){
+  if(typeof v!=='string')return '';
+  const w=v.trim().replace(/^https?:\/\//i,'').replace(/\/$/,'');
+  return (w.length<=253&&/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/i.test(w))?w:'';
+}
 // Pulsar el bot\u00f3n: hace una b\u00fasqueda por cada categor\u00eda y muestra los enlaces
 async function runWebSearch(){
   const cont=document.getElementById('ai-web-results');
@@ -3387,8 +3442,8 @@ async function runWebSearch(){
   }
 
   // Web oficial del fabricante (si la IA la conoce) — enlace directo, no gasta búsqueda
-  const web=((lastAIIdent&&lastAIIdent.fabricante_web)||'').trim().replace(/^https?:\/\//,'').replace(/\/$/,'');
-  if(web && /\.[a-z]{2,}$/i.test(web)){
+  const web=webFabricante(lastAIIdent&&lastAIIdent.fabricante_web);
+  if(web){
     html+='<div style="margin:16px 0 8px;display:flex;align-items:center;gap:8px;"><span style="font-size:16px;">\ud83c\udf10</span><span class="fl" style="color:var(--green-text);">Web oficial del fabricante</span></div>';
     html+='<a href="https://'+esc(web)+'" target="_blank" rel="noopener" class="card" style="display:block;margin-bottom:10px;text-decoration:none;color:inherit;"><div style="padding:12px 14px;"><strong style="font-size:14px;color:var(--green-text);">'+esc(web)+'</strong></div></a>';
     huboAlgo=true;
@@ -3408,6 +3463,15 @@ async function runWebSearch(){
 
 function imgDims(dataUrl){return new Promise(res=>{const im=new Image();im.onload=()=>res({w:im.naturalWidth,h:im.naturalHeight});im.onerror=()=>res(null);im.src=dataUrl;});}
 
+// Texto para una celda de Excel: siempre cadena y como mucho 32000 caracteres (una celda de más de 32767 corrompe el xlsx); si se corta, se marca.
+// No se antepone comilla a lo que empieza por = + - @: ExcelJS escribe las cadenas como cadenas (nunca como fórmulas), así que no protegía
+// nada en .xlsx y estropeaba textos legítimos como "-5 mm" o "+12V". La app no exporta CSV (donde sí habría que protegerlo).
+function xlsTexto(v){
+  const s=String(v==null?'':v);
+  return s.length>32000?s.slice(0,32000)+' [recortado]':s;
+}
+// Valor de celda: los números se dejan como número; cualquier otra cosa pasa por xlsTexto
+function xlsVal(v){return (typeof v==='number'&&Number.isFinite(v))?v:xlsTexto(v);}
 function exportExcel(){
   // Preguntar primero qué exportar
   openModal('modal-excel-scope');
@@ -3470,15 +3534,15 @@ async function doExportExcel(scope){
 
       const row = ws.addRow([
         '',                           // foto (se incrusta aparte)
-        i.name || '',
-        i.cat  || '',
-        i.loc  || '',
-        i.stock ?? '',
-        i.min   ?? '',
-        i.ref   || '',
-        i.brand || '',
-        i.machine || '',
-        i.notes || '',
+        xlsTexto(i.name),
+        xlsTexto(i.cat),
+        xlsTexto(i.loc),
+        xlsVal(i.stock ?? ''),
+        xlsVal(i.min   ?? ''),
+        xlsTexto(i.ref),
+        xlsTexto(i.brand),
+        xlsTexto(i.machine),
+        xlsTexto(i.notes),
         (i.precio!=null? Number(i.precio) : ''),
         (i.precio!=null? Number((Number(i.precio)*(i.stock||0)).toFixed(2)) : ''),
       ]);
@@ -3572,7 +3636,7 @@ async function diagnosticoMovimientos(){
       // 1) ¿Se puede LEER la tabla?
       const lectura=await sb.from(tabla).select('ts',{count:'exact'}).limit(1);
       if(lectura.error){
-        msg='❌ No se puede acceder a la tabla "'+tabla+'".\n\nCausa probable: la tabla NO existe en Supabase, o tiene el candado de seguridad (RLS) activado.\n\nSolución: ejecuta en Supabase los SQL de seguridad (supabase_seguridad.sql y supabase_admin_roles.sql) y comprueba que la tabla existe.\n\nDetalle técnico: '+(lectura.error.message||lectura.error);
+        msg='❌ No se puede acceder a la tabla "'+tabla+'".\n\nCausa probable: la tabla NO existe en Supabase, o tiene el candado de seguridad (RLS) activado.\n\nSolución: ejecuta en Supabase el SQL de seguridad (supabase_admin_roles.sql) y comprueba que la tabla existe.\n\nDetalle técnico: '+(lectura.error.message||lectura.error);
       }else{
         const total=lectura.count;
         // 2) ¿Se puede ESCRIBIR? insert de prueba y borrado
@@ -3580,7 +3644,7 @@ async function diagnosticoMovimientos(){
         const prueba={itemId:'__TEST__',nombre:'PRUEBA',ref:'',cat:'',loc:'',brand:'',machine:'',fecha:'',hora:'',turno:'',tipo:'Entrada',anterior:0,nuevo:0,diferencia:0,ts:testTs};
         const ins=await sb.from(tabla).insert(prueba);
         if(ins.error){
-          msg='⚠ La tabla "'+tabla+'" se puede LEER ('+total+' movimientos guardados en la nube) pero NO se puede ESCRIBIR.\n\nCausa: el candado de seguridad (RLS) bloquea la escritura.\n\nSolución: ejecuta en Supabase supabase_seguridad.sql y supabase_admin_roles.sql (nunca desactives la seguridad de la tabla).\n\nDetalle técnico: '+(ins.error.message||ins.error);
+          msg='⚠ La tabla "'+tabla+'" se puede LEER ('+total+' movimientos guardados en la nube) pero NO se puede ESCRIBIR.\n\nCausa: el candado de seguridad (RLS) bloquea la escritura.\n\nSolución: ejecuta en Supabase supabase_admin_roles.sql (nunca desactives la seguridad de la tabla).\n\nDetalle técnico: '+(ins.error.message||ins.error);
         }else{
           await sb.from(tabla).delete().eq('itemId','__TEST__').eq('ts',testTs);
           msg='✅ Todo correcto.\n\nLa tabla "'+tabla+'" funciona: se puede leer y escribir.\n\nMovimientos guardados en la nube ahora mismo: '+total+'.\n\nSi tienes movimientos antiguos que solo se ven en un navegador, abre ese navegador y pulsa "Descargar de la nube": la app subirá automáticamente los que falten.';
@@ -3649,7 +3713,8 @@ async function doExportMovimientos(){
     for(let idx=0;idx<sorted.length;idx++){
       const m=sorted[idx];const rowNum=idx+2;
       const diff=m.diferencia;const esEntrada=diff>0;
-      const row=ws.addRow(['',(m.fecha||''),(m.turno||''),(m.hora||''),(m.tipo||''),(m.nombre||''),(m.cat||''),(m.loc||''),(m.anterior??''),(diff>0?'+':'')+diff,(m.nuevo??''),(m.coste!=null?Number(m.coste):''),(m.ref||''),(m.brand||''),(m.machine||m.maq||''),...(adminUnlocked?[quienMov(m)]:[])]);
+      const dTxt=Number.isFinite(Number(diff))&&diff!==''&&diff!=null?((diff>0?'+':'')+Number(diff)):xlsTexto(diff); // la diferencia lleva su signo (+5 / -3); si no es un número se trata como texto
+      const row=ws.addRow(['',xlsTexto(m.fecha),xlsTexto(m.turno),xlsTexto(m.hora),xlsTexto(m.tipo),xlsTexto(m.nombre),xlsTexto(m.cat),xlsTexto(m.loc),xlsVal(m.anterior??''),dTxt,xlsVal(m.nuevo??''),(m.coste!=null&&Number.isFinite(Number(m.coste))?Number(m.coste):''),xlsTexto(m.ref),xlsTexto(m.brand),xlsTexto(m.machine||m.maq),...(adminUnlocked?[xlsTexto(quienMov(m))]:[])]);
       row.height=ROW_H;
       const bg=idx%2===0?'FFFFFFFF':'FFF5F4F0';
       row.eachCell({includeEmpty:true},(cell,colNum)=>{cell.alignment={vertical:'middle',horizontal:colNum===6?'left':'center',wrapText:true};cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:bg}};cell.font={size:11};cell.border={bottom:{style:'hair',color:{argb:'FFDDDDDD'}}};});
@@ -3729,6 +3794,8 @@ function esc(s){return(s||'').toString().replace(/[&<>"']/g,c=>({'&':'&amp;','<'
 function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){
   document.getElementById(id).classList.remove('open');
+  // Cerrar el escáner por cualquier vía (Cancelar, deslizar, Escape) apaga la cámara y olvida para qué se abrió
+  if(id==='modal-scan'){scanPurpose=null;detenerScanner();}
   // Si se cierra el formulario de "Crear nuevo" desde una factura sin guardar, se olvida la línea y se vuelve a la factura
   if(id==='modal-form'&&_invCreateIdx!==null){
     _invCreateIdx=null;
@@ -3746,24 +3813,28 @@ document.addEventListener('keydown',function(e){
   closeModal(top.id);
 });
 // Cerrar el modal con un deslizamiento de izquierda a derecha (móvil)
-(function(){
-  let sx=0,sy=0,st=0,active=null;
-  document.addEventListener('touchstart',function(e){
-    const bg=e.target.closest('.modal-bg.open');
-    if(!bg)return;
-    active=bg;
-    sx=e.touches[0].clientX;
-    sy=e.touches[0].clientY;
-    st=Date.now();
-  },{passive:true});
-  document.addEventListener('touchend',function(e){
-    if(!active)return;
-    const t=e.changedTouches[0];
-    const dx=t.clientX-sx, dy=t.clientY-sy, dt=Date.now()-st;
-    if(dx>70 && Math.abs(dy)<60 && dt<700)closeModal(active.id);
-    active=null;
-  },{passive:true});
-})();
+let _swipe={sx:0,sy:0,st:0,active:null};
+function _swipeInicio(e){
+  _swipe.active=null;
+  // Un deslizamiento sobre un control deslizante (p. ej. el tamaño de las etiquetas) es para moverlo, no para cerrar la ventana
+  if(e.target&&e.target.closest&&e.target.closest('input[type=range]'))return;
+  const bg=e.target.closest('.modal-bg.open');
+  if(!bg)return;
+  _swipe.active=bg;
+  _swipe.sx=e.touches[0].clientX;
+  _swipe.sy=e.touches[0].clientY;
+  _swipe.st=Date.now();
+}
+function _swipeFin(e){
+  if(!_swipe.active)return;
+  const t=e.changedTouches[0];
+  const dx=t.clientX-_swipe.sx, dy=t.clientY-_swipe.sy, dt=Date.now()-_swipe.st;
+  const bg=_swipe.active;
+  _swipe.active=null;
+  if(dx>70 && Math.abs(dy)<60 && dt<700)closeModal(bg.id);
+}
+document.addEventListener('touchstart',_swipeInicio,{passive:true});
+document.addEventListener('touchend',_swipeFin,{passive:true});
 let _toastT=null;
 function _toastMs(msg){const n=String(msg).length;return n>80?Math.min(12000,2500+n*40):2500;}
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(_toastT);_toastT=setTimeout(()=>t.classList.remove('show'),_toastMs(msg));} // los avisos largos (fallos de guardado) tardan más en leerse: 2,5 s + 40 ms por carácter, máximo 12 s
@@ -3835,6 +3906,21 @@ async function authSessionOk(){
   }
   return true;
 }
+// Distingue por qué falla el inicio de sesión: credenciales erróneas (400 / invalid_credentials), problema de red
+// (sin respuesta: status 0 o ausente, AuthRetryableFetchError, 5xx o excepción), demasiados intentos (429) u otro error.
+function motivoErrorLogin(err){
+  const st=err&&err.status, code=err&&err.code;
+  if(code==='invalid_credentials'||code==='invalid_grant'||st===400)return 'credenciales';
+  if(st===429||code==='over_request_rate_limit')return 'limite';
+  if(!st||(err&&err.name==='AuthRetryableFetchError')||st>=500)return 'red';
+  return 'otro';
+}
+const MSG_LOGIN={
+  credenciales:'Usuario o contraseña incorrectos',
+  red:'No se pudo conectar con el servidor: comprueba la conexión e inténtalo de nuevo',
+  limite:'Demasiados intentos: espera un momento e inténtalo de nuevo',
+  otro:'No se pudo iniciar sesión: inténtalo de nuevo en un momento'
+};
 async function doLogin(){
   if(!WH){showWarehouseSelector();return;}
   const u=document.getElementById('login-user').value.trim();
@@ -3844,24 +3930,23 @@ async function doLogin(){
     if(!sb)initSupabase();
     const errEl=document.getElementById('login-error');
     if(!sb){errEl.textContent='Sin conexión: no se puede iniciar sesión';return;}
-    const{error}=await sb.auth.signInWithPassword({email:u,password:p});
-    if(error){errEl.textContent='Usuario o contraseña incorrectos';document.getElementById('login-pass').value='';return;}
+    let error=null;
+    try{({error}=await sb.auth.signInWithPassword({email:u,password:p}));}
+    catch(e){error=e||new Error('error desconocido');}
+    if(error){
+      const motivo=motivoErrorLogin(error);
+      errEl.textContent=MSG_LOGIN[motivo];
+      if(motivo==='credenciales')document.getElementById('login-pass').value=''; // solo se borra la contraseña si de verdad era incorrecta
+      return;
+    }
     try{localStorage.setItem(sesStorageKey(),String(Date.now()));}catch(e){}
     adminUnlocked=false;
     try{['electrico','mecanico'].forEach(k=>sessionStorage.removeItem('almacen_admin_'+k));}catch(e){}
     enterApp();
     return;
   }
-  const creds=_authCredentials||await loadAuthCredentials();
-  const ph=await sha256(p);
-  const storedHash=creds['pass_'+WH.key]||'';
-  if(storedHash && creds.user && u===creds.user && ph===storedHash){
-    try{localStorage.setItem(sesStorageKey(),String(Date.now()));}catch(e){}
-    enterApp();
-  }else{
-    document.getElementById('login-error').textContent=storedHash?'Usuario o contraseña incorrectos':'No se pueden comprobar las credenciales (sin conexión)';
-    document.getElementById('login-pass').value='';
-  }
+  // El acceso antiguo (usuario y contraseña de una tabla propia) ya no existe: solo se entra con Supabase Auth
+  document.getElementById('login-error').textContent='Acceso no disponible: esta versión solo admite el acceso con Supabase Auth';
 }
 
 // HTML de la barra: pestaña del almacén actual (activa), enlace al otro almacén y nombre del usuario
@@ -3879,8 +3964,8 @@ let _sessionUid=null,_sessionName='';
 async function askLogout(){
   let aviso='';
   try{
-    const pend=(await movGetAll()).filter(m=>!m.synced).length;
-    if(pend||hayPendientes())aviso=' Hay cambios sin sincronizar: espera a que se suban (indicador de sincronización) antes de salir; si no, se anotarán a nombre de quien entre después en este móvil.';
+    const d=await contarPendientesDetalle(); // este almacén y el otro
+    if(d.actual+d.otro>0||hayPendientes())aviso=' Hay cambios sin sincronizar: se intentarán subir antes de salir; si no se consigue, te lo diremos y podrás cancelar (si sales igualmente, se perderán'+(d.otro>0?', también los del otro almacén':'')+'). Al salir se borran de este móvil los datos de la sesión.';
   }catch(e){}
   document.getElementById('confirm-title').textContent='Cerrar sesión';
   document.getElementById('confirm-msg').textContent=(_sessionName?('Vas a cerrar la sesión de '+_sessionName+' en los dos almacenes.'):'Vas a cerrar la sesión en los dos almacenes.')+aviso;
@@ -3897,10 +3982,13 @@ async function renderUserBar(){
     initSupabase();
     if(!sb)return;
     const{data}=await sb.auth.getSession();
-    const em=data&&data.session&&data.session.user&&data.session.user.email;
-    if(em)bar.innerHTML=whBarHtml(WAREHOUSE_CONFIG,other,String(em).split('@')[0].slice(0,40),!adminUnlocked,true);
-    _sessionName=String(em).split('@')[0].slice(0,40);
-    _sessionUid=data.session.user.id||null;
+    const usr=data&&data.session&&data.session.user;
+    const em=usr&&usr.email;
+    if(em){ // sin correo no se escribe "undefined" ni en la barra ni en el aviso de cerrar sesión
+      _sessionName=String(em).split('@')[0].slice(0,40);
+      bar.innerHTML=whBarHtml(WAREHOUSE_CONFIG,other,_sessionName,!adminUnlocked,true);
+    }
+    _sessionUid=(usr&&usr.id)||null;
   }catch(e){console.warn('renderUserBar',e);}
 }
 function enterApp(){
@@ -3909,33 +3997,189 @@ function enterApp(){
   document.getElementById('app-root').style.display='';
   renderUserBar();
   if(useSbAuth()){
-    try{localStorage.removeItem('almacen_auth_cache');localStorage.removeItem('almacen_login');}catch(e){} // restos del acceso antiguo
-    document.querySelectorAll('[onclick="openChangePass()"],[onclick="openUsers()"]').forEach(b=>{b.style.display='none';});
-    const h=document.getElementById('sec-help');
-    if(h)h.textContent='El acceso lo gestiona Supabase: cada persona entra con su propio usuario y los administradores se marcan allí. Usa el candado 🔒 de la parte superior para activar o quitar el modo administrador.';
+    try{localStorage.removeItem('almacen_auth_cache');localStorage.removeItem('almacen_login');}catch(e){} // restos del acceso antiguo (huellas de contraseñas en caché): se siguen borrando de los móviles que las tengan
   }
-  if(!appStarted){appStarted=true;init();}
+  if(!appStarted){appStarted=true;arrancar();}
 }
 
-async function logout(){
-  // Se borra la sesión y el desbloqueo de administrador de LOS DOS almacenes
-  try{
-    localStorage.removeItem(sesStorageKey());
-    const whs=[];
-    if(typeof WAREHOUSE_CONFIG!=='undefined')whs.push(WAREHOUSE_CONFIG);
-    if(typeof WAREHOUSE_OTHER_CONFIG!=='undefined')whs.push(WAREHOUSE_OTHER_CONFIG);
-    if(WH)whs.push(WH);
-    whs.forEach(w=>{
-      if(w.sesKey)localStorage.removeItem(w.sesKey);
-      if(w.key)sessionStorage.removeItem('almacen_admin_'+w.key);
-    });
-  }catch(e){}
-  if(sb&&useSbAuth()){
-    try{const r=await sb.auth.signOut({scope:'local'});if(r&&r.error)console.warn('signOut',r.error);}catch(e){console.warn('signOut',e);}
-    // Aunque falle la red, se elimina el token guardado en el navegador
-    try{Object.keys(localStorage).filter(k=>/^sb-.*-auth-token/.test(k)).forEach(k=>localStorage.removeItem(k));}catch(e){}
+// Tiempos límite del cierre de sesión (ms): ninguna operación local o de red puede dejar el cierre colgado (variables para poder probarlo)
+let VACIAR_MS=5000,SIGNOUT_MS=5000;
+const BORRAR_FLAG='almacen_borrar_pendiente'; // marca en localStorage: "hay que vaciar los datos locales" (sobrevive a un cierre brusco de la app)
+// Resuelve con `valor` si la promesa no termina a tiempo (y lo deja en consola)
+function _conLimite(p,ms,valor,etq){
+  let t;
+  return Promise.race([p,new Promise(res=>{t=setTimeout(()=>{console.warn(etq+': tiempo agotado');res(valor);},ms);})]).finally(()=>clearTimeout(t));
+}
+// Nombre de la base local del OTRO almacén (o null si no hay otro)
+function _bdOtroAlmacen(){
+  return (typeof WAREHOUSE_OTHER_CONFIG!=='undefined'&&WAREHOUSE_OTHER_CONFIG&&WAREHOUSE_OTHER_CONFIG.db&&WAREHOUSE_OTHER_CONFIG.db!==DB_NAME)?WAREHOUSE_OTHER_CONFIG.db:null;
+}
+// Cuenta, SOLO LEYENDO, los cambios sin subir de una base local por su nombre (movimientos sin sincronizar + colas dirty*). No crea la base si no existía.
+// Devuelve el número, o null si no se pudo leer; nunca rechaza.
+function _pendientesBD(nombre){return new Promise(res=>{
+  let r,nueva=false;
+  try{r=indexedDB.open(nombre);}catch(e){console.warn('Contar pendientes',nombre,e);res(null);return;}
+  r.onupgradeneeded=e=>{nueva=true;try{e.target.transaction.abort();}catch(_){}}; // sin versión: si se pide una upgrade es que no existía; se aborta para no crearla
+  r.onerror=()=>res(nueva?0:null);
+  r.onblocked=()=>{};
+  r.onsuccess=()=>{
+    const d=r.result;
+    try{
+      const nom=[CFG,MOV].filter(n=>d.objectStoreNames.contains(n));
+      if(!nom.length){d.close();res(0);return;}
+      const tx=d.transaction(nom,'readonly');
+      let n=0;
+      tx.oncomplete=()=>{d.close();res(n);};
+      tx.onerror=tx.onabort=()=>{console.warn('Contar pendientes',nombre,tx.error);try{d.close();}catch(_){}res(null);};
+      if(nom.includes(MOV)){const g=tx.objectStore(MOV).getAll();g.onsuccess=()=>{n+=(g.result||[]).filter(m=>m.synced!==true).length;};}
+      if(nom.includes(CFG)){['dirtyIds','dirtyDel','dirtyFields','dirtyCfg'].forEach(k=>{const g=tx.objectStore(CFG).get(k);g.onsuccess=()=>{const v=g.result&&g.result.value;if(v)n+=Array.isArray(v)?v.length:Object.keys(v).length;};});}
+    }catch(e){console.warn('Contar pendientes',nombre,e);try{d.close();}catch(_){}res(null);}
+  };
+});}
+// Cuántos cambios siguen sin subir a la nube, de ESTE almacén (movimientos locales no sincronizados + colas de artículos, borrados, columnas y
+// configuración) y del OTRO (se leen de su base local; desde aquí no se pueden subir). Si no se puede leer el otro cuenta 0 y queda en consola.
+async function contarPendientesDetalle(){
+  let actual=dirtyIds.size+dirtyDel.size+Object.keys(dirtyFields).length+dirtyCfg.size;
+  try{actual+=(await movGetAll()).filter(m=>m.synced!==true).length;}catch(e){console.warn('contarPendientes',e);}
+  let otro=0;
+  const o=_bdOtroAlmacen();
+  if(o){
+    const n=await _conLimite(_pendientesBD(o),VACIAR_MS,null,'Contar pendientes del otro almacén');
+    if(n===null)console.warn('Cerrar sesión: no se pudieron leer los cambios sin subir del otro almacén ('+o+'); se cuentan como 0');
+    else otro=n;
   }
-  location.reload();
+  return {actual,otro};
+}
+async function contarPendientes(){const d=await contarPendientesDetalle();return d.actual+d.otro;}
+// Antes de cerrar sesión: sube lo pendiente (con tiempo límite). Espera a que termine una sincronización o un cambio de stock en curso
+// y bloquea la sincronización automática mientras sube (mismo candado _syncing); si no puede esperar, no toca nada.
+let SALIR_ESPERA_MS=8000,SALIR_SUBIDA_MS=20000;
+async function subirAntesDeSalir(){
+  const t0=Date.now();
+  while((_syncing||_stockBusy)&&Date.now()-t0<SALIR_ESPERA_MS)await new Promise(r=>setTimeout(r,100));
+  if(_syncing||_stockBusy)return;
+  _syncing=true;
+  try{await withTimeout((async()=>{await pushPendingMovements();await flushDirty();await flushDirtyCfg();})(),SALIR_SUBIDA_MS,'subir antes de salir');}
+  catch(e){console.warn('logout: no se pudo subir todo',e);}
+  finally{_syncing=false;}
+}
+// Vacía una base local por su nombre (artículos con precio y fotos, configuración con las colas de pendientes, movimientos).
+// respetar=true: si guarda cambios sin subir (movimientos sin sincronizar o colas dirty*) NO la toca. Nunca crea una base que no existía.
+// Devuelve 'vaciada', 'pendientes' (respetada), 'noexiste' o 'error'; nunca rechaza (y con tiempo límite: si la base no responde, 'error').
+function _vaciarBD(nombre,respetar){return _conLimite(_vaciarBDRaw(nombre,respetar),VACIAR_MS,'error','Vaciar base local '+nombre);}
+function _vaciarBDRaw(nombre,respetar){return new Promise(res=>{
+  let r,nueva=false;
+  try{r=indexedDB.open(nombre);}catch(e){console.warn('Vaciar base local',nombre,e);res('error');return;}
+  r.onupgradeneeded=e=>{nueva=true;try{e.target.transaction.abort();}catch(_){}}; // sin versión: si se pide una upgrade es que no existía; se aborta para no crearla
+  r.onerror=()=>res(nueva?'noexiste':'error');
+  r.onblocked=()=>{};
+  r.onsuccess=()=>{
+    const d=r.result;
+    try{
+      const nom=[STORE,CFG,MOV].filter(n=>d.objectStoreNames.contains(n));
+      if(!nom.length){d.close();res('noexiste');return;}
+      const tx=d.transaction(nom,'readwrite');
+      let estado='vaciada',falta=0,pend=false;
+      const limpiar=()=>nom.forEach(n=>tx.objectStore(n).clear());
+      tx.oncomplete=()=>{d.close();res(estado);};
+      tx.onerror=tx.onabort=()=>{console.warn('Vaciar base local',nombre,tx.error);try{d.close();}catch(_){}res('error');};
+      if(!respetar){limpiar();return;}
+      const listo=()=>{if(--falta>0)return;if(pend)estado='pendientes';else limpiar();};
+      if(nom.includes(MOV)){falta++;const g=tx.objectStore(MOV).getAll();g.onsuccess=()=>{if((g.result||[]).some(m=>m.synced!==true))pend=true;listo();};}
+      if(nom.includes(CFG)){['dirtyIds','dirtyDel','dirtyFields','dirtyCfg'].forEach(k=>{falta++;const g=tx.objectStore(CFG).get(k);g.onsuccess=()=>{const v=g.result&&g.result.value;if(v&&(Array.isArray(v)?v.length:Object.keys(v).length))pend=true;listo();};});}
+      if(!falta)limpiar();
+    }catch(e){console.warn('Vaciar base local',nombre,e);try{d.close();}catch(_){}res('error');}
+  };
+});}
+// Al cerrar sesión: no puede quedar nada de la persona anterior en el móvil (precios, fotos, movimientos, colas ni historial de búsqueda).
+// La base del almacén actual se vacía siempre (ya se subió lo pendiente o la persona aceptó descartarlo); la del OTRO almacén solo si no tiene
+// cambios sin subir (desde aquí no se pueden subir) y nunca se crea una que no existía. Cada fallo se deja en consola, sin impedir el cierre.
+// todo=true (la persona aceptó perder lo pendiente, o se retoma un cierre interrumpido): también se vacía la del otro almacén aunque tenga cambios sin subir.
+// Devuelve {base:'vaciada'|'pendientes'|'noexiste'|'error'}: quien llama conserva la marca de borrado si alguna es 'error'.
+async function borrarDatosLocales(todo){
+  const actual=DB_NAME,otras=new Set(),claves=new Set(['almacen_auth_cache','almacen_login']); // los dos últimos: restos del acceso antiguo (huellas de contraseñas)
+  [typeof WAREHOUSE_CONFIG!=='undefined'?WAREHOUSE_CONFIG:null,typeof WAREHOUSE_OTHER_CONFIG!=='undefined'?WAREHOUSE_OTHER_CONFIG:null,WH].forEach(w=>{
+    if(!w)return;
+    if(w.db&&w.db!==actual)otras.add(w.db);
+    if(w.key)claves.add('almacen_search_history_'+w.key);
+  });
+  try{Object.keys(localStorage).filter(k=>/^almacen_search_history_/.test(k)).forEach(k=>claves.add(k));}catch(e){console.warn('Cerrar sesión: no se pudo recorrer el almacenamiento local',e);}
+  claves.forEach(k=>{try{localStorage.removeItem(k);}catch(e){console.warn('Cerrar sesión: no se pudo borrar '+k,e);}}); // un fallo aquí no se traga: queda en consola
+  const r={actual:actual?await _vaciarBD(actual,false):'noexiste'};
+  for(const n of otras)r[n]=await _vaciarBD(n,!todo);
+  Object.keys(r).forEach(k=>{if(r[k]==='pendientes')console.warn('Cerrar sesión: la base local '+k+' tiene cambios sin subir y se conserva');else if(r[k]==='error')console.warn('Cerrar sesión: no se pudo vaciar la base local '+k);});
+  return r;
+}
+let _saliendo=false,_cerrando=false; // _cerrando: la sesión ya se está cerrando (no arrancan sincronizaciones que reescribirían la base local)
+async function logout(forzar){
+  if(_saliendo||_cerrando)return; // doble pulsación mientras se suben los pendientes o se cierra
+  if(!forzar){
+    _saliendo=true;
+    try{
+      let pend=await contarPendientesDetalle(); // este almacén y el otro (el otro solo se puede subir entrando en él)
+      if(pend.actual>0&&sb&&!(typeof navigator!=='undefined'&&navigator.onLine===false)){
+        try{toast('Subiendo los cambios pendientes antes de salir…');}catch(_){}
+        await subirAntesDeSalir();
+        pend=await contarPendientesDetalle();
+      }
+      if(pend.actual+pend.otro>0){
+        // Siguen sin subirse (sin conexión, sesión caducada, o son del otro almacén): el cierre exige confirmación explícita. Si se acepta, se borran de los DOS almacenes con el resto de datos locales (si no, se subirían a nombre de quien entre después).
+        document.getElementById('confirm-title').textContent='Hay cambios sin subir';
+        document.getElementById('confirm-msg').textContent='Quedan '+(pend.actual+pend.otro)+' cambio(s) sin subir a la nube (este almacén '+pend.actual+', el otro '+pend.otro+'). Si cierras sesión ahora SE PERDERÁN los de los dos almacenes: se borran de este móvil junto con el resto de los datos de la sesión. Lo mejor es cancelar, esperar a tener conexión y salir cuando el indicador diga "Sincronizado"'+(pend.otro>0?' (los del otro almacén solo se pueden subir desde él: ábrelo con tu usuario y espera a "Sincronizado" antes de salir)':'')+'.';
+        document.getElementById('confirm-ok').onclick=()=>{closeModal('modal-confirm');logout(true);};
+        openModal('modal-confirm');
+        return;
+      }
+    }finally{_saliendo=false;}
+  }
+  _cerrando=true; // desde aquí no arrancan sincronizaciones (reescribirían la base local que se va a vaciar)
+  let recargado=false; // si la página no llega a recargarse (excepción), _cerrando no puede quedarse en true para siempre
+  try{
+    // La marca va ANTES de cerrar la sesión: si la app se cierra o muere a mitad, al arrancar se vacía antes de leer nada (ver _borradoPendienteAlArrancar)
+    try{localStorage.setItem(BORRAR_FLAG,'1');}catch(e){console.warn('Cerrar sesión: no se pudo escribir la marca de borrado pendiente',e);}
+    // Se borra la sesión y el desbloqueo de administrador de LOS DOS almacenes
+    try{
+      localStorage.removeItem(sesStorageKey());
+      const whs=[];
+      if(typeof WAREHOUSE_CONFIG!=='undefined')whs.push(WAREHOUSE_CONFIG);
+      if(typeof WAREHOUSE_OTHER_CONFIG!=='undefined')whs.push(WAREHOUSE_OTHER_CONFIG);
+      if(WH)whs.push(WH);
+      whs.forEach(w=>{
+        if(w.sesKey)localStorage.removeItem(w.sesKey);
+        if(w.key)sessionStorage.removeItem('almacen_admin_'+w.key);
+      });
+    }catch(e){}
+    if(sb&&useSbAuth()){
+      // Con tiempo límite: un signOut que no responde (red caída) no deja el cierre colgado
+      try{const r=await withTimeout(sb.auth.signOut({scope:'local'}),SIGNOUT_MS,'signOut');if(r&&r.error)console.warn('signOut',r.error);}catch(e){console.warn('signOut',e);}
+      // Aunque falle la red, se elimina el token guardado en el navegador
+      try{Object.keys(localStorage).filter(k=>/^sb-.*-auth-token/.test(k)).forEach(k=>localStorage.removeItem(k));}catch(e){}
+    }
+    // Se espera (como mucho 3 s) a que acabe una sincronización o un cambio de stock en curso y se vacía la base local
+    let r=null,perdidos=0;
+    try{
+      const t0=Date.now();
+      while((_syncing||_stockBusy)&&Date.now()-t0<3000)await new Promise(r=>setTimeout(r,50));
+      // Sin confirmación previa no debería haber nada pendiente: se recuenta justo antes de vaciar por si algo se hizo mientras se cerraba la sesión
+      if(!forzar){try{perdidos=(await contarPendientesDetalle()).actual;}catch(e){console.warn('Cerrar sesión: recuento previo al vaciado',e);}}
+      r=await borrarDatosLocales(!!forzar); // aceptado el descarte (forzar): también el otro almacén
+    }catch(e){console.warn('Cerrar sesión: no se pudieron borrar los datos locales',e);}
+    // El resultado se mira: con un fallo la marca se CONSERVA (al arrancar se reintenta) y se avisa; si no, se quita
+    const fallo=!r||Object.keys(r).some(k=>r[k]==='error');
+    const conservada=r?Object.keys(r).filter(k=>r[k]==='pendientes'):[];
+    if(!fallo){try{localStorage.removeItem(BORRAR_FLAG);}catch(e){console.warn('Cerrar sesión: no se pudo quitar la marca de borrado pendiente',e);}}
+    const avisos=[];
+    if(fallo)avisos.push('No se pudieron borrar todos los datos de este móvil: se reintentará al abrir la app. Si aparece un aviso, ciérrala del todo y vuelve a abrirla antes de que entre otra persona.');
+    if(conservada.length)avisos.push('El otro almacén conserva en este móvil cambios sin subir que aparecieron mientras se cerraba la sesión y se subirían a nombre de quien entre después. Vuelve a entrar con tu usuario, abre ese almacén y espera a "Sincronizado" antes de salir.');
+    if(perdidos>0)avisos.push('Se descartaron '+perdidos+' cambio(s) sin subir de este almacén que se hicieron mientras se cerraba la sesión.');
+    if(avisos.length){
+      const m=avisos.join(' ');
+      try{toast('⚠ '+m);}catch(_){}
+      try{if(typeof alert==='function')alert(m);}catch(_){} // bloquea hasta que se lea: la recarga de abajo borraría el toast
+    }
+    location.reload();
+    recargado=true;
+  }finally{if(!recargado)_cerrando=false;}
 }
 // Sincronización automática (así se ven los cambios de otras personas sin tocar nada)
 function autoSync(){
@@ -3966,14 +4210,8 @@ if(typeof window!=='undefined'&&window.addEventListener){
 }
 
 
-// ===== CONTRASEÑA ÚNICA / DESBLOQUEO DE SESIÓN =====
-const ADMIN_PASS_DEFAULT='';
-let adminPass=ADMIN_PASS_DEFAULT, adminUnlocked=false, pendingAdminAction=null;
-// Huella (hash) de la contraseña de administrador; si no hay ninguna guardada, usa la de app_auth
-async function adminHash(){
-  if(adminPass)return adminPass.length===64?adminPass:await sha256(adminPass);
-  return (_authCredentials&&_authCredentials.admin_pass)||'';
-}
+// ===== DESBLOQUEO DEL MODO ADMINISTRADOR (rol de Supabase) =====
+let adminUnlocked=false, pendingAdminAction=null;
 
 // ¿El usuario con sesión es administrador? (rol puesto en Supabase: app_metadata.role = 'admin')
 async function isAdminRole(){
@@ -3989,13 +4227,7 @@ async function isAdminRole(){
 function requireAdmin(action){
   if(adminUnlocked){if(action)action();return;}
   pendingAdminAction=action;
-  if(useSbAuth()){showRoleUnlock();return;}
-  document.getElementById('unlock-pass').parentElement.style.display='';
-  const ub=document.getElementById('unlock-btn');if(ub)ub.style.display='';
-  document.getElementById('unlock-msg').textContent='Introduce la contraseña de Ajustes para continuar. Una vez desbloqueado, no te la volverá a pedir mientras tengas la app abierta.';
-  document.getElementById('unlock-pass').value='';
-  openModal('modal-unlock');
-  setTimeout(()=>document.getElementById('unlock-pass').focus(),120);
+  showRoleUnlock(); // sin Supabase Auth isAdminRole() da false: nadie puede desbloquear
 }
 // Con Supabase Auth no hay contraseña de administrador: el admin solo confirma que quiere desbloquear
 async function showRoleUnlock(){
@@ -4023,15 +4255,7 @@ function toggleAdminLock(){
   if(adminUnlocked)lockAdmin();else requireAdmin(null);
 }
 async function submitUnlock(){
-  if(useSbAuth()){
-    if(!(await isAdminRole())){toast('Tu usuario no es administrador');return;}
-    finishUnlock();return;
-  }
-  const p=document.getElementById('unlock-pass').value;
-  const ph=await sha256(p);
-  const storedHash=await adminHash();
-  if(!storedHash){toast('No hay contraseña de administrador configurada');return;}
-  if(ph!==storedHash){toast('Contraseña incorrecta');return;}
+  if(!(await isAdminRole())){toast('Tu usuario no es administrador');return;}
   finishUnlock();
 }
 function lockAdmin(){
@@ -4047,52 +4271,6 @@ function lockAdmin(){
 }
 function goAjustes(){ requireAdmin(()=>showPage('ajustes')); }
 function goCostes(){ requireAdmin(()=>showPage('costes')); }
-
-// Cambiar la contraseña única de Ajustes
-function openChangePass(){
-  ['cp-cur','cp-new','cp-new2'].forEach(id=>document.getElementById(id).value='');
-  openModal('modal-change-pass');
-}
-async function saveAdminPass(){
-  const cur=document.getElementById('cp-cur').value, nu=document.getElementById('cp-new').value, n2=document.getElementById('cp-new2').value;
-  const curH=await sha256(cur);
-  const adminH=await adminHash();
-  if(!adminH||curH!==adminH){toast('La contraseña actual no es correcta');return;}
-  if(nu.length<4){toast('La nueva debe tener al menos 4 caracteres');return;}
-  if(nu!==n2){toast('Las dos contraseñas nuevas no coinciden');return;}
-  adminPass=await sha256(nu); // se guarda solo la huella, nunca la contraseña
-  await cfgPut('adminPass',adminPass);
-  const _okc=await cloudCfgPut('adminPass',adminPass);
-  closeModal('modal-change-pass');
-  toast(_okc?'✓ Contraseña actualizada':'⚠ Contraseña cambiada solo en este dispositivo: no se pudo guardar en la nube (los demás dispositivos conservan la anterior)');
-}
-
-// Usuario y contraseñas de los almacenes (login)
-function getLoginCfg(){
-  let c={};try{c=JSON.parse(localStorage.getItem('almacen_login')||'{}');}catch(e){}
-  return {user:c.user||'',pass_electrico:'',pass_mecanico:''};
-}
-// Ya no se guardan contraseñas en el navegador: se borra cualquier copia antigua
-function setLoginCfg(c){
-  try{localStorage.removeItem('almacen_login');}catch(e){}
-}
-function openUsers(){
-  const c=getLoginCfg();
-  document.getElementById('us-user').value=(_authCredentials&&_authCredentials.user)||c.user||'';
-  ['us-pass-e','us-pass-m'].forEach(id=>{const el=document.getElementById(id);el.value='';el.placeholder='Dejar vacío para no cambiarla';});
-  openModal('modal-users');
-}
-async function saveUsers(){
-  const cfg={
-    user:document.getElementById('us-user').value.trim(),
-    pass_electrico:document.getElementById('us-pass-e').value.trim(),
-    pass_mecanico:document.getElementById('us-pass-m').value.trim()
-  };
-  if(!cfg.user&&!cfg.pass_electrico&&!cfg.pass_mecanico){toast('No hay nada que cambiar');return;}
-  const okAuth=await saveAuthToSupabase({user:cfg.user,raw_pass_electrico:cfg.pass_electrico,raw_pass_mecanico:cfg.pass_mecanico});
-  closeModal('modal-users');
-  toast(okAuth?'✓ Accesos de almacenes actualizados':'⚠ No se pudieron guardar los accesos (¿sin conexión o sin permisos?)');
-}
 
 // ===== MOVER ARTÍCULO ENTRE ALMACENES =====
 function otherWarehouse(){
@@ -4728,6 +4906,7 @@ function newBlockId(){return 'b'+Date.now().toString(36)+Math.floor(Math.random(
 function layAdd(b,k){
   const key=String(b);
   if(!layoutDraft[key])layoutDraft[key]=[];
+  if(layoutDraft[key].length>=MAX_BLOQUES){toast('⚠ Máximo '+MAX_BLOQUES+' bloques por balda');return;}
   if(k==='h')layoutDraft[key].push({id:newBlockId(),k:'h',n:3});
   else layoutDraft[key].push({id:newBlockId(),k:'g',rows:3,cols:4,name:'Gavetero'});
   renderLayoutEditor();
@@ -4735,7 +4914,9 @@ function layAdd(b,k){
 function layStep(b,bi,prop,d){
   const blk=layoutDraft[String(b)][bi]; if(!blk)return;
   const max = prop==='n'?40:12;
-  blk[prop]=Math.max(1,Math.min(max,(blk[prop]||1)+d));
+  const nuevo=Math.max(1,Math.min(max,(blk[prop]||1)+d));
+  if(d>0&&prop!=='n'&&nuevo*(prop==='rows'?(blk.cols||1):(blk.rows||1))>MAX_CAJONES){toast('⚠ Máximo '+MAX_CAJONES+' cajones por gavetero (filas × columnas)');return;}
+  blk[prop]=nuevo;
   renderLayoutEditor();
 }
 function layDel(b,bi){
@@ -4903,9 +5084,19 @@ function setOfflineBar(off){
   if(b)b.style.display=off?'':'none';
 }
 // ¿Se llega de verdad a la nube? (navigator.onLine no es fiable: puede decir "conectado" sin internet)
+// Con Supabase Auth exige además una sesión viva: con el token de refresco inválido la petición viaja como anónima, la RLS devuelve
+// vacío SIN error y parecería que hay conexión (las escrituras luego fallarían a la cola mientras la pantalla dice "guardado").
+// _pingSinSesion distingue "sesión caducada" de "sin red" para dar el aviso correcto.
+let _pingSinSesion=false;
 async function pingCloud(ms){
+  _pingSinSesion=false;
   if(!sb||!WH)return false;
   try{
+    if(useSbAuth()){
+      const{data,error:eSes}=await withTimeout(sb.auth.getSession(),ms||6000,'sesion');
+      // sin sesión: solo es "caducada" si no hay error o el servidor la rechaza de verdad; 429, 5xx o red son "sin conexión"
+      if(!(data&&data.session)){_pingSinSesion=!eSes||eSes.status===400||eSes.code==='invalid_grant'||eSes.code==='refresh_token_not_found'||eSes.code==='session_not_found';return false;}
+    }
     const{error}=await withTimeout(sb.from(WH.tblCfg).select('key').limit(1),ms||6000,'ping');
     return !error;
   }catch(e){return false;}
@@ -4920,6 +5111,10 @@ async function ensureOnline(que){
   const espera=setTimeout(()=>{try{toast('Comprobando conexión…');}catch(e){}},1200);
   try{
     if(await pingCloud()){setOfflineBar(false);return true;}
+    if(_pingSinSesion){ // hay red pero la sesión ya no vale: reintentar no sirve
+      try{toast('🔒 La sesión ha caducado: cierra sesión y vuelve a entrar para hacer cambios. Mientras tanto solo consulta.');}catch(e){}
+      return false;
+    }
     await new Promise(r=>setTimeout(r,1500)); // corte momentáneo (cambio de repetidor wifi)
     if(await pingCloud()){setOfflineBar(false);return true;}
   }finally{clearTimeout(espera);}
@@ -4958,7 +5153,22 @@ if(typeof window!=='undefined'&&window.addEventListener){
 
 // Registro del Service Worker (PWA): permite instalar la app en el móvil
 // con icono propio y pantalla completa. No afecta si falla (navegador sin soporte).
+// Cuando se despliega una versión nueva, el service worker nuevo toma el control (skipWaiting + clients.claim) y esta página
+// seguiría con el app.js viejo. Se recarga SOLO si no hay ventanas abiertas ni un cambio de stock / sincronización en curso;
+// si ahora no toca, se reintenta cada 10 s (sin acumular temporizadores). Nunca recarga la primera vez que se instala el SW.
+let _swRecarga=false,_swEspera=null;
+function _swPuedeRecargar(){
+  return !document.querySelector('.modal-bg.open')&&!_stockBusy&&!_syncing&&!_saliendo&&!_cerrando&&!mapEditing; // editando el mapa hay un borrador sin guardar que la recarga perdería; cerrando la sesión no se recarga a mitad del vaciado
+}
+function _swControllerChange(){
+  if(_swRecarga)return;
+  if(_swPuedeRecargar()){_swRecarga=true;location.reload();return;}
+  if(_swEspera)return;
+  _swEspera=setTimeout(()=>{_swEspera=null;_swControllerChange();},10000);
+}
 if('serviceWorker' in navigator){
+  const _habiaSW=!!navigator.serviceWorker.controller; // sin controlador previo = primera instalación: no hace falta recargar
+  if(_habiaSW&&navigator.serviceWorker.addEventListener)navigator.serviceWorker.addEventListener('controllerchange',_swControllerChange);
   window.addEventListener('load',()=>{
     navigator.serviceWorker.register('sw.js').catch(e=>console.warn('SW no registrado',e));
   });

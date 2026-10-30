@@ -167,6 +167,7 @@ test('logout borra la sesión y el desbloqueo de admin de los dos almacenes', as
   Object.assign(store, { se: '1', sm: '1', almacen_sesion_sb: '1' });
   sess.almacen_admin_electrico = '1'; sess.almacen_admin_mecanico = '1';
   await t.logout();
+  ev('_cerrando=false'); // el cierre real recarga la página; aquí se libera el bloqueo de sincronización
   assert.ok(!('se' in store) && !('sm' in store));
   assert.ok(!('almacen_admin_electrico' in sess) && !('almacen_admin_mecanico' in sess));
   vm.runInContext("WAREHOUSE_CONFIG=undefined;WAREHOUSE_OTHER_CONFIG=undefined; delete globalThis.WAREHOUSE_CONFIG; delete globalThis.WAREHOUSE_OTHER_CONFIG", ctx);
@@ -3254,4 +3255,1779 @@ test('R6 ECC F-L2/F-L3: mensajes del cliente por estado HTTP, tiempo de 70 s y e
     assert.strictEqual(n, 1);
     assert.strictEqual(r.status, 422);
   } finally { ctx.fetch = fetchAntes; ctx.setTimeout = stAntes; if (abortAntes === undefined) delete ctx.AbortController; else ctx.AbortController = abortAntes; }
+});
+
+// ===== Robustez de uso (bloque R4) =====
+// closeModal/openModal reales (conNube los sustituye por registradores): se capturan aquí, antes de que corra ninguna prueba
+ctx.__cmReal = ev('closeModal');
+ctx.__omReal = ev('openModal');
+const WH_R4 = "var WAREHOUSE_CONFIG={key:'electrico',name:'Almacén Eléctrico',icon:'E',useSupabaseAuth:true}";
+const quitarWH = () => ev('WAREHOUSE_CONFIG=undefined; delete globalThis.WAREHOUSE_CONFIG');
+const esperar = ms => new Promise(r => setTimeout(r, ms));
+// Espera (con tope) a que se cumpla una condición: evita depender de una pausa fija que flaquea con la máquina cargada
+async function esperarHasta(cond, max = 3000) { const t0 = Date.now(); while (!cond() && Date.now() - t0 < max) await esperar(5); }
+// Silencia console.warn/error durante la prueba y los recoge
+function recogerAvisos() {
+  const w = console.warn, e = console.error, avisos = [];
+  console.warn = (...a) => { avisos.push(a.map(String).join(' ')); };
+  console.error = (...a) => { avisos.push(a.map(String).join(' ')); };
+  return { avisos, restaurar: () => { console.warn = w; console.error = e; } };
+}
+
+test('R4 E-M6: cerrar el escáner por cualquier vía (Cancelar, deslizar, Escape) apaga la cámara y el siguiente abre una sola instancia', async () => {
+  const guardada = ctx.Html5Qrcode;
+  ctx.__n = 0; ctx.__log = [];
+  ctx.Html5Qrcode = class {
+    constructor() { this.n = ++ctx.__n; ctx.__log.push('new' + this.n); }
+    start() { ctx.__log.push('start' + this.n); return new Promise(r => setTimeout(r, 5)); }
+    stop() { ctx.__log.push('stop' + this.n); return new Promise(r => setTimeout(r, 5)); }
+    clear() { ctx.__log.push('clear' + this.n); }
+  };
+  try {
+    await conNube({ dom: { 'modal-scan': { classList: { add() {}, remove() {}, contains: () => true } } } }, async () => {
+      ev('closeModal=__cmReal;openModal=__omReal');
+      ev("scanPurpose='addhere'");
+      await ev('openScanner()');
+      // se cierra por deslizamiento ANTES de que termine el arranque: la cámara debe acabar apagada igualmente
+      ev("_swipeInicio({target:{closest:s=>s==='.modal-bg.open'?{id:'modal-scan'}:null},touches:[{clientX:0,clientY:0}]})");
+      ev("_swipeFin({changedTouches:[{clientX:200,clientY:5}]})");
+      await ev('_scannerStop');
+      assert.deepStrictEqual(evj('__log'), ['new1', 'start1', 'stop1', 'clear1']);
+      assert.strictEqual(ev('scanner'), null);
+      assert.strictEqual(ev('scanPurpose'), null, 'el propósito del escaneo se olvida');
+      // segundo escaneo: se cierra con closeModal (Escape) y se vuelve a abrir sin esperar a que pare la anterior
+      await ev('openScanner()');
+      ev("closeModal('modal-scan')");
+      await ev('openScanner()');
+      assert.deepStrictEqual(evj('__log'), ['new1', 'start1', 'stop1', 'clear1', 'new2', 'start2', 'stop2', 'clear2', 'new3', 'start3']);
+      ev("closeScanner()");
+      await ev('_scannerStop');
+      assert.deepStrictEqual(evj('__log').slice(-2), ['stop3', 'clear3']);
+      assert.strictEqual(ev('scanner'), null);
+    });
+  } finally { ctx.Html5Qrcode = guardada; }
+});
+
+test('R4 E-M6: si se cierra el modal mientras se espera, no se arranca la cámara', async () => {
+  const guardada = ctx.Html5Qrcode;
+  ctx.__n = 0; ctx.__log = [];
+  ctx.Html5Qrcode = class { constructor() { ctx.__log.push('new'); } start() { return Promise.resolve(); } stop() { return Promise.resolve(); } clear() {} };
+  try {
+    await conNube({ dom: { 'modal-scan': { classList: { add() {}, remove() {}, contains: () => false } } } }, async () => {
+      await ev('openScanner()');
+      assert.deepStrictEqual(evj('__log'), []);
+      assert.strictEqual(ev('scanner'), null);
+    });
+  } finally { ctx.Html5Qrcode = guardada; }
+});
+
+test('R4 E-L1/SF-A19: openDB rechaza con un error legible y avisa si está bloqueada; arrancar muestra el aviso con Reintentar', async () => {
+  const idbAntes = ctx.indexedDB, ini = ev('init');
+  ctx.__ini = ini;
+  const rec = recogerAvisos();
+  try {
+    await conNube({ dom: { 'init-error': { style: { display: 'none' } }, 'init-error-msg': { textContent: '' } } }, async () => {
+      ctx.indexedDB = { open: () => { const r = { error: new Error('SecurityError') }; setTimeout(() => { r.onblocked(); r.onerror({ type: 'error' }); }, 0); return r; } };
+      await assert.rejects(() => ev('openDB()'), /SecurityError/);
+      assert.ok(ev('__toasts').some(m => m.includes('bloqueada')), 'avisa de la base bloqueada');
+      ctx.indexedDB = { open: () => { throw new Error('modo privado'); } }; // open puede lanzar de forma síncrona
+      await assert.rejects(() => ev('openDB()'), /modo privado/);
+      // arrancar: si init falla, aviso visible con el motivo
+      ev("init=async()=>{throw new Error('Quota exceeded')}");
+      await ev('arrancar()');
+      assert.strictEqual(ctx.__dom['init-error'].style.display, '');
+      assert.ok(ctx.__dom['init-error-msg'].textContent.includes('Quota exceeded'));
+      assert.ok(ev('__toasts').some(m => m.includes('Reintentar')));
+      // Reintentar: oculta el aviso y, si ahora funciona, no lo vuelve a mostrar
+      ev('init=async()=>{}');
+      await ev('arrancar()');
+      assert.strictEqual(ctx.__dom['init-error'].style.display, 'none');
+    });
+  } finally { ctx.indexedDB = idbAntes; ev('init=__ini'); rec.restaurar(); }
+});
+
+test('R4 E-L1: enterApp lanza el arranque con aviso (arrancar) y la página tiene el aviso con Reintentar', () => {
+  assert.ok(ev('enterApp.toString()').includes('arrancar()'));
+  for (const w of ['almacen-electrico', 'almacen-mecanico']) {
+    const h = fs.readFileSync(path.join(__dirname, '..', w, 'index.html'), 'utf8');
+    assert.ok(h.includes('id="init-error"') && h.includes('id="init-error-msg"') && h.includes('onclick="arrancar()"'), w);
+  }
+});
+
+test('R4 E-L2: controllerchange recarga solo sin ventanas abiertas ni stock/sincronización en curso, una vez y sin acumular temporizadores', async () => {
+  const locAntes = ctx.location, stAntes = ctx.setTimeout;
+  ctx.__rl = 0; ctx.__t10 = []; ctx.__modalAbierto = true;
+  ctx.location = { reload() { ctx.__rl++; } };
+  ctx.document.querySelector = () => (ctx.__modalAbierto ? {} : null);
+  ctx.setTimeout = (f, ms, ...a) => { if (ms === 10000) { ctx.__t10.push(f); return 1; } return stAntes(f, ms, ...a); };
+  try {
+    await conNube({}, async () => {
+      ev('_swRecarga=false;_swEspera=null');
+      ev('_swControllerChange()');
+      ev('_swControllerChange()');
+      assert.strictEqual(ctx.__rl, 0, 'con una ventana abierta no recarga');
+      assert.strictEqual(ctx.__t10.length, 1, 'un solo reintento programado');
+      ctx.__modalAbierto = false;
+      ev('_stockBusy=true');
+      ctx.__t10.shift()();
+      assert.strictEqual(ctx.__rl, 0, 'con un cambio de stock en curso no recarga');
+      ev('_stockBusy=false;_syncing=true');
+      ctx.__t10.shift()();
+      assert.strictEqual(ctx.__rl, 0, 'con una sincronización en curso no recarga');
+      ev('_syncing=false');
+      ctx.__t10.shift()();
+      assert.strictEqual(ctx.__rl, 1, 'libre: recarga');
+      ev('_swControllerChange()');
+      assert.strictEqual(ctx.__rl, 1, 'solo una recarga');
+    });
+  } finally {
+    ctx.location = locAntes; ctx.setTimeout = stAntes; delete ctx.document.querySelector;
+    ev('_swRecarga=false;_swEspera=null');
+  }
+});
+
+// Cierre de sesión: entorno con Supabase Auth simulado, subidas registradas en __orden y la cola local simulada (__pend)
+async function conSalida(fn) {
+  const locAntes = ctx.location, navAntes = ctx.navigator, esp = ev('SALIR_ESPERA_MS');
+  ctx.__rl = 0; ctx.location = { reload() { ctx.__rl++; } };
+  try {
+    await conR2({}, async () => {
+      await conStubs(['movGetAll', 'pushPendingMovements', 'flushDirty', 'flushDirtyCfg'], async () => {
+        ev(WH_R4);
+        ev(`__orden=[];__pend=[{synced:false}];__pushOk=true;
+          movGetAll=async()=>__pend;
+          pushPendingMovements=async()=>{__orden.push('push');if(__pushOk)__pend=[];};
+          flushDirty=async()=>{__orden.push('flush');if(__pushOk)dirtyIds=new Set();};
+          flushDirtyCfg=async()=>{__orden.push('cfg');if(__pushOk)dirtyCfg=new Set();};
+          sb={auth:{signOut:async()=>{__orden.push('signOut');return {error:null};}}};
+          dirtyIds=new Set(['I1']);dirtyCfg=new Set(['shelves']);`);
+        await fn();
+      });
+    });
+  } finally { ctx.location = locAntes; ctx.navigator = navAntes; ev('SALIR_ESPERA_MS=' + esp + ';_saliendo=false;_cerrando=false'); quitarWH(); }
+}
+
+test('R4 E-L3: al cerrar sesión con conexión se suben los pendientes ANTES de salir y no se pide confirmación', async () => {
+  await conSalida(async () => {
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), ['push', 'flush', 'cfg', 'signOut']);
+    assert.strictEqual(ctx.__rl, 1);
+    assert.ok(!evj('__opened').includes('modal-confirm'));
+    assert.ok(ev('__toasts').some(m => m.includes('Subiendo')));
+  });
+});
+
+test('R4 E-L3: sin nada pendiente no se sube nada y se sale directamente', async () => {
+  await conSalida(async () => {
+    ev("__pend=[];dirtyIds=new Set();dirtyCfg=new Set()");
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), ['signOut']);
+    assert.strictEqual(ctx.__rl, 1);
+  });
+});
+
+test('R4 E-L3: sin conexión con pendientes exige confirmación explícita y, si se acepta, cierra la sesión (el descarte de lo pendiente lo cubren las pruebas SEC-L4)', async () => {
+  await conSalida(async () => {
+    ctx.navigator = { onLine: false };
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), [], 'sin conexión no intenta subir ni cerrar');
+    assert.strictEqual(ctx.__rl, 0);
+    assert.ok(evj('__opened').includes('modal-confirm'));
+    assert.ok(ctx.__dom['confirm-msg'].textContent.includes('sin subir'));
+    ctx.__dom['confirm-ok'].onclick(); // el usuario acepta salir igualmente
+    await esperar(30);
+    assert.deepStrictEqual(evj('__orden'), ['signOut']);
+    assert.strictEqual(ctx.__rl, 1);
+  });
+});
+
+test('R4 E-L3: con conexión pero con la subida fallida también pide confirmación (y cancelar no cierra la sesión)', async () => {
+  await conSalida(async () => {
+    ev('__pushOk=false');
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), ['push', 'flush', 'cfg']);
+    assert.strictEqual(ctx.__rl, 0);
+    assert.ok(evj('__opened').includes('modal-confirm'));
+    assert.strictEqual(ev('_syncing'), false, 'el candado de sincronización se libera');
+    assert.strictEqual(ev('_saliendo'), false);
+  });
+});
+
+test('R4 E-L3: espera a que acabe una sincronización en curso antes de subir y, si no acaba, no pisa nada', async () => {
+  await conSalida(async () => {
+    ev('_syncing=true');
+    setTimeout(() => ev('_syncing=false'), 300);
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), ['push', 'flush', 'cfg', 'signOut']);
+  });
+  await conSalida(async () => {
+    ev('SALIR_ESPERA_MS=200;_syncing=true');
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), [], 'una sincronización que no termina no se interrumpe ni se duplica');
+    assert.ok(evj('__opened').includes('modal-confirm'));
+  });
+});
+
+test('R4 E-L4: pingCloud con Supabase Auth exige una sesión viva; sin sesión distingue "caducada" de "sin red"', async () => {
+  await conR2({}, async () => {
+    ev(WH_R4);
+    try {
+      const sbCon = ses => "sb={auth:{getSession:async()=>(" + ses + ")},from:()=>({select:()=>({limit:async()=>({data:[],error:null})})})}";
+      ev(sbCon("{data:{session:{user:{id:'u'}}},error:null}"));
+      assert.strictEqual(await ev('pingCloud()'), true);
+      // refresh token inválido: sesión null SIN error -> la petición iría como anónima: no cuenta como conexión
+      ev(sbCon("{data:{session:null},error:null}"));
+      assert.strictEqual(await ev('pingCloud()'), false);
+      assert.strictEqual(ev('_pingSinSesion'), true);
+      // no pudo renovar el token por falta de red: es "sin conexión", no "sesión caducada"
+      ev(sbCon("{data:{session:null},error:{name:'AuthRetryableFetchError',status:0,message:'fetch'}}"));
+      assert.strictEqual(await ev('pingCloud()'), false);
+      assert.strictEqual(ev('_pingSinSesion'), false);
+      // getSession lanza
+      ev("sb={auth:{getSession:async()=>{throw new Error('boom')}},from:()=>({})}");
+      assert.strictEqual(await ev('pingCloud()'), false);
+      // ensureOnline con la sesión caducada: aviso concreto y sin esperar el reintento de 1,5 s
+      ev(sbCon("{data:{session:null},error:null}"));
+      ev('__toasts=[]');
+      const t0 = Date.now();
+      assert.strictEqual(await ev("ensureOnline('guardar')"), false);
+      assert.ok(Date.now() - t0 < 1000);
+      assert.ok(ev('__toasts').some(m => m.includes('sesión ha caducado')));
+    } finally { quitarWH(); }
+  });
+  // modo antiguo (sin Supabase Auth): no se exige sesión
+  await conR2({}, async () => {
+    ev("sb={auth:{getSession:async()=>({data:{session:null},error:null})},from:()=>({select:()=>({limit:async()=>({data:[],error:null})})})}");
+    assert.strictEqual(await ev('pingCloud()'), true);
+  });
+});
+
+test('R4 E-L16/SF-A18: doLogin distingue credenciales erróneas de fallo de red, captura excepciones y solo borra la contraseña si era incorrecta', async () => {
+  await conR2({ dom: { 'login-user': { value: 'ana@x.com' }, 'login-pass': { value: 'secreta' }, 'login-error': { textContent: '' } } }, async () => {
+    await conStubs(['enterApp'], async () => {
+      ev(WH_R4);
+      const rec = recogerAvisos();
+      try {
+        ev('__entro=0;enterApp=()=>{__entro++}');
+        const caso = async res => {
+          ev("document.getElementById('login-pass').value='secreta';document.getElementById('login-error').textContent=''");
+          ev("sb={auth:{signInWithPassword:async()=>{" + res + "}}}");
+          await ev('doLogin()');
+          return { msg: ctx.__dom['login-error'].textContent, pass: ctx.__dom['login-pass'].value };
+        };
+        let r = await caso("return {error:{name:'AuthApiError',status:400,code:'invalid_credentials',message:'Invalid login credentials'}}");
+        assert.deepStrictEqual(r, { msg: 'Usuario o contraseña incorrectos', pass: '' });
+        r = await caso("return {error:{name:'AuthRetryableFetchError',status:0,message:'Failed to fetch'}}");
+        assert.ok(r.msg.includes('conectar') && !r.msg.includes('incorrectos'), r.msg);
+        assert.strictEqual(r.pass, 'secreta', 'un fallo de red no borra la contraseña');
+        r = await caso("throw new TypeError('Failed to fetch')");
+        assert.ok(r.msg.includes('conectar'), 'una excepción se captura y se trata como fallo de red');
+        assert.strictEqual(r.pass, 'secreta');
+        r = await caso("return {error:{name:'AuthApiError',status:429,code:'over_request_rate_limit'}}");
+        assert.ok(r.msg.includes('Demasiados'));
+        assert.strictEqual(r.pass, 'secreta');
+        r = await caso("return {error:{name:'AuthApiError',status:422,code:'validation_failed'}}");
+        assert.ok(r.msg.includes('No se pudo iniciar sesión') && !r.msg.includes('incorrectos'));
+        assert.strictEqual(ev('__entro'), 0);
+        await caso("return {error:null,data:{session:{}}}");
+        assert.strictEqual(ev('__entro'), 1, 'con credenciales correctas entra');
+      } finally { rec.restaurar(); quitarWH(); }
+    });
+  });
+});
+
+test('R4 E-L11: un deslizamiento que empieza en un control deslizante no cierra la ventana; fuera de él sí', async () => {
+  await conNube({}, async () => {
+    const rango = "{target:{closest:s=>s==='input[type=range]'?{}:{id:'modal-start-pos'}},touches:[{clientX:0,clientY:0}]}";
+    const normal = "{target:{closest:s=>s==='input[type=range]'?null:{id:'modal-start-pos'}},touches:[{clientX:0,clientY:0}]}";
+    const fin = "{changedTouches:[{clientX:200,clientY:5}]}";
+    ev('__closed=[]');
+    ev('_swipeInicio(' + rango + ')'); ev('_swipeFin(' + fin + ')');
+    assert.deepStrictEqual(evj('__closed'), [], 'sobre el slider no cierra');
+    ev('_swipeInicio(' + normal + ')'); ev('_swipeFin(' + fin + ')');
+    assert.deepStrictEqual(evj('__closed'), ['modal-start-pos'], 'fuera del slider sigue cerrando');
+    ev('_swipeInicio(' + normal + ')'); ev("_swipeFin({changedTouches:[{clientX:30,clientY:0}]})");
+    ev('_swipeInicio(' + rango + ')'); ev('_swipeFin(' + fin + ')');
+    assert.deepStrictEqual(evj('__closed'), ['modal-start-pos'], 'ni un gesto corto ni el del slider cierran');
+  });
+});
+
+test('R4 E-L12: doPrintLabels quita la hoja de estilos del mapa que haya quedado', async () => {
+  ctx.__rm = 0; ctx.__ls = ev('labelSel');
+  try {
+    await conNube({ dom: { 'map-print-page-style': { remove() { ctx.__rm++; } } } }, async () => {
+      ev('labelSel=new Set();items=[]');
+      await ev('doPrintLabels()');
+      assert.strictEqual(ctx.__rm, 1);
+    });
+  } finally { ev('labelSel=__ls'); }
+});
+
+test('R4 E-L17: renderUserBar no escribe "undefined" cuando la sesión no tiene correo', async () => {
+  const nombre = ev('_sessionName'), uid = ev('_sessionUid');
+  ctx.__sn = nombre; ctx.__su = uid;
+  try {
+    await conNube({ dom: { whbar: { innerHTML: '' } } }, async () => {
+      ev(WH_R4);
+      ev("_sessionName='';_sessionUid=null;sb={auth:{getSession:async()=>({data:{session:{user:{id:'u1'}}}})}}");
+      await ev('renderUserBar()');
+      assert.strictEqual(ev('_sessionName'), '');
+      assert.ok(!ctx.__dom.whbar.innerHTML.includes('undefined'));
+      assert.strictEqual(ev('_sessionUid'), 'u1');
+      ev("sb={auth:{getSession:async()=>({data:{session:null}})}}");
+      await ev('renderUserBar()'); // sin sesión: sin error ni "undefined"
+      assert.strictEqual(ev('_sessionName'), '');
+      ev("sb={auth:{getSession:async()=>({data:{session:{user:{id:'u2',email:'Ana.Lopez@x.com'}}}})}}");
+      await ev('renderUserBar()');
+      assert.strictEqual(ev('_sessionName'), 'Ana.Lopez');
+      assert.ok(ctx.__dom.whbar.innerHTML.includes('Ana.Lopez'));
+    });
+  } finally { ev('_sessionName=__sn;_sessionUid=__su'); quitarWH(); }
+});
+
+test('R4 E-L14: la sincronización limpia todos los artículos con el mismo modo (no el índice como "fast") y registra los códigos no válidos', async () => {
+  await conR2({}, async () => {
+    await conStubs(['pushPendingMovements', 'flushDirty', 'flushDirtyCfg', 'cloudGetMeta', 'cloudCfgGetMany', 'dbReplaceAll', 'setCloudStatus', 'cleanItem', 'updateSyncBadge'], async () => {
+      const rec = recogerAvisos();
+      ctx.__ci = ev('cleanItem');
+      try {
+        ev(`__fast=[];__badge=[];pushPendingMovements=async()=>{};flushDirty=async()=>{};flushDirtyCfg=async()=>{};
+          cloudCfgGetMany=async()=>undefined;dbReplaceAll=async()=>{};setCloudStatus=()=>{};
+          updateSyncBadge=s=>{__badge.push(s)};
+          cleanItem=(it,f)=>{__fast.push(f);return __ci(it,f)};
+          cloudGetMeta=async()=>[{id:'A',name:'a',stock:1},{id:'B',name:'b',stock:2},{id:'C',name:'c',stock:3},{id:'x y!',name:'malo'}];
+          items=[];`);
+        await ev('_syncFromCloud(false)');
+        assert.deepStrictEqual(evj('__fast'), [true, true, true], 'todos con el mismo modo, ninguno con un índice');
+        assert.deepStrictEqual(evj('items.map(i=>i.id)'), ['A', 'B', 'C']);
+        assert.ok(rec.avisos.some(a => a.includes('código no válido')), 'se registra el descarte');
+      } finally { rec.restaurar(); }
+    });
+  });
+});
+
+test('R4 SF-B: una nube vacía con artículos locales conserva lo local pero no marca "Sincronizado" y avisa una vez', async () => {
+  await conR2({}, async () => {
+    await conStubs(['pushPendingMovements', 'flushDirty', 'flushDirtyCfg', 'cloudGetMeta', 'setCloudStatus', 'updateSyncBadge'], async () => {
+      const rec = recogerAvisos();
+      const av = ev('_nubeVaciaAviso');
+      ctx.__av = av;
+      try {
+        ev(`__badge=[];pushPendingMovements=async()=>{};flushDirty=async()=>{};flushDirtyCfg=async()=>{};setCloudStatus=()=>{};
+          updateSyncBadge=s=>{__badge.push(s)};cloudGetMeta=async()=>[];_nubeVaciaAviso=false;
+          items=[{id:'A',name:'a',stock:1}];`);
+        await ev('_syncFromCloud(false)');
+        await ev('_syncFromCloud(false)');
+        assert.deepStrictEqual(evj('__badge'), ['syncing', 'off', 'syncing', 'off']);
+        assert.deepStrictEqual(evj('items.map(i=>i.id)'), ['A'], 'no se borra lo local');
+        assert.strictEqual(ev('__toasts.filter(m=>m.includes("no devolvió")).length'), 1);
+      } finally { rec.restaurar(); ev('_nubeVaciaAviso=__av'); }
+    });
+  });
+});
+
+test('R4 SF-B: un sync fallido marca la nube como no conectada (texto de Ajustes incluido)', async () => {
+  await conR2({}, async () => {
+    const rec = recogerAvisos();
+    try {
+      ev("__estado=[];_syncFromCloud=async()=>{throw new Error('boom')};setCloudStatus=ok=>{__estado.push(ok)};cloudOK=true");
+      await ev('syncFromCloud()');
+      assert.deepStrictEqual(evj('__estado'), [false]);
+      assert.strictEqual(ev('cloudOK'), false);
+      assert.strictEqual(ev('_syncing'), false);
+    } finally { rec.restaurar(); }
+  });
+});
+
+test('R4 SF-B: persistDirty nunca rechaza, se puede esperar, avisa una sola vez; loadDirty avisa si no puede leer la cola', async () => {
+  await conR2({}, async () => {
+    const rec = recogerAvisos();
+    ctx.__av = ev('_dirtyAviso');
+    try {
+      ev("_dirtyAviso=false;__toasts=[];cfgPut=async()=>{throw new Error('cuota')}");
+      await ev('persistDirty()'); // si rechazara, la prueba fallaría aquí
+      assert.strictEqual(ev('__toasts.length'), 1);
+      assert.ok(ev('__toasts[0]').includes('guardar'));
+      await ev('persistDirty()');
+      assert.strictEqual(ev('__toasts.length'), 1, 'el aviso sale una sola vez');
+      assert.ok(rec.avisos.filter(a => a.includes('Cola de pendientes')).length >= 6, 'cada fallo queda en la consola');
+      // funciona y se puede esperar al guardado
+      ev("_dirtyAviso=false;cfgPut=async(k,v)=>{await Promise.resolve();__cfg[k]=JSON.parse(JSON.stringify(v));};dirtyIds=new Set(['I1']);dirtyDel=new Set();dirtyFields=Object.create(null)");
+      await ev('persistDirty()');
+      assert.deepStrictEqual(evj('__cfg.dirtyIds'), ['I1']);
+      // lectura de la cola fallida
+      ev("_dirtyAviso=false;__toasts=[];cfgGet=async()=>{throw new Error('lectura')}");
+      await ev('loadDirty()');
+      assert.ok(ev('__toasts').some(m => m.includes('leer')), 'avisa de que no pudo leer la cola');
+    } finally { rec.restaurar(); ev('_dirtyAviso=__av'); }
+  });
+});
+
+test('R4 SF-B: flushDirty espera a que se guarde la cola', () => {
+  assert.ok(/await persistDirty\(\)/.test(ev('flushDirty.toString()')));
+});
+
+// ===== Revisión ECC (bloque R5): recarga del SW, escáner, cierre de sesión, aviso de sesión y de arranque =====
+test('R5 M-A: controllerchange no recarga con el editor del mapa abierto (se perdería el borrador) y recarga una vez al cerrarlo', async () => {
+  const locAntes = ctx.location, stAntes = ctx.setTimeout;
+  ctx.__rl = 0; ctx.__t10 = [];
+  ctx.location = { reload() { ctx.__rl++; } };
+  ctx.document.querySelector = () => null;
+  ctx.setTimeout = (f, ms, ...a) => { if (ms === 10000) { ctx.__t10.push(f); return 1; } return stAntes(f, ms, ...a); };
+  try {
+    await conNube({}, async () => {
+      ev('_swRecarga=false;_swEspera=null;_stockBusy=false;_syncing=false;_saliendo=false');
+      ev("mapEditing=true;mapDraftShelves=[{id:'01'}];mapDraftAisles=[]");
+      ev('_swControllerChange()');
+      assert.strictEqual(ctx.__rl, 0, 'con el editor del mapa abierto no recarga');
+      assert.strictEqual(ctx.__t10.length, 1, 'se programa el reintento');
+      ctx.__t10.shift()();
+      assert.strictEqual(ctx.__rl, 0, 'sigue editando: sigue sin recargar');
+      assert.strictEqual(ev('mapDraftShelves.length'), 1, 'el borrador sigue intacto');
+      ev('mapEditing=false;mapDraftShelves=null;mapDraftAisles=null');
+      ctx.__t10.shift()();
+      assert.strictEqual(ctx.__rl, 1, 'al cerrar el editor, el reintento recarga una sola vez');
+    });
+  } finally {
+    ctx.location = locAntes; ctx.setTimeout = stAntes; delete ctx.document.querySelector;
+    ev('_swRecarga=false;_swEspera=null;mapEditing=false;mapDraftShelves=null;mapDraftAisles=null');
+  }
+});
+
+test('R5 M-B: en la primera instalación del SW (sin controlador previo) no se escucha controllerchange (no hay recarga); con controlador previo sí', () => {
+  const ini = src.indexOf("if('serviceWorker' in navigator){"), fin = src.indexOf('// ===== GRÁFICO DASHBOARD');
+  assert.ok(ini > 0 && fin > ini, 'se localiza el bloque real de registro del SW');
+  const bloque = src.slice(ini, fin);
+  const navAntes = ctx.navigator, teniaAEL = Object.prototype.hasOwnProperty.call(ctx.window, 'addEventListener'), aelAntes = ctx.window.addEventListener;
+  const ejecutar = controller => {
+    const r = { oyentes: [], registros: [], cargas: [] };
+    ctx.navigator = { serviceWorker: { controller, addEventListener: (t, f) => r.oyentes.push([t, f]), register: u => { r.registros.push(u); return Promise.resolve(); } } };
+    ctx.window.addEventListener = (t, f) => r.cargas.push([t, f]);
+    vm.runInContext(bloque, ctx);
+    return r;
+  };
+  try {
+    let r = ejecutar(null);
+    assert.deepStrictEqual(r.oyentes, [], 'primera instalación: no se escucha controllerchange');
+    r.cargas.find(c => c[0] === 'load')[1]();
+    assert.deepStrictEqual(r.registros, ['sw.js'], 'el registro del SW sí ocurre');
+    r = ejecutar({});
+    assert.strictEqual(r.oyentes.length, 1);
+    assert.strictEqual(r.oyentes[0][0], 'controllerchange');
+    assert.strictEqual(r.oyentes[0][1], ev('_swControllerChange'));
+  } finally {
+    ctx.navigator = navAntes;
+    if (teniaAEL) ctx.window.addEventListener = aelAntes; else delete ctx.window.addEventListener;
+  }
+});
+
+// Escáner simulado: la clase se pone en ctx.Html5Qrcode, el modal de escaneo cuenta como abierto y openDetail se registra en __od
+async function conEscaner(Clase, fn) {
+  const guardada = ctx.Html5Qrcode;
+  ctx.__detalleReal = ev('openDetail');
+  ctx.__od = []; ctx.__n = 0; ctx.__log = [];
+  ctx.Html5Qrcode = Clase;
+  try {
+    await conNube({ dom: { 'modal-scan': { classList: { add() {}, remove() {}, contains: () => true } } } }, async () => {
+      ev('closeModal=__cmReal;openModal=__omReal');
+      ev("openDetail=id=>{__od.push(id)};items=[{id:'I1',name:'Tornillo'}];scanPurpose=null");
+      await fn();
+    });
+  } finally {
+    ctx.Html5Qrcode = guardada;
+    ev('openDetail=__detalleReal;scanner=null;scanPurpose=null;_scannerStop=Promise.resolve()');
+  }
+}
+
+test('R5 M-B: una lectura tardía del QR, con el escáner ya cerrado, se ignora (con el escáner abierto sí se procesa)', async () => {
+  const cbs = [];
+  await conEscaner(class {
+    constructor() { ctx.__n++; }
+    start(cfg, cfg2, ok) { cbs.push(ok); return Promise.resolve(); }
+    stop() { return Promise.resolve(); }
+    clear() {}
+  }, async () => {
+    await ev('openScanner()');
+    cbs[0]('ALMACEN:I1');
+    await ev('_scannerStop');
+    assert.deepStrictEqual(evj('__od'), ['I1'], 'con el escáner abierto la lectura abre el artículo');
+    assert.strictEqual(ev('scanner'), null);
+    await ev('openScanner()');
+    ev("closeModal('modal-scan')");
+    await ev('_scannerStop');
+    cbs[1]('ALMACEN:I1'); // la cámara aún entregaba un fotograma
+    assert.deepStrictEqual(evj('__od'), ['I1'], 'la lectura tardía no abre nada');
+    assert.ok(!ev('__toasts').some(m => m.includes('no encontrado')), 'ni avisa de nada');
+  });
+});
+
+test('R5 M-B: si la cámara no se puede abrir (start rechaza) avisa y se puede volver a abrir el escáner', async () => {
+  const rec = recogerAvisos();
+  try {
+    await conEscaner(class {
+      constructor() { this.n = ++ctx.__n; ctx.__log.push('new' + this.n); }
+      start() { ctx.__log.push('start' + this.n); return Promise.reject(new Error('NotAllowedError')); }
+      stop() { ctx.__log.push('stop' + this.n); return Promise.resolve(); }
+      clear() { ctx.__log.push('clear' + this.n); }
+    }, async () => {
+      await ev('openScanner()');
+      await ev('scanner._arranque'); // no rechaza: el error se captura y se avisa
+      assert.ok(ev('__toasts').some(m => m.includes('No se pudo abrir la cámara')));
+      assert.ok(rec.avisos.some(a => a.includes('NotAllowedError')), 'el motivo queda en consola');
+      ev("closeModal('modal-scan')");
+      await ev('_scannerStop');
+      assert.deepStrictEqual(evj('__log'), ['new1', 'start1', 'stop1', 'clear1']);
+      assert.strictEqual(ev('scanner'), null);
+      await ev('openScanner()');
+      assert.ok(evj('__log').includes('new2'), 'el siguiente escaneo abre otra instancia');
+    });
+  } finally { rec.restaurar(); }
+});
+
+test('R5 M-B: si stop() rechaza al cerrar, el visor se limpia igualmente, queda constancia y el siguiente escaneo funciona', async () => {
+  const rec = recogerAvisos();
+  try {
+    await conEscaner(class {
+      constructor() { this.n = ++ctx.__n; ctx.__log.push('new' + this.n); }
+      start() { return Promise.resolve(); }
+      stop() { ctx.__log.push('stop' + this.n); return Promise.reject(new Error('stop fallido')); }
+      clear() { ctx.__log.push('clear' + this.n); }
+    }, async () => {
+      await ev('openScanner()');
+      ev("closeModal('modal-scan')");
+      await ev('_scannerStop'); // la promesa no rechaza
+      assert.deepStrictEqual(evj('__log'), ['new1', 'stop1', 'clear1']);
+      assert.ok(rec.avisos.some(a => a.includes('detenerScanner') && a.includes('stop fallido')));
+      assert.strictEqual(ev('scanner'), null);
+      await ev('openScanner()');
+      assert.ok(evj('__log').includes('new2'));
+    });
+  } finally { rec.restaurar(); }
+});
+
+test('R5 L-A: un permiso de cámara sin contestar no bloquea el siguiente escaneo, y esa cámara se apaga cuando por fin arranca', async () => {
+  const rec = recogerAvisos(), res = [];
+  try {
+    await conEscaner(class {
+      constructor() { this.n = ++ctx.__n; ctx.__log.push('new' + this.n); }
+      start() { ctx.__log.push('start' + this.n); return new Promise(r => res.push(r)); } // el aviso de permiso sigue sin contestarse
+      stop() { ctx.__log.push('stop' + this.n); return Promise.resolve(); }
+      clear() { ctx.__log.push('clear' + this.n); }
+    }, async () => {
+      ev('SCANNER_ARRANQUE_MS=50');
+      try {
+        await ev('openScanner()');
+        ev("closeModal('modal-scan')");
+        const t0 = Date.now();
+        const r = await Promise.race([ev('openScanner()').then(() => 'abierto'), esperar(1500).then(() => 'bloqueado')]);
+        assert.strictEqual(r, 'abierto', 'el siguiente escaneo no se queda esperando para siempre');
+        assert.ok(Date.now() - t0 < 1000);
+        assert.ok(evj('__log').includes('new2') && evj('__log').includes('clear1'));
+        assert.ok(!evj('__log').includes('stop1'), 'aún no se puede parar: no ha arrancado');
+        res[0](); // el usuario acepta el permiso tarde: la primera cámara no puede quedar encendida
+        await esperar(20);
+        assert.ok(evj('__log').includes('stop1'), 'la cámara tardía se apaga');
+      } finally { ev('SCANNER_ARRANQUE_MS=3000'); }
+    });
+  } finally { rec.restaurar(); }
+});
+
+test('R5 M-B: una segunda pulsación de "Salir" mientras se suben los pendientes se ignora (se sube y se cierra la sesión una sola vez)', async () => {
+  await conSalida(async () => {
+    const p1 = ev('logout()'), p2 = ev('logout()');
+    await Promise.all([p1, p2]);
+    assert.deepStrictEqual(evj('__orden'), ['push', 'flush', 'cfg', 'signOut']);
+    assert.strictEqual(ctx.__rl, 1, 'una sola recarga');
+    assert.ok(!evj('__opened').includes('modal-confirm'), 'sin confirmación espuria');
+    assert.strictEqual(ev('_saliendo'), false);
+  });
+});
+
+test('R5 L-B: un límite de peticiones (429), un fallo del servidor o la red al renovar el token NO se anuncian como "sesión caducada"', async () => {
+  await conR2({}, async () => {
+    ev(WH_R4);
+    try {
+      const sbCon = err => "sb={auth:{getSession:async()=>({data:{session:null},error:" + err + "})},from:()=>({select:()=>({limit:async()=>({data:[],error:null})})})}";
+      const caso = async err => { ev(sbCon(err)); const ok = await ev('pingCloud()'); assert.strictEqual(ok, false); return ev('_pingSinSesion'); };
+      // la sesión de verdad ya no vale
+      assert.strictEqual(await caso('null'), true, 'sin sesión y sin error');
+      assert.strictEqual(await caso("{name:'AuthApiError',status:400,code:'refresh_token_not_found',message:'x'}"), true);
+      assert.strictEqual(await caso("{name:'AuthApiError',status:400,code:'invalid_grant',message:'x'}"), true);
+      assert.strictEqual(await caso("{name:'AuthApiError',status:403,code:'session_not_found',message:'x'}"), true);
+      assert.strictEqual(await caso("{name:'AuthApiError',status:400,message:'Invalid Refresh Token'}"), true);
+      // no es la sesión: límite de peticiones, servidor caído o red
+      assert.strictEqual(await caso("{name:'AuthApiError',status:429,code:'over_request_rate_limit',message:'x'}"), false, '429');
+      assert.strictEqual(await caso("{name:'AuthApiError',status:503,message:'x'}"), false, '5xx');
+      assert.strictEqual(await caso("{name:'AuthRetryableFetchError',status:0,message:'fetch'}"), false, 'red');
+      // lo que ve el usuario con un 429: el aviso de falta de conexión, no el de sesión caducada
+      ev(sbCon("{name:'AuthApiError',status:429,code:'over_request_rate_limit',message:'x'}"));
+      ev('__toasts=[]');
+      assert.strictEqual(await ev("ensureOnline('guardar')"), false);
+      assert.ok(!ev('__toasts').some(m => m.includes('sesión ha caducado')), ev('__toasts').join('|'));
+      assert.ok(ev('__toasts').some(m => m.includes('Sin conexión')));
+    } finally { quitarWH(); }
+  });
+});
+
+test('R5 L-C: el aviso de arranque solo habla de "los datos de este móvil" si falla openDB; otros fallos dicen que la app no ha podido arrancar', async () => {
+  const idbAntes = ctx.indexedDB, ini = ev('init');
+  ctx.__ini = ini;
+  const rec = recogerAvisos();
+  try {
+    await conNube({ dom: { 'init-error': { style: { display: 'none' } }, 'init-error-msg': { textContent: '' } } }, async () => {
+      // un fallo que no viene de la base local
+      ev("init=async()=>{throw new Error('Fallo de red al cargar')}");
+      await ev('arrancar()');
+      let m = ctx.__dom['init-error-msg'].textContent;
+      assert.ok(m.includes('Fallo de red al cargar'), m);
+      assert.ok(m.includes('La aplicación no ha podido arrancar'), m);
+      assert.ok(!m.includes('datos de este móvil'), m);
+      // un fallo de openDB (init real)
+      ev('init=__ini');
+      ctx.indexedDB = { open: () => { throw new Error('modo privado'); } };
+      await ev('arrancar()');
+      m = ctx.__dom['init-error-msg'].textContent;
+      assert.ok(m.includes('modo privado') && m.includes('datos de este móvil') && m.includes('modo privado del navegador'), m);
+      assert.ok(!m.includes('La aplicación no ha podido arrancar'), m);
+      // el siguiente fallo, ya sin relación con la base, vuelve al texto genérico
+      ev("init=async()=>{throw new Error('otro fallo')}");
+      await ev('arrancar()');
+      m = ctx.__dom['init-error-msg'].textContent;
+      assert.ok(m.includes('otro fallo') && m.includes('La aplicación no ha podido arrancar') && !m.includes('datos de este móvil'), m);
+    });
+  } finally { ctx.indexedDB = idbAntes; ev('init=__ini'); rec.restaurar(); }
+});
+
+// Service workers: se cargan en un contexto aislado con caches/fetch simulados
+// Huellas SRI fijadas: las de los <script integrity> de index.html y las de pdf.js (constantes de app.js). El SW simulado calcula el
+// "hash" del cuerpo con un crypto falso: el cuerpo de cada URL se resume en su propia huella buena, salvo las de malaHuella.
+const SRI_FIJADOS = {};
+{
+  const h = fs.readFileSync(path.join(__dirname, '..', 'almacen-electrico', 'index.html'), 'utf8');
+  for (const m of h.matchAll(/<script src="(https:[^"]+)" integrity="(sha384-[^"]+)"/g)) SRI_FIJADOS[m[1]] = m[2];
+  for (const k of ['PDFJS', 'PDFJS_WORKER']) {
+    SRI_FIJADOS[src.match(new RegExp(k + "_URL='([^']+)'"))[1]] = src.match(new RegExp(k + "_SRI='([^']+)'"))[1];
+  }
+}
+// transitorios = { url: n }: esa URL falla las n primeras veces (cache.add y fetch) y luego funciona; intentos cuenta las llamadas por URL.
+// lecturaFalla: el cuerpo de las respuestas no se puede leer (arrayBuffer rechaza). Los retardos de reintento (< 4 s) se ejecutan al instante.
+function cargarSW(carpeta, { fallan = [], putFalla = false, fetchFalla = false, malaHuella = [], enCache = [], transitorios = {}, lecturaFalla = false } = {}) {
+  const codigo = fs.readFileSync(path.join(__dirname, '..', carpeta, 'sw.js'), 'utf8');
+  const handlers = {}, avisos = [], matches = [], puestos = [], intentos = {};
+  const transitorio = u => { intentos[u] = (intentos[u] || 0) + 1; return !!transitorios[u] && intentos[u] <= transitorios[u]; };
+  const cache = {
+    add: async r => { const u = typeof r === 'string' ? r : r.url; if (fallan.includes(u)) throw new TypeError('no disponible: ' + u); if (transitorio(u)) throw new TypeError('fallo transitorio: ' + u); },
+    put: async r => { if (putFalla) throw new Error('cuota agotada'); puestos.push(typeof r === 'string' ? r : r.url); }
+  };
+  const cachesFalsas = {
+    open: async () => cache,
+    keys: async () => [],
+    delete: async () => true,
+    match: async (r, o) => { matches.push(o || {}); const u = typeof r === 'string' ? r : r.url; return enCache.includes(u) ? { ok: true, hit: u } : undefined; }
+  };
+  // El cuerpo de cada respuesta es su URL (o 'malo'); el crypto falso devuelve la huella fijada de esa URL (o una distinta si es 'malo')
+  const resp = u => ({ ok: true, status: 200, url: u, clone() { return resp(u); }, arrayBuffer: async () => { if (lecturaFalla) throw new Error('lectura rota'); return malaHuella.includes(u) ? 'malo' : u; } });
+  const crypto = { subtle: { digest: async (alg, cuerpo) => {
+    assert.strictEqual(alg, 'SHA-384');
+    return cuerpo === 'malo' || !SRI_FIJADOS[cuerpo] ? new Uint8Array(48).fill(7) : new Uint8Array(Buffer.from(SRI_FIJADOS[cuerpo].slice(7), 'base64'));
+  } } };
+  const caja = {
+    crypto, btoa: s => Buffer.from(s, 'latin1').toString('base64'),
+    self: { addEventListener: (t, f) => { handlers[t] = f; }, location: { origin: 'https://x.test' }, skipWaiting() {}, clients: { claim() {} } },
+    caches: cachesFalsas, URL, Request: class { constructor(u, o) { this.url = u; this.o = o; } },
+    Response: class { constructor(b, o) { this.b = b; this.o = o; } },
+    fetch: async r => { const u = typeof r === 'string' ? r : r.url; if (fetchFalla || fallan.includes(u)) throw new TypeError('sin red: ' + u); if (transitorio(u)) throw new TypeError('red intermitente: ' + u); return resp(u); },
+    setTimeout: (f, ms) => { if (ms < 4000) setImmediate(f); return 0; }, console: { warn: (...a) => avisos.push(a.map(String).join(' ')), log() {}, error() {} }
+  };
+  vm.runInNewContext(codigo, caja);
+  const instalar = async () => { let p; handlers.install({ waitUntil: x => { p = x; } }); await p; };
+  const pedir = async url => {
+    const esperas = []; let resp;
+    handlers.fetch({ request: { method: 'GET', url, mode: 'navigate' }, waitUntil: x => esperas.push(x), respondWith: x => { resp = x; } });
+    const r = await resp; await Promise.all(esperas); return r;
+  };
+  return { instalar, pedir, avisos, matches, puestos, intentos };
+}
+
+for (const carpeta of ['almacen-electrico', 'almacen-mecanico']) {
+  test('R4 SF-A22 (' + carpeta + '): el SW falla al instalar si faltan index.html o app.js y avisa de lo que no pudo guardar', async () => {
+    let sw = cargarSW(carpeta);
+    await sw.instalar(); // todo bien
+    assert.deepStrictEqual(sw.avisos, []);
+    sw = cargarSW(carpeta, { fallan: ['https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js', './icons/icon-192.png'] });
+    await sw.instalar(); // lo secundario no impide instalar, pero queda constancia
+    assert.ok(sw.avisos.some(a => a.includes('exceljs') && a.includes('icon-192')), sw.avisos.join('|'));
+    sw = cargarSW(carpeta, { fallan: ['./index.html'] });
+    await assert.rejects(sw.instalar, /imprescindibles.*index\.html/);
+    sw = cargarSW(carpeta, { fallan: ['../shared/app.js'] });
+    await assert.rejects(sw.instalar, /imprescindibles.*app\.js/);
+  });
+
+  test('R4 SF-A22 (' + carpeta + '): las búsquedas en caché se limitan a la caché de este almacén y un fallo de cache.put no se oculta', async () => {
+    const nombre = carpeta === 'almacen-electrico' ? 'almacen-electrico-v4' : 'almacen-mecanico-v4';
+    // sin red: se busca en caché (siempre con cacheName propio, también la página de arranque)
+    let sw = cargarSW(carpeta, { fetchFalla: true });
+    const r = await sw.pedir('https://x.test/shared/app.js');
+    assert.strictEqual(r.o.status, 503);
+    assert.ok(sw.matches.length >= 2);
+    assert.ok(sw.matches.every(o => o.cacheName === nombre), JSON.stringify(sw.matches));
+    // librería de CDN
+    sw = cargarSW(carpeta);
+    await sw.pedir('https://cdnjs.cloudflare.com/ajax/libs/x.js');
+    assert.ok(sw.matches.length >= 1 && sw.matches.every(o => o.cacheName === nombre), JSON.stringify(sw.matches));
+    // cuota agotada al guardar: queda en consola (propio y CDN)
+    sw = cargarSW(carpeta, { putFalla: true });
+    const ok = await sw.pedir('https://x.test/shared/app.css');
+    assert.strictEqual(ok.ok, true, 'la página se sirve igualmente');
+    assert.ok(sw.avisos.some(a => a.includes('SW: no se pudo guardar') && a.includes('cuota agotada')), sw.avisos.join('|'));
+    sw = cargarSW(carpeta, { putFalla: true });
+    await sw.pedir('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js');
+    assert.ok(sw.avisos.some(a => a.includes('SW: no se pudo guardar')), sw.avisos.join('|'));
+  });
+}
+
+// ===== Seguridad menor (bloque R5) =====
+const LIB_EXCELJS = 'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js';
+const LIB_SUPABASE = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js';
+
+test('R5 SEC-M1 / R6 W-3: cleanShelves y cleanAisles limitan a 500 elementos y respetan lo normal (incluidas 200 estanterías legítimas)', () => {
+  const sh = Array.from({ length: 600 }, (_, i) => ({ id: 'S' + i, baldas: 5 }));
+  assert.strictEqual(t.cleanShelves(sh).length, 500);
+  assert.strictEqual(t.cleanShelves(sh.slice(0, 500)).length, 500);
+  assert.strictEqual(t.cleanShelves(sh.slice(0, 250)).length, 250, 'antes se recortaba a 200 en silencio');
+  assert.strictEqual(t.cleanShelves(sh.slice(0, 26)).length, 26);
+  const ai = Array.from({ length: 700 }, (_, i) => ({ label: 'P' + i, x: i, y: 0, w: 5, h: 5 }));
+  assert.strictEqual(t.cleanAisles(ai).length, 500);
+  assert.strictEqual(t.cleanAisles(ai.slice(0, 300)).length, 300);
+  assert.strictEqual(t.cleanAisles(ai.slice(0, 10)).length, 10);
+  // los descartados no gastan cupo: 150 válidos tras 100 basura siguen entrando
+  assert.strictEqual(t.cleanAisles([...Array(100).fill(null), ...ai.slice(0, 150)]).length, 150);
+});
+
+test('R5 SEC-M1 / R6 W-3: hasta 40 bloques por balda y 144 cajones (12 x 12) por gavetero, que es lo que permite el editor', () => {
+  const bloques = Array.from({ length: 50 }, (_, i) => ({ id: 'b' + i, k: 'h', n: 3 }));
+  const gav = (rows, cols) => t.cleanShelves([{ id: '01', baldas: 5, layout: { 1: [{ id: 'g', k: 'g', rows, cols }] } }])[0].layout['1'][0];
+  assert.strictEqual(t.cleanShelves([{ id: '01', baldas: 5, layout: { 1: bloques } }])[0].layout['1'].length, 40);
+  assert.strictEqual(t.cleanShelves([{ id: '01', baldas: 5, layout: { 1: bloques.slice(0, 40) } }])[0].layout['1'].length, 40);
+  assert.strictEqual(t.cleanShelves([{ id: '01', baldas: 5, layout: { 1: bloques.slice(0, 12) } }])[0].layout['1'].length, 12, 'antes se recortaba a 8');
+  let g = gav(40, 40);
+  assert.ok(g.rows * g.cols <= 144 && g.rows >= 1 && g.cols >= 1, JSON.stringify(g));
+  g = gav(12, 12);
+  assert.deepStrictEqual([g.rows, g.cols], [12, 12], 'un gavetero 12 x 12 (el máximo del editor) sobrevive intacto');
+  g = gav(10, 10);
+  assert.deepStrictEqual([g.rows, g.cols], [10, 10]);
+  g = gav(3, 4);
+  assert.deepStrictEqual([g.rows, g.cols], [3, 4]);
+  g = gav(1, 40);
+  assert.deepStrictEqual([g.rows, g.cols], [1, 40]);
+  g = gav(40, 1);
+  assert.deepStrictEqual([g.rows, g.cols], [40, 1]);
+});
+
+test('R5 SEC-M1: strArr acota cantidad y longitud; cleanNames (categorías, proveedores, familias) 500 de 60 caracteres sin duplicados', () => {
+  assert.strictEqual(ev('strArr(Array.from({length:30000},(_, i)=>"I"+i)).length'), 20000);
+  assert.strictEqual(ev('strArr(["a".repeat(500)])[0].length'), 200);
+  assert.strictEqual(ev('strArr(["abc","def","ghi"],2,2).join("|")'), 'ab|de');
+  ctx.__l = Array.from({ length: 600 }, (_, i) => i + 'x'.repeat(100));
+  const r = evj('cleanNames(__l)');
+  assert.strictEqual(r.length, 500);
+  assert.ok(r.every(s => s.length <= 60));
+  assert.deepStrictEqual(evj('cleanNames(["Rodamientos","Rodamientos",null,7,"Rodamientos"])'), ['Rodamientos', '7']);
+  assert.deepStrictEqual(evj('cleanNames("no")'), []);
+  assert.ok(t.cleanItem({ id: 'I1', cats: ctx.__l }).cats.length === 500);
+  // la importación de copias pasa por los mismos límites
+  ctx.__wd = { categories: ctx.__l, providers: ctx.__l, shelves: Array.from({ length: 600 }, (_, i) => ({ id: 'S' + i })), aisles: Array.from({ length: 600 }, () => ({ label: 'P' })) };
+  const cfg = evj('cfgDeCopia(__wd)');
+  assert.strictEqual(cfg.categories.length, 500);
+  assert.strictEqual(cfg.providers.length, 500);
+  assert.strictEqual(cfg.shelves.length, 500);
+  assert.strictEqual(cfg.aisles.length, 500);
+});
+
+test('R5 SEC-M1: la sincronización aplica los límites a lo que llega de la nube y ya no pide adminPass ni loginCfg', async () => {
+  await conR2({}, async () => {
+    ctx.__muchas = Array.from({ length: 600 }, (_, i) => i + 'x'.repeat(100));
+    ctx.__sh = Array.from({ length: 600 }, (_, i) => ({ id: 'S' + i, baldas: 5 }));
+    ctx.__ai = Array.from({ length: 600 }, () => ({ label: 'P' }));
+    ev(`items=[];dirtyIds=new Set();__claves=null;
+      pushPendingMovements=async()=>{};flushDirty=async()=>{};cloudGetMeta=async()=>[];dbReplaceAll=async()=>{};setCloudStatus=()=>{};
+      cloudCfgGetMany=async k=>{__claves=k;return {categories:__muchas,providers:__muchas,shelves:__sh,aisles:__ai};};`);
+    await ev('_syncFromCloud(false)');
+    assert.strictEqual(ev('categories.length'), 500);
+    assert.strictEqual(ev('providers.length'), 500);
+    assert.strictEqual(ev('shelves.length'), 500);
+    assert.strictEqual(ev('aisles.length'), 500);
+    assert.ok(!evj('__claves').includes('adminPass') && !evj('__claves').includes('loginCfg'), evj('__claves').join());
+  });
+});
+
+test('R5 SEC-M1 / R6 W-3: el editor de distribución no deja pasar de 40 bloques por balda y llega hasta 12 x 12 = 144 cajones (coherente con el límite al leer)', async () => {
+  const dAntes = ev('layoutDraft'), sAntes = ev('layoutShelfId');
+  try {
+    await conNube({}, async () => {
+      ev("shelves=[{id:'01',baldas:5}];layoutShelfId='01';layoutDraft={}");
+      for (let i = 0; i < 45; i++) ev("layAdd(1,'h')");
+      assert.strictEqual(ev("layoutDraft['1'].length"), 40);
+      assert.ok(ev('__toasts').some(m => m.includes('40')), ev('__toasts').join());
+      assert.strictEqual(ev('MAX_BLOQUES'), 40);
+      assert.strictEqual(ev('MAX_CAJONES'), 144);
+      // el editor permite hasta 12 x 12: justo el límite de lectura, así que nada de lo creado se recorta después
+      ev("layoutDraft={'1':[{id:'b',k:'g',rows:11,cols:12}]}");
+      ev("layStep(1,0,'rows',1)");
+      assert.deepStrictEqual(evj("[layoutDraft['1'][0].rows,layoutDraft['1'][0].cols]"), [12, 12]);
+      ev("layStep(1,0,'cols',1)"); // tope del editor: 12
+      assert.strictEqual(ev("layoutDraft['1'][0].cols"), 12);
+      ctx.__b = evj("layoutDraft['1'][0]");
+      const limpio = evj('cleanBlock(__b)');
+      assert.deepStrictEqual([limpio.rows, limpio.cols], [12, 12], 'lo creado en el editor sobrevive entero a la limpieza');
+    });
+  } finally { ctx.__d = dAntes; ev('layoutDraft=__d'); ctx.__d = sAntes; ev('layoutShelfId=__d'); }
+});
+
+test('R5 SEC-L1: el cliente de Supabase no lee la sesión de la URL y usa PKCE', () => {
+  const sbAntes = ev('sb'), winAntes = ctx.window;
+  ctx.__args = null;
+  ctx.window = { supabase: { createClient: (...a) => { ctx.__args = a; return { fake: true }; } } };
+  try {
+    ev('sb=null');
+    assert.strictEqual(ev('initSupabase()'), true);
+    const [url, key, opts] = ctx.__args;
+    assert.ok(url.startsWith('https://') && key);
+    assert.strictEqual(opts.auth.detectSessionInUrl, false, 'un enlace con #access_token no debe sustituir la sesión');
+    assert.strictEqual(opts.auth.flowType, 'pkce');
+    assert.ok(opts.auth.persistSession !== false && opts.auth.autoRefreshToken !== false, 'la sesión se sigue guardando y renovando');
+  } finally { ctx.window = winAntes; ctx.__sbx = sbAntes; ev('sb=__sbx'); }
+});
+
+test('R5 SEC-L3: renderPhotoZone escapa la foto pendiente', async () => {
+  const pAntes = ev('pendingPhoto');
+  try {
+    await conNube({ dom: { 'photo-zone': { innerHTML: '' } } }, async () => {
+      ctx.__ph = 'x" onerror="alert(1)';
+      ev('pendingPhoto=__ph;renderPhotoZone()');
+      const h = ctx.__dom['photo-zone'].innerHTML;
+      assert.ok(h.includes('<img src="x&quot; onerror=&quot;alert(1)">'), h);
+      assert.ok(!h.includes('" onerror="'), h);
+      ctx.__ph = 'data:image/jpeg;base64,/9j/4AAQ';
+      ev('pendingPhoto=__ph;renderPhotoZone()');
+      assert.ok(ctx.__dom['photo-zone'].innerHTML.includes('<img src="data:image/jpeg;base64,/9j/4AAQ">'));
+    });
+  } finally { ctx.__ph = pAntes; ev('pendingPhoto=__ph'); }
+});
+
+test('R5 SEC-L2: fabricante_web solo se acepta como nombre de dominio (sin barra, arroba, dos puntos ni espacios)', () => {
+  const w = s => { ctx.__w = s; return ev('webFabricante(__w)'); };
+  assert.strictEqual(w('siemens.com'), 'siemens.com');
+  assert.strictEqual(w('https://www.lovatoelectric.es/'), 'www.lovatoelectric.es');
+  assert.strictEqual(w('HTTP://Schneider-Electric.com'), 'Schneider-Electric.com');
+  assert.strictEqual(w('  abb.com  '), 'abb.com');
+  for (const malo of ['evil.com/ruta', 'evil.com//', 'a@evil.com', 'user:pass@evil.com', 'evil.com:8080', 'evil.com path', 'evil .com', 'javascript:alert(1)',
+    'evil.com?x=1', 'evil.com#x', '//evil.com', 'evil', 'a.b', '.com', 'evil..com', '-evil.com', 'evil-.com', 'evil.c0m', '', null, undefined, 42, '<b>x</b>.com', 'ev"il.com', "ev'il.com", 'evil.com\\x', 'a'.repeat(300) + '.com']) {
+    assert.strictEqual(w(malo), '', 'debe rechazarse: ' + malo);
+  }
+});
+
+test('R5 SEC-L2: runWebSearch solo enlaza a https://<dominio> y nunca a algo con ruta o arroba', async () => {
+  await conNube({ dom: { 'ai-web-results': { innerHTML: '' }, 'ai-web-btn': {} } }, async () => {
+    await conStubs(['braveSearch', 'buildWebBase'], async () => {
+      const lanzar = async web => {
+        ctx.__web = web;
+        ev("buildWebBase=()=>'x';braveSearch=async()=>({error:true,status:500});lastAIIdent={fabricante_web:__web}");
+        await ev('runWebSearch()');
+        return ctx.__dom['ai-web-results'].innerHTML;
+      };
+      let h = await lanzar('https://siemens.com/');
+      assert.ok(h.includes('href="https://siemens.com"'), h);
+      h = await lanzar('evil.com/x" onmouseover="1');
+      assert.ok(!h.includes('evil'), h);
+      h = await lanzar('a@evil.com');
+      assert.ok(!h.includes('evil'), h);
+    });
+  });
+});
+
+// Excel: ExcelJS simulado que recoge las filas escritas
+function excelFalso() {
+  const filas = [];
+  const ws = { addRow: v => { const f = { vals: v, eachCell() {}, getCell: () => ({}) }; filas.push(f); return f; }, addImage() {} };
+  ctx.ExcelJS = { Workbook: function () { this.addWorksheet = () => ws; this.addImage = () => 0; this.xlsx = { writeBuffer: async () => new Uint8Array(2) }; } };
+  return filas;
+}
+
+test('R6 W-6: xlsTexto ya no antepone comilla (ExcelJS escribe cadenas, nunca fórmulas): textos como "-5 mm" o "+12V" salen intactos', () => {
+  const x = v => { ctx.__x = v; return ev('xlsTexto(__x)'); };
+  for (const legitimo of ['-5 mm', '+12V', '=', '@casa', '-2+3', '\t=1', '=1+1', '+cmd', '@SUM(A1)']) assert.strictEqual(x(legitimo), legitimo, 'sin tocar: ' + JSON.stringify(legitimo));
+  assert.strictEqual(x('Rodamiento 6204'), 'Rodamiento 6204');
+  assert.strictEqual(x('a=b'), 'a=b');
+  assert.strictEqual(x(null), '');
+  assert.strictEqual(x(undefined), '');
+  assert.strictEqual(x(0), '0');
+  assert.strictEqual(x(''), '');
+  assert.strictEqual(x(-5), '-5', 'se sigue forzando a texto con String()');
+  assert.strictEqual(x('x'.repeat(32000)), 'x'.repeat(32000), 'justo en el límite no se recorta ni se marca');
+  const largo = x('x'.repeat(40000));
+  assert.strictEqual(largo, 'x'.repeat(32000) + ' [recortado]');
+  assert.ok(largo.length <= 32767, 'una celda de más de 32767 corrompe el archivo');
+  assert.ok(x('=' + 'x'.repeat(40000)).endsWith(' [recortado]'));
+  assert.strictEqual(ev('xlsVal(5)'), 5, 'los números siguen siendo números');
+  assert.strictEqual(ev("xlsVal('=5')"), '=5');
+  assert.strictEqual(ev("xlsVal('')"), '');
+  assert.strictEqual(ev('xlsVal(null)'), '');
+});
+
+test('R5 SEC-L8 / R6 W-6: el Excel de inventario deja los textos tal cual (sin comilla), marca los recortados y mantiene los números', async () => {
+  const restaurar = descargaSimulada(), exAntes = ctx.ExcelJS;
+  try {
+    const filas = excelFalso();
+    await conNube({}, async () => {
+      await conStubs(['asegurarFotos'], async () => {
+        ctx.__it = [{ id: 'I1', name: '=HYPERLINK("http://x","a")', cat: '+cmd', loc: '-1', ref: '@SUM(A1)', brand: 'ok', machine: '=1+1', notes: 'n'.repeat(40000), stock: 3, min: 1, precio: 2.5 }];
+        ev('items=__it;asegurarFotos=async()=>({})');
+        await ev("doExportExcel('all')");
+      });
+    });
+    assert.strictEqual(ctx.__blobs.length, 1, 'se generó el Excel');
+    const v = filas[1].vals;
+    assert.strictEqual(v[1], '=HYPERLINK("http://x","a")');
+    assert.deepStrictEqual([v[2], v[3], v[6], v[7], v[8]], ['+cmd', '-1', '@SUM(A1)', 'ok', '=1+1']);
+    assert.strictEqual(v[9], 'n'.repeat(32000) + ' [recortado]');
+    assert.deepStrictEqual([v[4], v[5], v[10], v[11]], [3, 1, 2.5, 7.5], 'stock, mínimo, precio y valor siguen siendo números');
+  } finally { restaurar(); if (exAntes === undefined) delete ctx.ExcelJS; else ctx.ExcelJS = exAntes; }
+});
+
+test('R5 SEC-L8 / R6 W-6: el Excel de movimientos deja los textos tal cual (también la columna de usuario) y no convierte en texto lo numérico', async () => {
+  const restaurar = descargaSimulada(), exAntes = ctx.ExcelJS, modo = ev('movRangeMode');
+  try {
+    const filas = excelFalso();
+    await conR2({}, async () => {
+      await conStubs(['getMergedMovements', 'asegurarFotos', 'pushPendingMovements'], async () => {
+        ctx.__mv = [
+          { ts: 2, itemId: 'I1', nombre: '=cmd|calc', cat: '@x', loc: '+1', fecha: '1/1/2026', hora: '10:00', turno: 'Mañana', tipo: 'Salida', anterior: 5, nuevo: 4, diferencia: -1, ref: '-2', brand: 'b', machine: '=m', usuario: '=evil@x.com' },
+          { ts: 1, itemId: 'I2', nombre: 'ok', tipo: 'Compra', anterior: '=1', nuevo: 9, diferencia: '=2', coste: 3 },
+        ];
+        ev("movRangeMode='all';getMergedMovements=async()=>__mv;asegurarFotos=async()=>({});pushPendingMovements=async()=>{};items=[]");
+        await ev('doExportMovimientos()');
+      });
+    });
+    assert.strictEqual(ctx.__blobs.length, 1);
+    const a = filas[1].vals, b = filas[2].vals;
+    assert.deepStrictEqual([a[5], a[6], a[7], a[12], a[14], a[15]], ['=cmd|calc', '@x', '+1', '-2', '=m', '=evil'], 'sin comilla: la celda es una cadena, no una fórmula');
+    assert.deepStrictEqual([a[8], a[10], a[9]], [5, 4, '-1'], 'las cifras no se prefijan: Antes/Después numéricos y diferencia con su signo');
+    assert.deepStrictEqual([b[8], b[9], b[10]], ['=1', '=2', 9], 'un valor de texto que llega de la nube sigue siendo texto');
+  } finally { restaurar(); ctx.__m = modo; ev('movRangeMode=__m'); if (exAntes === undefined) delete ctx.ExcelJS; else ctx.ExcelJS = exAntes; }
+});
+
+test('R5 SEC-L10: el código heredado del acceso antiguo (app_auth, contraseña de Ajustes, usuarios) ya no existe', () => {
+  for (const f of ['fetchAuthFromSupabase', 'saveAuthToSupabase', 'loadAuthCredentials', 'sha256', 'adminHash', 'openChangePass', 'saveAdminPass', 'openUsers', 'saveUsers', 'getLoginCfg', 'setLoginCfg']) {
+    assert.strictEqual(ev('typeof ' + f), 'undefined', f);
+  }
+  assert.ok(!/app_auth|almacen_auth_cache.*TTL|_authCredentials|ADMIN_PASS_DEFAULT|cfgGet\('adminPass'\)|'adminPass','loginCfg'\]/.test(src));
+  for (const w of ['almacen-electrico', 'almacen-mecanico']) {
+    const h = fs.readFileSync(path.join(__dirname, '..', w, 'index.html'), 'utf8');
+    for (const id of ['modal-change-pass', 'modal-users', 'openChangePass', 'openUsers', 'saveAdminPass', 'saveUsers', 'cp-cur', 'us-user']) assert.ok(!h.includes(id), w + ': ' + id);
+    assert.ok(h.includes('id="unlock-pass"') && h.includes('submitUnlock()'), 'el desbloqueo por rol sigue ahí');
+  }
+});
+
+test('R5 SEC-L10: sin Supabase Auth ya no hay inicio de sesión alternativo ni desbloqueo por contraseña (solo el rol de administrador)', async () => {
+  await conR2({ dom: { 'login-user': { value: 'ana' }, 'login-pass': { value: 'x' }, 'login-error': { textContent: '' } } }, async () => {
+    await conStubs(['enterApp'], async () => {
+      ev("__entro=0;enterApp=()=>{__entro++};var WAREHOUSE_CONFIG={key:'electrico',useSupabaseAuth:false};WH=WAREHOUSE_CONFIG");
+      try {
+        await ev('doLogin()');
+        assert.strictEqual(ev('__entro'), 0, 'no se entra');
+        assert.ok(ctx.__dom['login-error'].textContent.length > 0);
+        ev('adminUnlocked=false');
+        await ev('submitUnlock()');
+        assert.strictEqual(ev('adminUnlocked'), false);
+      } finally { quitarWH(); }
+    });
+  });
+  // con Supabase Auth, un usuario no administrador sigue sin poder desbloquear y el administrador sí
+  await conR2({}, async () => {
+    ev(WH_R4);
+    try {
+      ev('adminUnlocked=false;finishUnlock=()=>{adminUnlocked=true}');
+      ev("sb={auth:{getSession:async()=>({data:{session:{user:{app_metadata:{role:'user'}}}}})}}");
+      await ev('submitUnlock()');
+      assert.strictEqual(ev('adminUnlocked'), false);
+      ev("sb={auth:{getSession:async()=>({data:{session:{user:{app_metadata:{role:'admin'}}}}})}}");
+      await ev('submitUnlock()');
+      assert.strictEqual(ev('adminUnlocked'), true);
+    } finally { quitarWH(); ev('adminUnlocked=false'); }
+  });
+});
+
+// ---- SEC-L4: al cerrar sesión se vacía la base local (con IndexedDB simulada)
+// bases = {nombre:{items:[],config:[{key,value}],movements:[]}}; log registra las operaciones
+function idbFalsa(bases, log) {
+  const creadas = [];
+  const objDB = nombre => ({
+    objectStoreNames: { contains: n => n in bases[nombre] },
+    close() { log.push('close:' + nombre); },
+    transaction(nombres, modo) {
+      const tx = { _pend: 0, _fin() { if (this._pend === 0) setTimeout(() => { if (this._pend === 0 && !this._hecho) { this._hecho = true; if (this.oncomplete) this.oncomplete(); } }, 0); } };
+      const req = res => { const rq = { result: res }; tx._pend++; setTimeout(() => { if (rq.onsuccess) rq.onsuccess({ target: rq }); tx._pend--; tx._fin(); }, 0); return rq; };
+      tx.objectStore = n => {
+        assert.ok(nombres.includes(n), 'almacén fuera de la transacción: ' + n);
+        return {
+          getAll: () => req(bases[nombre][n].slice()),
+          get: k => req(bases[nombre][n].find(r => r.key === k)),
+          clear: () => { assert.strictEqual(modo, 'readwrite'); bases[nombre][n].length = 0; log.push('clear:' + nombre + ':' + n); return req(undefined); }
+        };
+      };
+      setTimeout(() => tx._fin(), 0);
+      return tx;
+    }
+  });
+  const indexedDB = {
+    open(nombre, ver) {
+      const r = {};
+      setTimeout(() => {
+        if (!bases[nombre]) {
+          if (ver !== undefined) { bases[nombre] = { items: [], config: [], movements: [] }; creadas.push(nombre); }
+          else {
+            if (r.onupgradeneeded) r.onupgradeneeded({ target: { result: {}, transaction: { abort() { log.push('abort:' + nombre); } } } });
+            if (r.onerror) r.onerror({});
+            return;
+          }
+        }
+        r.result = objDB(nombre);
+        if (r.onsuccess) r.onsuccess({ target: r });
+      }, 0);
+      return r;
+    }
+  };
+  return { indexedDB, creadas };
+}
+const baseConDatos = (pend = false) => ({
+  items: [{ id: 'I1', precio: 9.5, photo: 'data:image/png;base64,AA' }],
+  config: [{ key: 'shelves', value: [{ id: '01' }] }, { key: 'dirtyIds', value: pend ? ['I1'] : [] }, { key: 'dirtyDel', value: [] }, { key: 'dirtyFields', value: {} }, { key: 'dirtyCfg', value: [] }],
+  movements: [{ id: 1, itemId: 'I1', synced: !pend }]
+});
+const vacia = b => b.items.length === 0 && b.config.length === 0 && b.movements.length === 0;
+// conSalida + IndexedDB simulada + almacenes con nombre de base + historial de búsqueda
+async function conLimpieza(bases, fn) {
+  const idbAntes = ctx.indexedDB, lsAntes = ctx.localStorage, dbn = ev('DB_NAME'), rec = recogerAvisos();
+  const log = []; ctx.__log = log;
+  const { indexedDB, creadas } = idbFalsa(bases, log);
+  const datos = { almacen_search_history_electrico: '["a"]', almacen_search_history_mecanico: '["b"]', almacen_search_history_otro: '["c"]', 'sb-abc-auth-token': 't', otra: '2' };
+  const ls = Object.assign({}, datos);
+  for (const [k, f] of Object.entries({ getItem: k => (k in ls ? ls[k] : null), setItem: (k, v) => { ls[k] = String(v); }, removeItem: k => { delete ls[k]; } })) Object.defineProperty(ls, k, { value: f, enumerable: false });
+  ctx.indexedDB = indexedDB; ctx.localStorage = ls;
+  try {
+    await conSalida(async () => {
+      ev("DB_NAME='almacen_db';WAREHOUSE_CONFIG.db='almacen_db';var WAREHOUSE_OTHER_CONFIG={key:'mecanico',db:'almacen_mec_db'}");
+      ev("sb.auth.signOut=async()=>{__orden.push('signOut');__log.push('signOut');return {error:null};}");
+      const rl = ctx.location.reload; ctx.location.reload = () => { rl(); log.push('reload'); };
+      try { await fn({ log, creadas, ls, avisos: rec.avisos }); } // avisos: lo que sale por console.warn/error durante la prueba
+      finally { ev('delete globalThis.WAREHOUSE_OTHER_CONFIG;WAREHOUSE_OTHER_CONFIG=undefined;_cerrando=false'); } // (delete no quita un var de script: se deja en undefined)
+    });
+  } finally { ctx.indexedDB = idbAntes; ctx.localStorage = lsAntes; ctx.__d = dbn; ev('DB_NAME=__d'); rec.restaurar(); }
+}
+const primero = (log, p) => log.findIndex(x => x.startsWith(p));
+const ultimo = (log, p) => log.map(x => x.startsWith(p)).lastIndexOf(true);
+
+test('R5 SEC-L4: tras subir lo pendiente se cierra la sesión y se vacía la base local de los dos almacenes y el historial de búsqueda', async () => {
+  const bases = { almacen_db: baseConDatos(), almacen_mec_db: baseConDatos() };
+  await conLimpieza(bases, async ({ log, ls }) => {
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), ['push', 'flush', 'cfg', 'signOut'], 'primero se sube lo pendiente');
+    assert.ok(vacia(bases.almacen_db) && vacia(bases.almacen_mec_db), 'artículos, config (colas) y movimientos vaciados');
+    assert.ok(log.indexOf('signOut') < primero(log, 'clear:'), 'se vacía DESPUÉS de cerrar la sesión: ' + log.join());
+    assert.ok(ultimo(log, 'clear:') < log.indexOf('reload'), 'y la página se recarga cuando ya está vacía: ' + log.join());
+    assert.strictEqual(ctx.__rl, 1);
+    assert.ok(!Object.keys(ls).some(k => k.startsWith('almacen_search_history_')), 'historial de búsqueda borrado: ' + Object.keys(ls));
+    assert.strictEqual(ls.otra, '2', 'no se toca lo ajeno');
+  });
+});
+
+test('R5 SEC-L4: sin pendientes se vacía directamente; una base del otro almacén que nunca se abrió no se crea', async () => {
+  const bases = { almacen_db: baseConDatos() };
+  await conLimpieza(bases, async ({ log, creadas }) => {
+    ev("__pend=[];dirtyIds=new Set();dirtyCfg=new Set()");
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), ['signOut']);
+    assert.ok(vacia(bases.almacen_db));
+    assert.deepStrictEqual(Object.keys(bases), ['almacen_db'], 'no se crea la base del otro almacén');
+    assert.deepStrictEqual(creadas, []);
+    assert.ok(log.includes('abort:almacen_mec_db'));
+    assert.strictEqual(ctx.__rl, 1);
+  });
+});
+
+test('R5 SEC-L4 / R6 W-2: si no se pudo subir, cancelar no borra nada; aceptar descarta lo pendiente de los DOS almacenes y el aviso cuenta cada uno', async () => {
+  const bases = { almacen_db: baseConDatos(true), almacen_mec_db: baseConDatos(true) };
+  await conLimpieza(bases, async ({ log, ls }) => {
+    ctx.navigator = { onLine: false };
+    await ev('logout()');
+    // el cuadro de confirmación avisa de que se perderán; no se ha tocado nada
+    assert.ok(evj('__opened').includes('modal-confirm'));
+    const msg = ctx.__dom['confirm-msg'].textContent;
+    assert.ok(/perder|borrar/i.test(msg), msg);
+    assert.ok(msg.includes('sin subir'));
+    // actual: 1 movimiento + dirtyIds + dirtyCfg (en memoria) = 3; el otro: 1 movimiento + dirtyIds = 2
+    assert.ok(msg.includes('Quedan 5 cambio(s) sin subir') && msg.includes('este almacén 3, el otro 2'), msg);
+    assert.ok(!log.some(x => x.startsWith('clear:')) && ctx.__rl === 0, 'cancelar (no aceptar) no borra');
+    assert.strictEqual(bases.almacen_db.items.length, 1);
+    assert.strictEqual(ls.almacen_borrar_pendiente, undefined, 'sin confirmar no se marca el borrado');
+    // el usuario acepta
+    ctx.__dom['confirm-ok'].onclick();
+    await esperarHasta(() => ctx.__rl >= 1);
+    assert.ok(vacia(bases.almacen_db), 'lo aceptado se descarta: la base del almacén actual queda vacía');
+    assert.ok(vacia(bases.almacen_mec_db), 'y también la del otro almacén (era lo que decía el aviso)');
+    assert.strictEqual(ctx.__rl, 1);
+    assert.ok(log.indexOf('signOut') < primero(log, 'clear:') && ultimo(log, 'clear:') < log.indexOf('reload'));
+    assert.strictEqual(ls.almacen_borrar_pendiente, undefined, 'tras vaciar bien se quita la marca');
+  });
+});
+
+test('R5 SEC-L4: un fallo al vaciar no impide cerrar la sesión; en el cierre no arranca otra sincronización', async () => {
+  const bases = { almacen_db: baseConDatos() };
+  await conLimpieza(bases, async ({ log }) => {
+    ctx.indexedDB = { open() { throw new Error('modo privado'); } };
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), ['push', 'flush', 'cfg', 'signOut']);
+    assert.strictEqual(ctx.__rl, 1, 'la sesión se cierra igualmente');
+    assert.strictEqual(ev('_cerrando'), true, 'mientras se cierra no arranca otra sincronización');
+    ev('__n=0;_syncFromCloud=async()=>{__n++}');
+    await ev('syncFromCloud()');
+    assert.strictEqual(ev('__n'), 0);
+  });
+});
+
+test('R5 SEC-L4: aunque borrarDatosLocales lanzara una excepción, la sesión se cierra igualmente', async () => {
+  const bases = { almacen_db: baseConDatos() };
+  await conLimpieza(bases, async () => {
+    await conStubs(['borrarDatosLocales'], async () => {
+      ev("borrarDatosLocales=async()=>{throw new Error('boom')}");
+      await ev('logout()');
+      assert.deepStrictEqual(evj('__orden'), ['push', 'flush', 'cfg', 'signOut']);
+      assert.strictEqual(ctx.__rl, 1);
+    });
+  });
+});
+
+const VARIANTES_PEND_OTRO = (() => {
+  const valor = (b, k, v) => { b.config.find(r => r.key === k).value = v; };
+  return {
+    movimientos: b => { b.movements[0].synced = false; },
+    dirtyIds: b => valor(b, 'dirtyIds', ['I1']),
+    dirtyDel: b => valor(b, 'dirtyDel', ['I2']),
+    dirtyFields: b => valor(b, 'dirtyFields', { I1: { stock: 3 } }),
+    dirtyCfg: b => valor(b, 'dirtyCfg', ['shelves']),
+    ninguno: () => {},
+  };
+})();
+
+test('R6 W-2: los cambios sin subir del OTRO almacén (movimientos o cada cola) se cuentan, se avisan y no se vacía nada hasta aceptar; aceptado, se vacían los dos', async () => {
+  for (const [nombre, poner] of Object.entries(VARIANTES_PEND_OTRO)) {
+    const otra = baseConDatos();
+    poner(otra);
+    const bases = { almacen_db: baseConDatos(), almacen_mec_db: otra };
+    await conLimpieza(bases, async ({ log }) => {
+      await ev('logout()');
+      if (nombre === 'ninguno') {
+        assert.ok(vacia(bases.almacen_db) && vacia(otra), 'sin pendientes en ninguno se vacían los dos directamente');
+        assert.ok(!evj('__opened').includes('modal-confirm'));
+        return;
+      }
+      assert.ok(evj('__opened').includes('modal-confirm'), nombre + ': hay que preguntar (antes se conservaba en silencio)');
+      const msg = ctx.__dom['confirm-msg'].textContent;
+      assert.ok(msg.includes('Quedan 1 cambio(s) sin subir') && msg.includes('este almacén 0, el otro 1'), nombre + ': ' + msg);
+      assert.ok(/otro almac[eé]n/.test(msg) && msg.includes('SE PERDERÁN'), msg);
+      assert.ok(!log.some(x => x.startsWith('clear:')) && ctx.__rl === 0 && !evj('__orden').includes('signOut'), nombre + ': sin aceptar no se toca nada');
+      assert.strictEqual(otra.items.length, 1);
+      ctx.__dom['confirm-ok'].onclick();
+      await esperarHasta(() => ctx.__rl >= 1);
+      assert.ok(vacia(bases.almacen_db) && vacia(otra), nombre + ': aceptado se descartan los dos');
+      assert.strictEqual(ctx.__rl, 1);
+    });
+  }
+});
+
+test('R6 W-2: si el otro almacén recibe cambios mientras se cierra la sesión, se conserva (nunca se pierde en silencio) y se avisa con un aviso visible', async () => {
+  for (const [nombre, poner] of Object.entries(VARIANTES_PEND_OTRO)) {
+    const otra = baseConDatos();
+    const bases = { almacen_db: baseConDatos(), almacen_mec_db: otra };
+    const alertas = [], alAntes = ctx.alert;
+    ctx.alert = m => { alertas.push(String(m)); };
+    try {
+      await conLimpieza(bases, async ({ ls }) => {
+        ctx.__poner = () => poner(otra);
+        ev("sb.auth.signOut=async()=>{__orden.push('signOut');__log.push('signOut');__poner();return {error:null};}");
+        await ev('logout()');
+        assert.ok(vacia(bases.almacen_db), nombre + ': el actual se vacía');
+        assert.strictEqual(ls.almacen_borrar_pendiente, undefined, nombre + ': que se conserve no es un fallo: la marca se quita');
+        if (nombre === 'ninguno') { assert.ok(vacia(otra)); assert.strictEqual(alertas.length, 0); return; }
+        assert.strictEqual(otra.items.length, 1, nombre + ': el otro almacén se conserva');
+        assert.strictEqual(otra.movements.length, 1, nombre);
+        assert.ok(ev('__toasts').some(m => /otro almac[eé]n/.test(m) && m.includes('sin subir')), nombre + ': ' + ev('__toasts').join('|'));
+        assert.ok(alertas.some(m => /otro almac[eé]n/.test(m)), nombre + ': aviso visible antes de recargar');
+        assert.strictEqual(ctx.__rl, 1);
+      });
+    } finally { ctx.alert = alAntes; }
+  }
+});
+
+test('R5 SEC-L4: espera (máx. unos segundos) a que acabe una sincronización en curso antes de vaciar', async () => {
+  const bases = { almacen_db: baseConDatos(true) };
+  await conLimpieza(bases, async ({ log }) => {
+    ev('_syncing=true');
+    setTimeout(() => { log.push('syncFin'); ev('_syncing=false'); }, 300);
+    await ev('logout(true)'); // ya aceptado el descarte de lo pendiente
+    assert.ok(log.indexOf('syncFin') >= 0 && log.indexOf('syncFin') < primero(log, 'clear:'), log.join());
+    assert.ok(vacia(bases.almacen_db));
+  });
+});
+
+test('R5 SEC-L4: el texto de aviso al cerrar sesión ya no promete subir lo pendiente a nombre de otra persona', async () => {
+  await conR2({}, async () => {
+    await conStubs(['movGetAll'], async () => {
+      ev(WH_R4 + ';movGetAll=async()=>[{synced:false}]');
+      try { await ev('askLogout()'); } finally { quitarWH(); }
+      const m = ctx.__dom['confirm-msg'].textContent;
+      assert.ok(m.includes('sin sincronizar') && !m.includes('a nombre de quien entre después'), m);
+    });
+  });
+});
+
+// ---- SEC-L5: caché del service worker con comprobación de huella (SRI)
+for (const carpeta of ['almacen-electrico', 'almacen-mecanico']) {
+  test('R5 SEC-L5 (' + carpeta + '): el SW guarda las librerías externas solo si su huella coincide con la fijada (precarga y uso normal)', async () => {
+    let sw = cargarSW(carpeta);
+    await sw.instalar();
+    const deIndex = Object.keys(SRI_FIJADOS).filter(u => !u.includes('pdf.js'));
+    assert.strictEqual(deIndex.length, 6);
+    for (const u of deIndex) assert.ok(sw.puestos.includes(u), 'se precarga ' + u);
+    // huella distinta en la precarga: no se guarda, se avisa y la instalación sigue
+    sw = cargarSW(carpeta, { malaHuella: [LIB_EXCELJS] });
+    await sw.instalar();
+    assert.ok(!sw.puestos.includes(LIB_EXCELJS));
+    assert.ok(sw.puestos.includes(LIB_SUPABASE));
+    assert.ok(sw.avisos.some(a => a.includes('exceljs')), sw.avisos.join('|'));
+    // uso normal: respuesta con huella distinta se entrega (la página la rechazará por su SRI) pero NO se guarda; la buena sí
+    let r = await sw.pedir(LIB_EXCELJS);
+    assert.strictEqual(r.ok, true);
+    assert.ok(!sw.puestos.includes(LIB_EXCELJS), 'una respuesta mala no queda guardada');
+    sw = cargarSW(carpeta);
+    r = await sw.pedir(LIB_EXCELJS);
+    assert.strictEqual(r.ok, true);
+    assert.deepStrictEqual(sw.puestos, [LIB_EXCELJS]);
+    // pdf.js (versión fijada en app.js) también se guarda cuando coincide
+    const worker = Object.keys(SRI_FIJADOS).find(u => u.includes('pdf.worker'));
+    await sw.pedir(worker);
+    assert.ok(sw.puestos.includes(worker));
+    // una URL de CDN sin huella conocida se sirve pero no se guarda
+    sw = cargarSW(carpeta);
+    r = await sw.pedir('https://cdnjs.cloudflare.com/ajax/libs/otra/1.0/x.js');
+    assert.strictEqual(r.ok, true);
+    assert.deepStrictEqual(sw.puestos, []);
+  });
+
+  test('R5 SEC-L5 (' + carpeta + '): lo que ya está en la caché sigue sirviéndose sin red; si la comprobación falla se cae a la red', async () => {
+    let sw = cargarSW(carpeta, { enCache: [LIB_EXCELJS], fetchFalla: true });
+    const r = await sw.pedir(LIB_EXCELJS);
+    assert.strictEqual(r.hit, LIB_EXCELJS, 'sin red se usa la copia guardada');
+    // huella distinta en la red: no se guarda, pero la respuesta se entrega (el SRI de la página decide si la ejecuta)
+    sw = cargarSW(carpeta, { malaHuella: [LIB_SUPABASE] });
+    const r2 = await sw.pedir(LIB_SUPABASE);
+    assert.strictEqual(r2.ok, true);
+    assert.deepStrictEqual(sw.puestos, []);
+  });
+
+  test('R5 SEC-L5 (' + carpeta + '): la caché se renueva (v4) para descartar lo guardado sin comprobar, y las huellas coinciden con las de index.html', () => {
+    const codigo = fs.readFileSync(path.join(__dirname, '..', carpeta, 'sw.js'), 'utf8');
+    assert.ok(/CACHE_NAME = PREFIX \+ 'v4'/.test(codigo));
+    const html = fs.readFileSync(path.join(__dirname, '..', carpeta, 'index.html'), 'utf8');
+    for (const [u, h] of Object.entries(SRI_FIJADOS)) {
+      if (u.includes('pdf.js')) continue;
+      assert.ok(html.includes('src="' + u + '" integrity="' + h + '"'), u);
+      assert.ok(codigo.includes("'" + u + "'") && codigo.includes("'" + h + "'"), 'el SW fija la huella de ' + u);
+    }
+    for (const [u, h] of Object.entries(SRI_FIJADOS)) assert.ok(codigo.includes("'" + u + "'") && codigo.includes("'" + h + "'"), u);
+  });
+
+  test('R5 SEC-L6 (' + carpeta + '): CSP mínima por meta (solo object-src, base-uri y form-action), antes de cualquier script', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', carpeta, 'index.html'), 'utf8');
+    const m = html.match(/<meta http-equiv="Content-Security-Policy" content="([^"]*)">/);
+    assert.ok(m, 'falta la meta CSP');
+    assert.strictEqual(m[1], "object-src 'none'; base-uri 'self'; form-action 'self'");
+    assert.ok(!/script-src|connect-src|default-src|style-src|img-src|frame/.test(m[1]), 'sin directivas que puedan romper la app');
+    assert.ok(html.indexOf(m[0]) < html.indexOf('<script'), 'la meta va antes del primer script');
+    assert.strictEqual((html.match(/Content-Security-Policy/g) || []).length, 1);
+  });
+}
+
+test('R5 documentación: SEGURIDAD.md ya no contiene afirmaciones que el código desmiente', () => {
+  const d = fs.readFileSync(path.join(__dirname, '..', 'SEGURIDAD.md'), 'utf8');
+  for (const viejo of ['No hay CSP', 'la limpieza de la base local al salir no está hecha', 'Editar el formulario de un artículo guarda también el stock que tenía al abrirlo', 'se subirá más adelante a nombre de quien entre después'])
+    assert.ok(!d.includes(viejo), 'afirmación obsoleta: ' + viejo);
+  assert.ok(!src.includes('supabase_seguridad.sql'), 'los avisos de la app no deben remitir a un fichero SQL que ya no existe');
+  for (const nuevo of ['IndexedDB', 'PKCE', 'Content-Security-Policy', 'bright-worker', 'Brave', 'savePrintedIds'])
+    assert.ok(d.includes(nuevo), 'falta documentar: ' + nuevo);
+});
+
+// ===== Arreglos de la revisión ECC (bloque R6) =====
+const FLAG = 'almacen_borrar_pendiente';
+
+test('R6 documentación: SEGURIDAD.md describe la marca de borrado, lo que NO se vacía, los límites nuevos y el Excel sin comilla', () => {
+  const d = fs.readFileSync(path.join(__dirname, '..', 'SEGURIDAD.md'), 'utf8');
+  for (const nuevo of [FLAG, 'SESSION_MAX_MS', 'detectSessionInUrl', '[recortado]', 'Se recortarán', 'no existe ninguna exportación CSV', 'hash distinto'])
+    assert.ok(d.includes(nuevo), 'falta documentar: ' + nuevo);
+  for (const viejo of ['se le antepone una comilla simple', '8 bloques por balda', 'como máximo 200 estanterías', 'y 100 cajones'])
+    assert.ok(!d.includes(viejo), 'afirmación obsoleta: ' + viejo);
+  assert.ok(/no se vac[ií]a/i.test(d) && /Salir/.test(d), 'caducidad de sesión y cambio de usuario sin cerrar sesión');
+});
+
+// ---- W-1: borrado a prueba de cierres, con avisos y sin bloqueos
+test('R6 W-1: la marca de borrado se escribe ANTES de cerrar la sesión (si la app muere ahí, al arrancar se vacía) y se quita tras vaciar bien', async () => {
+  const bases = { almacen_db: baseConDatos(), almacen_mec_db: baseConDatos() };
+  await conLimpieza(bases, async ({ ls }) => {
+    ctx.__marca = 'sin leer';
+    ev("sb.auth.signOut=async()=>{__orden.push('signOut');__log.push('signOut');__marca=localStorage.getItem('almacen_borrar_pendiente');return {error:null};}");
+    await ev('logout()');
+    assert.strictEqual(ctx.__marca, '1', 'cuando se cierra la sesión la marca ya está escrita');
+    assert.strictEqual(ls[FLAG], undefined, 'tras vaciar sin errores se quita');
+    assert.ok(vacia(bases.almacen_db) && vacia(bases.almacen_mec_db));
+  });
+});
+
+test('R6 W-1: con la subida fallida y sin aceptar no se escribe la marca; sin conexión y aceptando sí (antes de cerrar la sesión)', async () => {
+  const bases = { almacen_db: baseConDatos(true), almacen_mec_db: baseConDatos() };
+  await conLimpieza(bases, async ({ ls, avisos }) => {
+    ctx.navigator = { onLine: false };
+    await ev('logout()');
+    assert.strictEqual(ls[FLAG], undefined, 'pendiente de confirmar: nada se marca');
+    ctx.__marca = 'sin leer';
+    ev("sb.auth.signOut=async()=>{__orden.push('signOut');__log.push('signOut');__marca=localStorage.getItem('almacen_borrar_pendiente');return {error:null};}");
+    ctx.__dom['confirm-ok'].onclick();
+    await esperarHasta(() => ctx.__rl >= 1);
+    assert.strictEqual(ctx.__marca, '1');
+    assert.strictEqual(ls[FLAG], undefined, 'tras vaciar bien se quita la marca: ' + avisos.join('|'));
+  });
+});
+
+test('R6 W-1: si el vaciado falla la marca se CONSERVA, se avisa con toast y alert antes de recargar, y la sesión ya está cerrada', async () => {
+  for (const modo of ['abrir lanza', 'una sola base falla', 'borrarDatosLocales lanza']) {
+    const bases = { almacen_db: baseConDatos(), almacen_mec_db: baseConDatos() };
+    const alertas = [], alAntes = ctx.alert;
+    ctx.alert = m => { alertas.push(String(m)); };
+    try {
+      await conLimpieza(bases, async ({ ls, avisos }) => {
+        const base = ctx.indexedDB;
+        if (modo === 'abrir lanza') ctx.indexedDB = { open() { throw new Error('modo privado'); } };
+        if (modo === 'una sola base falla') ctx.indexedDB = { open(n, v) { if (n === 'almacen_mec_db') throw new Error('bloqueada'); return base.open(n, v); } };
+        const parar = modo === 'borrarDatosLocales lanza';
+        if (parar) ev("var __bdl=borrarDatosLocales;borrarDatosLocales=async()=>{throw new Error('boom')}");
+        try { await ev('logout()'); } finally { if (parar) ev('borrarDatosLocales=__bdl'); }
+        assert.strictEqual(ls[FLAG], '1', modo + ': la marca sigue para reintentar al arrancar: ' + avisos.join('|') + ' / ' + evj('__orden'));
+        assert.ok(evj('__orden').includes('signOut'), modo + ': la sesión se cerró');
+        assert.ok(ev('__toasts').some(m => m.includes('No se pudieron borrar')), modo + ': ' + ev('__toasts').join('|'));
+        assert.ok(alertas.some(m => m.includes('No se pudieron borrar')), modo + ': alert visible antes de recargar');
+        assert.strictEqual(ctx.__rl, 1, modo + ': se recarga igualmente');
+        if (modo === 'una sola base falla') assert.ok(vacia(bases.almacen_db), 'la base que sí se pudo vaciar queda vacía');
+      });
+    } finally { ctx.alert = alAntes; }
+  }
+});
+
+test('R6 W-1: un vaciado o un signOut colgados no bloquean el cierre (tiempo límite) y la marca sigue puesta', async () => {
+  const bases = { almacen_db: baseConDatos() };
+  const v0 = ev('VACIAR_MS'), s0 = ev('SIGNOUT_MS');
+  const alertas = [], alAntes = ctx.alert;
+  ctx.alert = m => { alertas.push(String(m)); };
+  try {
+    await conLimpieza(bases, async ({ ls }) => {
+      ev('VACIAR_MS=50;SIGNOUT_MS=50');
+      ctx.indexedDB = { open() { return {}; } }; // nunca responde (ni onsuccess ni onerror)
+      ev("sb.auth.signOut=()=>new Promise(()=>{})"); // tampoco responde
+      const t0 = Date.now();
+      await Promise.race([ev('logout()'), esperar(2500)]); // la carrera hace que, si se cuelga, el fallo sea una aserción y no un bloqueo de toda la suite
+      assert.ok(Date.now() - t0 < 2000, 'no se queda esperando para siempre: ' + (Date.now() - t0) + ' ms');
+      assert.strictEqual(ctx.__rl, 1, 'se recarga');
+      assert.strictEqual(ls[FLAG], '1', 'el vaciado no se pudo confirmar: se reintenta al arrancar');
+      assert.ok(alertas.some(m => m.includes('No se pudieron borrar')));
+      assert.ok(!Object.keys(ls).some(k => /^sb-.*-auth-token/.test(k)), 'aunque el signOut no responda se quita el token guardado');
+    });
+  } finally { ctx.alert = alAntes; ev('VACIAR_MS=' + v0 + ';SIGNOUT_MS=' + s0); }
+});
+
+test('R6 W-1: si la página no llega a recargarse, _cerrando no se queda en true para siempre', async () => {
+  const bases = { almacen_db: baseConDatos() };
+  await conLimpieza(bases, async () => {
+    ctx.location.reload = () => { throw new Error('recarga bloqueada'); };
+    await assert.rejects(async () => { await ev('logout(true)'); }, /recarga bloqueada/);
+    assert.strictEqual(ev('_cerrando'), false, 'sin recarga la app puede volver a sincronizar');
+    assert.strictEqual(ev('_saliendo'), false);
+  });
+});
+
+test('R6 W-1: cerrar sesión borra también los restos del acceso antiguo (almacen_auth_cache, almacen_login) y un fallo al borrar el historial de búsqueda NO se traga', async () => {
+  const bases = { almacen_db: baseConDatos() };
+  await conLimpieza(bases, async ({ ls, avisos }) => {
+    ls.almacen_auth_cache = '{"hash":"x"}'; ls.almacen_login = 'ana';
+    const orig = ctx.localStorage;
+    // fachada: lista las mismas claves, pero borrar el historial del almacén eléctrico lanza (el objetivo del Proxy es un {} para no chocar con las invariantes de Proxy)
+    ctx.localStorage = new Proxy({}, {
+      get: (_, p) => (p === 'removeItem' ? k => { if (k === 'almacen_search_history_electrico') throw new Error('almacenamiento bloqueado'); return orig.removeItem(k); } : orig[p]),
+      ownKeys: () => Object.keys(orig),
+      getOwnPropertyDescriptor: (_, p) => (Object.keys(orig).includes(p) ? { value: orig[p], enumerable: true, configurable: true, writable: true } : undefined),
+    });
+    try { await ev('logout()'); } finally { ctx.localStorage = orig; }
+    assert.strictEqual(ls.almacen_auth_cache, undefined, 'huellas de contraseñas antiguas fuera: ' + avisos.join('|'));
+    assert.strictEqual(ls.almacen_login, undefined);
+    assert.ok(ls.almacen_search_history_electrico !== undefined, 'este es el que no se pudo borrar');
+    assert.strictEqual(ls.almacen_search_history_mecanico, undefined, 'los demás sí');
+    assert.strictEqual(ctx.__rl, 1);
+    assert.ok(avisos.some(a => a.includes('almacen_search_history_electrico') && a.includes('almacenamiento bloqueado')), 'queda constancia en consola: ' + avisos.join('|'));
+  });
+});
+
+test('R6 W-1: una recarga del service worker no puede ocurrir con el cierre de sesión en curso (_swPuedeRecargar)', async () => {
+  const cerrando0 = ev('_cerrando');
+  ctx.document.querySelector = () => null;
+  try {
+    await conR2({}, async () => {
+      ev('_stockBusy=false;_syncing=false;_saliendo=false;_cerrando=false;mapEditing=false');
+      assert.strictEqual(ev('_swPuedeRecargar()'), true);
+      ev('_cerrando=true');
+      assert.strictEqual(ev('_swPuedeRecargar()'), false, 'vaciando la base no se recarga');
+    });
+  } finally { delete ctx.document.querySelector; ctx.__c = cerrando0; ev('_cerrando=__c'); }
+});
+
+test('R6 W-1: una sincronización en vuelo deja de escribir en el móvil en cuanto empieza el cierre (no reescribe lo vaciado)', async () => {
+  const cerrando0 = ev('_cerrando');
+  try {
+    await conR2({}, async () => {
+      ev(`items=[];dirtyIds=new Set();__rep=0;__cfgW=[];_cerrando=false;
+        pushPendingMovements=async()=>{};flushDirty=async()=>{};setCloudStatus=()=>{};
+        cloudGetMeta=async()=>{_cerrando=true;return [];};  // la orden de cerrar llega mientras se leía la nube
+        dbReplaceAll=async()=>{__rep++};cloudCfgGetMany=async()=>({categories:['X'],shelves:[{id:'01',baldas:2}]});
+        cfgPut=async(k)=>{__cfgW.push(k)};`);
+      await ev('_syncFromCloud(false)');
+      assert.strictEqual(ev('__rep'), 0, 'no se reescriben los artículos');
+      assert.deepStrictEqual(evj('__cfgW'), [], 'ni la configuración');
+      // la orden llega justo al leer la configuración
+      ev(`_cerrando=false;cloudGetMeta=async()=>[];cloudCfgGetMany=async()=>{_cerrando=true;return {categories:['X'],shelves:[{id:'01',baldas:2}],aisles:[{label:'P'}],providers:['Q'],printedIds:['I1'],modifiedIds:['I2'],mapSize:{w:20,h:20}};};`);
+      await ev('_syncFromCloud(false)');
+      assert.deepStrictEqual(evj('__cfgW'), [], 'tampoco la configuración leída tarde');
+      assert.strictEqual(ev('__rep'), 1, 'sin cierre en curso al escribir artículos sí se escribe (control)');
+    });
+  } finally { ctx.__c = cerrando0; ev('_cerrando=__c'); }
+});
+
+// Arranque en un contexto APARTE (el handler de DOMContentLoaded se captura) con localStorage espiado y IndexedDB simulada
+function arranqueAparte({ ls: datos = {}, bases = {}, idb } = {}) {
+  const log = [], handlers = {}, cuerpo = [];
+  const ls = Object.assign({}, datos);
+  for (const [k, f] of Object.entries({ getItem: k => { log.push('get:' + k); return k in ls ? ls[k] : null; }, setItem: (k, v) => { ls[k] = String(v); }, removeItem: k => { delete ls[k]; } })) Object.defineProperty(ls, k, { value: f, enumerable: false });
+  const { indexedDB } = idbFalsa(bases, log);
+  const c2 = vm.createContext({
+    console, setTimeout, clearTimeout, Date, JSON, Math, Promise,
+    document: { addEventListener: (t, f) => { handlers[t] = f; }, getElementById: () => el, querySelectorAll: () => [], createElement: () => ({ style: {} }), body: { appendChild: x => cuerpo.push(x) } },
+    window: {}, navigator: {}, location: { reload: noop }, localStorage: ls, sessionStorage: { getItem: () => null, setItem: noop, removeItem: noop },
+    indexedDB: idb || indexedDB, crypto: {}, fetch: async () => ({ ok: false }), alert: noop, confirm: () => true,
+    Intl, URL, Blob: function () {}, FileReader: function () {}, Image: function () {},
+  });
+  vm.runInContext("var WAREHOUSE_CONFIG={key:'electrico',name:'Almacén Eléctrico',icon:'E',db:'almacen_db',useSupabaseAuth:true};var WAREHOUSE_OTHER_CONFIG={key:'mecanico',name:'Almacén Mecánico',icon:'M',db:'almacen_mec_db'};\n" + src, c2);
+  return { handlers, log, ls, cuerpo };
+}
+
+test('R6 W-1: al arrancar con la marca puesta se vacía ANTES de mirar la sesión o abrir la base, y después se quita la marca y se continúa', async () => {
+  const bases = { almacen_db: baseConDatos(true), almacen_mec_db: baseConDatos(true) };
+  const a = arranqueAparte({ ls: { [FLAG]: '1', almacen_search_history_electrico: '["x"]', almacen_auth_cache: 'h' }, bases });
+  assert.ok(a.handlers.DOMContentLoaded, 'el arranque se engancha a DOMContentLoaded');
+  await a.handlers.DOMContentLoaded();
+  assert.ok(vacia(bases.almacen_db) && vacia(bases.almacen_mec_db), 'quedaba la base de la persona anterior: se vacía (las dos)');
+  assert.strictEqual(a.ls[FLAG], undefined, 'marca quitada');
+  assert.strictEqual(a.ls.almacen_search_history_electrico, undefined);
+  assert.strictEqual(a.ls.almacen_auth_cache, undefined);
+  const iSesion = a.log.indexOf('get:almacen_sesion_sb');
+  assert.ok(iSesion > ultimo(a.log, 'clear:'), 'primero se vacía y solo después se comprueba la sesión: ' + a.log.join());
+  assert.strictEqual(a.cuerpo.length, 0, 'sin aviso de bloqueo');
+});
+
+test('R6 W-1: si al arrancar no se puede vaciar, aparece un aviso visible que bloquea el arranque y la marca se conserva', async () => {
+  const rec = recogerAvisos();
+  try {
+    const a = arranqueAparte({ ls: { [FLAG]: '1' }, idb: { open() { throw new Error('modo privado'); } } });
+    await a.handlers.DOMContentLoaded();
+    assert.strictEqual(a.ls[FLAG], '1', 'se reintentará en el siguiente arranque');
+    assert.ok(!a.log.includes('get:almacen_sesion_sb'), 'no se sigue con el arranque (no se mira la sesión ni se abre la base)');
+    assert.strictEqual(a.cuerpo.length, 1, 'un aviso en pantalla');
+    assert.ok(a.cuerpo[0].textContent.includes('No se pudieron borrar los datos del usuario anterior, cierra la app y vuelve a abrirla'), a.cuerpo[0].textContent);
+  } finally { rec.restaurar(); }
+});
+
+test('R6 W-1: sin marca el arranque no vacía nada ni cambia su orden habitual', async () => {
+  const bases = { almacen_db: baseConDatos(true) };
+  const a = arranqueAparte({ bases });
+  await a.handlers.DOMContentLoaded();
+  assert.strictEqual(bases.almacen_db.items.length, 1, 'no se toca la base');
+  assert.ok(!a.log.some(x => x.startsWith('clear:')));
+  assert.ok(a.log.includes('get:almacen_sesion_sb'));
+  assert.strictEqual(a.cuerpo.length, 0);
+});
+
+// ---- W-2: los pendientes del OTRO almacén también cuentan
+test('R6 W-2: contarPendientesDetalle suma por separado este almacén y el otro (contarPendientes = total); si el otro no se puede leer cuenta 0 y lo dice en consola', async () => {
+  const bases = { almacen_db: baseConDatos(), almacen_mec_db: baseConDatos(true) };
+  await conLimpieza(bases, async ({ avisos }) => {
+    assert.deepStrictEqual(norm(await ev('contarPendientesDetalle()')), { actual: 3, otro: 2 });
+    assert.strictEqual(await ev('contarPendientes()'), 5);
+    ctx.indexedDB = { open() { throw new Error('bloqueada'); } };
+    assert.deepStrictEqual(norm(await ev('contarPendientesDetalle()')), { actual: 3, otro: 0 });
+    assert.ok(avisos.some(a => /otro almac[eé]n/i.test(a)), avisos.join('|'));
+  });
+});
+
+// ---- W-3: los límites no recortan en silencio lo legítimo ni suben nunca lo recortado a la nube
+const SHELF_GRANDE = () => ({ id: '01', name: 'E1', baldas: 5, layout: {
+  1: Array.from({ length: 40 }, (_, i) => ({ id: 'h' + i, k: 'h', n: 3 })),
+  2: [{ id: 'g1', k: 'g', rows: 12, cols: 12, name: 'Gavetero' }] } });
+const subidasConfig = () => evj('__calls').filter(c => c[0] === 'upsert' && c[1] === 'config');
+
+test('R6 W-3: una balda con 40 bloques y un gavetero de 144 cajones sobrevive a la sincronización intacta, sin avisos ni escrituras a la nube', async () => {
+  ctx.__ra = ev('_recorteAviso');
+  const rec = recogerAvisos();
+  try {
+    await conR2({}, async () => {
+      ctx.__sh = [SHELF_GRANDE()];
+      ev(`_recorteAviso=false;items=[];dirtyIds=new Set();
+        pushPendingMovements=async()=>{};flushDirty=async()=>{};cloudGetMeta=async()=>[];dbReplaceAll=async()=>{};setCloudStatus=()=>{};
+        cloudCfgGetMany=async()=>({shelves:__sh});`);
+      await ev('_syncFromCloud(false)');
+      assert.deepStrictEqual(evj('shelves[0].layout'), SHELF_GRANDE().layout, 'la distribución llega entera');
+      assert.deepStrictEqual(evj('__cfg.shelves[0].layout'), SHELF_GRANDE().layout, 'y se guarda entera en el móvil');
+      assert.strictEqual(subidasConfig().length, 0, 'nada se escribe en la nube al sincronizar');
+      assert.ok(!ev('__toasts').some(m => m.includes('recortado')), 'sin aviso de recorte');
+    });
+  } finally { rec.restaurar(); ev('_recorteAviso=__ra'); }
+  assert.ok(!rec.avisos.some(a => /recortad/i.test(a)), rec.avisos.join('|'));
+});
+
+test('R6 W-3: lo que sí supera los límites se recorta al sincronizar con UN aviso por sesión (y consola), sin escribir nada en la nube', async () => {
+  ctx.__ra = ev('_recorteAviso');
+  const rec = recogerAvisos();
+  try {
+    await conR2({}, async () => {
+      ctx.__muchas = Array.from({ length: 700 }, (_, i) => 'C' + i);
+      ctx.__sh = Array.from({ length: 600 }, (_, i) => ({ id: 'S' + i, baldas: 5 }));
+      ctx.__sh[0].layout = { 1: Array.from({ length: 50 }, (_, i) => ({ id: 'h' + i, k: 'h', n: 3 })) };
+      ev(`_recorteAviso=false;items=[];dirtyIds=new Set();
+        pushPendingMovements=async()=>{};flushDirty=async()=>{};cloudGetMeta=async()=>[];dbReplaceAll=async()=>{};setCloudStatus=()=>{};
+        cloudCfgGetMany=async()=>({categories:__muchas,shelves:__sh});`);
+      await ev('_syncFromCloud(false)');
+      assert.strictEqual(ev('categories.length'), 500);
+      assert.strictEqual(ev('shelves.length'), 500);
+      assert.strictEqual(ev("shelves[0].layout['1'].length"), 40);
+      assert.strictEqual(ev('__toasts').filter(m => m.includes('Se han recortado datos de configuración demasiado grandes; revisa estanterías/categorías')).length, 1);
+      await ev('_syncFromCloud(false)');
+      assert.strictEqual(ev('__toasts').filter(m => m.includes('recortado')).length, 1, 'el aviso sale una sola vez por sesión');
+      assert.strictEqual(subidasConfig().length, 0, 'lo recortado jamás se sube a la nube desde la carga o la sincronización');
+    });
+  } finally { rec.restaurar(); ev('_recorteAviso=__ra'); }
+  const w = rec.avisos.filter(a => /recortad/i.test(a));
+  assert.strictEqual(w.length, 2, 'una advertencia en consola por cada lectura: ' + rec.avisos.join('|'));
+  assert.ok(w[0].includes('200 categorías') && w[0].includes('100 estanterías') && w[0].includes('10 bloques'), w[0]);
+});
+
+test('R6 W-3: al cargar la configuración guardada en el móvil (init) también se avisa una vez y no se escribe en la nube', async () => {
+  ctx.__ra = ev('_recorteAviso');
+  const rec = recogerAvisos();
+  try {
+    await conR2({}, async () => {
+      await conStubs(['openDB', 'initSupabase', 'renderHomeMovements', 'syncFromCloud', 'appReady', 'items'], async () => {
+        ctx.__muchas = Array.from({ length: 700 }, (_, i) => 'C' + i);
+        ctx.__sh = Array.from({ length: 600 }, (_, i) => ({ id: 'S' + i, baldas: 5 }));
+        ev(`_recorteAviso=false;__cfg.categories=__muchas;__cfg.shelves=__sh;
+          openDB=async()=>{};initSupabase=()=>true;renderHomeMovements=()=>{};syncFromCloud=async()=>{};`);
+        await ev('init()');
+        assert.strictEqual(ev('categories.length'), 500);
+        assert.strictEqual(ev('shelves.length'), 500);
+        assert.strictEqual(ev('__toasts').filter(m => m.includes('recortado')).length, 1);
+        assert.strictEqual(subidasConfig().length, 0);
+      });
+    });
+  } finally { rec.restaurar(); ev('_recorteAviso=__ra'); }
+  assert.ok(rec.avisos.some(a => /recortad/i.test(a) && a.includes('100 estanterías')), rec.avisos.join('|'));
+});
+
+test('R6 W-3: ni init ni la sincronización llaman a cloudCfgPut con lo limpiado (solo la siembra de estanterías cuando la nube no tiene ninguna)', () => {
+  const ini = src.slice(src.indexOf('async function init()'), src.indexOf('// Trae todo desde Supabase'));
+  assert.ok(!ini.includes('cloudCfgPut'), 'init no sube nada');
+  const sync = src.slice(src.indexOf('async function _syncFromCloud'), src.indexOf('// ===== FOTOS BAJO DEMANDA'));
+  const usos = sync.match(/cloudCfgPut\(/g) || [];
+  assert.strictEqual(usos.length, 1, 'un único uso en la sincronización');
+  assert.ok(/else if\(cShelves!==undefined\)\{await cloudCfgPut\('shelves',shelves\);\}/.test(sync), 'es la siembra de estanterías (la nube no tenía ninguna)');
+});
+
+// ---- W-4: restaurar una copia dice exactamente qué se recortará
+test('R6 W-4: la confirmación de importar una copia enumera lo que se recortará (estanterías, categorías, bloques, cajones, etiquetas) y no dice nada si no se recorta nada', async () => {
+  await conR2({}, async () => {
+    vm.runInContext('globalThis.WAREHOUSE_CONFIG=' + ELE_R2 + ';globalThis.WAREHOUSE_OTHER_CONFIG=' + MEC_R2, ctx);
+    try {
+      const shelves = Array.from({ length: 600 }, (_, i) => ({ id: 'S' + i, baldas: 5 }));
+      shelves[0].layout = { 1: Array.from({ length: 50 }, (_, i) => ({ id: 'h' + i, k: 'h', n: 3 })) };
+      shelves[1].layout = { 2: [{ id: 'g', k: 'g', rows: 40, cols: 40 }] };
+      const grande = { version: 4, warehouse: 'electrico', items: [{ id: 'I1', name: 'A', stock: 2 }], categories: Array.from({ length: 600 }, (_, i) => 'C' + i), shelves, printedIds: ['I1', '<mal>'] };
+      await importarTexto(JSON.stringify(grande));
+      let msg = ev("document.getElementById('confirm-msg').textContent");
+      assert.ok(msg.includes('Se recortarán: '), msg);
+      for (const parte of ['100 categorías', '100 estanterías', '10 bloques', '1480 cajones', '1 etiqueta impresa']) assert.ok(msg.includes(parte), parte + ' en: ' + msg);
+      assert.strictEqual(ev('__calls.length'), 0, 'hasta confirmar no se toca nada');
+      // una copia normal no menciona recortes
+      await importarTexto(JSON.stringify({ version: 4, warehouse: 'electrico', items: [{ id: 'I1', name: 'A', stock: 2 }], categories: ['A', 'B'], shelves: [SHELF_GRANDE()], printedIds: ['I1'] }));
+      msg = ev("document.getElementById('confirm-msg').textContent");
+      assert.ok(!msg.includes('recortar'), msg);
+      // las dos almacenes: se dice de cuál es cada recorte
+      await importarTexto(JSON.stringify({ version: 4, warehouses: { electrico: { items: [{ id: 'I1' }], shelves }, mecanico: { items: [{ id: 'M1' }], categories: ['x'] } } }));
+      msg = ev("document.getElementById('confirm-msg').textContent");
+      assert.ok(msg.includes('Se recortarán: ') && msg.includes('Almacén Eléctrico') && msg.includes('100 estanterías') && !msg.includes('Almacén Mecánico'), msg);
+    } finally {
+      vm.runInContext('globalThis.WAREHOUSE_CONFIG=undefined;globalThis.WAREHOUSE_OTHER_CONFIG=undefined', ctx);
+    }
+  });
+});
+
+// ---- W-5: categorías nuevas cortadas a 60, con tope de 500 y el artículo conserva el mismo nombre
+test('R6 W-5: cleanItem corta la categoría a 60 como la lista de categorías, para que el artículo siga coincidiendo', () => {
+  const larga = 'Categoría '.repeat(20);
+  assert.strictEqual(t.cleanItem({ id: 'I1', cat: larga }).cat, larga.slice(0, 60));
+  assert.strictEqual(t.cleanItem({ id: 'I1', cat: 'a<b>c' }).cat, 'abc', 'el resto de la limpieza sigue igual');
+  assert.strictEqual(ev('cleanNames(["' + larga + '"])[0]'), larga.slice(0, 60));
+  assert.strictEqual(t.cleanItem({ id: 'I1', name: larga }).name, larga.replace(/[<>]/g, ''), 'solo la categoría se corta');
+});
+
+test('R6 W-5: al crear una categoría nueva se corta a 60 y con 500 ya creadas se rechaza con aviso sin guardar nada', async () => {
+  const form = o => Object.assign({ 'f-name': { value: 'Tornillo' }, 'f-cat': { value: '__new__' }, 'f-newcat': { value: 'Z'.repeat(100) }, 'f-shelf': { value: '01' }, 'f-balda': { value: '1' }, 'f-stock': { value: '0' }, 'f-min': { value: '2' }, 'f-precio': { value: '' }, 'f-precio-group': { style: { display: '' } } }, o);
+  const cp = ev('cloudPut'); ctx.__cp0 = cp;
+  try {
+    await conR2({ dom: form() }, async () => {
+      ev("categories=['A'];selectedExtraCats=new Set();_invCreateIdx=null;pendingPhoto=null;photoRemoved=false;_formStock0=0;_invoiceAfterSave=async()=>{};cloudPut=async it=>{__calls.push(['put',it]);return true;};items=[];editingId=null");
+      await ev('_saveItem()');
+      const cats = evj('categories');
+      assert.strictEqual(cats.length, 2);
+      assert.strictEqual(cats[1], 'Z'.repeat(60), 'la categoría nueva se corta a 60 al crearla');
+      assert.strictEqual(evj('__cfg.categories')[1], 'Z'.repeat(60));
+      assert.strictEqual(evj('__calls').find(c => c[0] === 'put')[1].cat, 'Z'.repeat(60), 'el artículo lleva el mismo nombre');
+    });
+    await conR2({ dom: form() }, async () => {
+      ctx.__500 = Array.from({ length: 500 }, (_, i) => 'C' + i);
+      ev("categories=__500.slice();selectedExtraCats=new Set();_invCreateIdx=null;pendingPhoto=null;photoRemoved=false;_formStock0=0;_invoiceAfterSave=async()=>{};cloudPut=async it=>{__calls.push(['put',it]);return true;};items=[];editingId=null");
+      await ev('_saveItem()');
+      assert.strictEqual(ev('categories.length'), 500, 'no se añade la 501');
+      assert.ok(ev('__toasts').some(m => m.includes('500') && /categor/i.test(m)), ev('__toasts').join('|'));
+      assert.strictEqual(evj('__calls').length, 0, 'ni artículo ni configuración en la nube');
+      assert.strictEqual(ev('__cfg.categories'), undefined, 'ni en el móvil');
+    });
+    // con 500 una categoría que ya existe sigue funcionando
+    await conR2({ dom: form({ 'f-cat': { value: 'C7' } }) }, async () => {
+      ctx.__500 = Array.from({ length: 500 }, (_, i) => 'C' + i);
+      ev("categories=__500.slice();selectedExtraCats=new Set();_invCreateIdx=null;pendingPhoto=null;photoRemoved=false;_formStock0=0;_invoiceAfterSave=async()=>{};cloudPut=async it=>{__calls.push(['put',it]);return true;};items=[];editingId=null");
+      await ev('_saveItem()');
+      assert.strictEqual(evj('__calls').filter(c => c[0] === 'put').length, 1);
+    });
+  } finally { ctx.__cp0 = cp; ev('cloudPut=__cp0'); }
+});
+
+test('R6 W-5: el campo "Nueva categoría" de los dos almacenes tiene maxlength=60', () => {
+  for (const w of ['almacen-electrico', 'almacen-mecanico']) {
+    const h = fs.readFileSync(path.join(__dirname, '..', w, 'index.html'), 'utf8');
+    const m = h.match(/<input[^>]*id="f-newcat"[^>]*>/);
+    assert.ok(m, w + ': falta el campo');
+    assert.ok(/maxlength="60"/.test(m[0]), w + ': ' + m[0]);
+  }
+});
+
+// ---- W-7: service worker, señales útiles cuando falla la precarga
+for (const carpeta of ['almacen-electrico', 'almacen-mecanico']) {
+  test('R6 W-7 (' + carpeta + '): el aviso de precarga dice el MOTIVO de cada fallo (red, huella distinta, lectura), no solo la URL', async () => {
+    let sw = cargarSW(carpeta, { fallan: [LIB_EXCELJS, './icons/icon-192.png'] });
+    await sw.instalar();
+    const a = sw.avisos.find(x => x.includes('exceljs') && x.includes('icon-192'));
+    assert.ok(a, sw.avisos.join('|'));
+    assert.ok(a.includes('sin red: ' + LIB_EXCELJS) && a.includes('no disponible: ./icons/icon-192.png'), 'cada URL con su motivo: ' + a);
+    sw = cargarSW(carpeta, { malaHuella: [LIB_EXCELJS] });
+    await sw.instalar();
+    assert.ok(sw.avisos.some(x => x.includes('exceljs') && x.includes('hash distinto')), sw.avisos.join('|'));
+    sw = cargarSW(carpeta, { lecturaFalla: true });
+    await sw.instalar(); // las librerías no se pueden leer, pero index.html y app.js sí se guardaron: la instalación sigue
+    assert.ok(sw.avisos.some(x => x.includes('lectura rota') && x.includes('error de lectura')), sw.avisos.join('|'));
+  });
+
+  test('R6 W-7 (' + carpeta + '): un fallo transitorio de la precarga se reintenta hasta 2 veces; si sigue fallando se avisa; lo crítico sigue siendo solo index.html y app.js', async () => {
+    let sw = cargarSW(carpeta, { transitorios: { [LIB_EXCELJS]: 2, './icons/icon-192.png': 1 } });
+    await sw.instalar();
+    assert.ok(sw.puestos.includes(LIB_EXCELJS), 'a la tercera se guardó');
+    assert.strictEqual(sw.intentos[LIB_EXCELJS], 3);
+    assert.strictEqual(sw.intentos['./icons/icon-192.png'], 2);
+    assert.deepStrictEqual(sw.avisos, [], 'sin avisos si al final se pudo');
+    sw = cargarSW(carpeta, { transitorios: { [LIB_EXCELJS]: 99 } });
+    await sw.instalar();
+    assert.ok(!sw.puestos.includes(LIB_EXCELJS));
+    assert.strictEqual(sw.intentos[LIB_EXCELJS], 3, 'tres intentos en total (1 + 2 reintentos), no más');
+    assert.ok(sw.avisos.some(x => x.includes('exceljs') && x.includes('red intermitente')), sw.avisos.join('|'));
+    // un fallo de lo crítico (también transitorio) se reintenta; si no se recupera, la instalación falla como antes
+    sw = cargarSW(carpeta, { transitorios: { './index.html': 1 } });
+    await sw.instalar();
+    assert.strictEqual(sw.intentos['./index.html'], 2);
+    sw = cargarSW(carpeta, { transitorios: { '../shared/app.js': 99 } });
+    await assert.rejects(sw.instalar, /imprescindibles.*app\.js/);
+    sw = cargarSW(carpeta, { fallan: [LIB_EXCELJS, LIB_SUPABASE] });
+    await sw.instalar(); // lo secundario no impide instalar
+  });
+
+  test('R6 W-7 (' + carpeta + '): en uso normal se avisa en consola cuando una huella conocida NO coincide ("hash distinto") o no se pudo leer ("error de lectura"); una URL sin huella no avisa', async () => {
+    let sw = cargarSW(carpeta, { malaHuella: [LIB_EXCELJS] });
+    let r = await sw.pedir(LIB_EXCELJS);
+    assert.strictEqual(r.ok, true, 'se entrega igualmente (la página aplica su SRI)');
+    assert.deepStrictEqual(sw.puestos, [], 'y no se guarda');
+    assert.ok(sw.avisos.some(a => a.includes('hash distinto') && a.includes('exceljs')), sw.avisos.join('|'));
+    assert.ok(!sw.avisos.some(a => a.includes('error de lectura')));
+    sw = cargarSW(carpeta, { lecturaFalla: true });
+    r = await sw.pedir(LIB_EXCELJS);
+    assert.strictEqual(r.ok, true);
+    assert.deepStrictEqual(sw.puestos, []);
+    assert.ok(sw.avisos.some(a => a.includes('error de lectura') && a.includes('lectura rota') && a.includes('exceljs')), sw.avisos.join('|'));
+    assert.ok(!sw.avisos.some(a => a.includes('hash distinto')), 'no se confunde un fallo de lectura con una huella distinta');
+    sw = cargarSW(carpeta);
+    await sw.pedir('https://cdnjs.cloudflare.com/ajax/libs/otra/1.0/x.js');
+    assert.deepStrictEqual(sw.avisos, [], 'sin huella conocida no hay nada que comparar');
+    sw = cargarSW(carpeta);
+    await sw.pedir(LIB_EXCELJS);
+    assert.deepStrictEqual(sw.avisos, [], 'huella buena: sin avisos');
+  });
+}
+
+test('R6 W-2: un cambio de ESTE almacén hecho mientras se cierra la sesión se recuenta justo antes de vaciar y se avisa de que se descartó', async () => {
+  const bases = { almacen_db: baseConDatos(), almacen_mec_db: baseConDatos() };
+  const alertas = [], alAntes = ctx.alert;
+  ctx.alert = m => { alertas.push(String(m)); };
+  try {
+    await conLimpieza(bases, async () => {
+      ev("sb.auth.signOut=async()=>{__orden.push('signOut');__log.push('signOut');__pend=[{synced:false}];return {error:null};}"); // alguien registra un movimiento durante el cierre
+      await ev('logout()');
+      assert.ok(vacia(bases.almacen_db));
+      assert.ok(alertas.some(m => m.includes('Se descartaron 1 cambio(s) sin subir de este almacén')), alertas.join('|'));
+      assert.ok(ev('__toasts').some(m => m.includes('Se descartaron 1 cambio(s)')));
+      assert.strictEqual(ctx.__rl, 1);
+    });
+  } finally { ctx.alert = alAntes; }
+});
+
+// ---- W-8: la guarda _cerrando
+test('R6 W-8: dos logout(true) simultáneos cierran la sesión, vacían y recargan UNA sola vez (guarda _cerrando)', async () => {
+  const bases = { almacen_db: baseConDatos(), almacen_mec_db: baseConDatos() };
+  await conLimpieza(bases, async ({ log }) => {
+    const p1 = ev('logout(true)'), p2 = ev('logout(true)');
+    await Promise.all([p1, p2]);
+    assert.strictEqual(evj('__orden').filter(x => x === 'signOut').length, 1, 'un solo signOut');
+    assert.strictEqual(log.filter(x => x === 'clear:almacen_db:items').length, 1, 'un solo vaciado');
+    assert.strictEqual(log.filter(x => x === 'reload').length, 1, 'una sola recarga');
+    assert.strictEqual(ctx.__rl, 1);
+    assert.ok(vacia(bases.almacen_db) && vacia(bases.almacen_mec_db));
+  });
 });
