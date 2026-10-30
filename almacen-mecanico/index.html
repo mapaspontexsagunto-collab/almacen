@@ -80,7 +80,8 @@
     <div id="home-sync-warn" style="display:none;background:var(--orange-bg,#fff3e0);color:var(--orange-text,#b06000);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:12px;">⚠️ No se ha podido conectar con la nube. Lo que ves puede no incluir movimientos hechos desde otros dispositivos.</div>
     <div id="home-pending-warn" style="display:none;background:var(--orange-bg,#fff3e0);color:var(--orange-text,#b06000);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:12px;"></div>
     <button class="btn btn-block" style="margin-bottom:12px;" onclick="syncAndRenderHome()">🔄 Sincronizar ahora</button>
-    <button class="inv-scan-btn" id="btn-scan-invoice" onclick="aiFillFromInvoice()" style="display:none;"><svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 12h6M9 16h6M4 4h16v16H4z" stroke-width="1.7" stroke-linecap="round"/></svg>Escanear factura con IA</button>
+    <button class="inv-scan-btn" id="btn-scan-invoice" onclick="document.getElementById('inv-file').click()" style="display:none;"><svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 12h6M9 16h6M4 4h16v16H4z" stroke-width="1.7" stroke-linecap="round"/></svg>Escanear factura con IA</button>
+    <input type="file" id="inv-file" accept="image/*,application/pdf" style="display:none;" onchange="handleInvoiceFile(event)">
     <div class="stats">
       <div class="stat"><div class="l">Referencias</div><div class="v" id="s-total">0</div></div>
       <div class="stat"><div class="l">Ubicaciones usadas</div><div class="v" id="s-locs">0</div></div>

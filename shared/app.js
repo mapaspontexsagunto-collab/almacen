@@ -4433,39 +4433,37 @@ async function _pdfToB64(file){
   return out.toDataURL('image/jpeg',0.88).split(',')[1];
 }
 
-async function aiFillFromInvoice(){
+async function handleInvoiceFile(e){
   if(!EDGE_URL){toast('⚠ IA no configurada en este almacén');return;}
-  const input=document.createElement('input');
-  input.type='file';input.accept='image/*,application/pdf';
-  input.onchange=async(e)=>{
-    const file=e.target.files[0];if(!file)return;
-    let b64;
-    const isPdf=file.type==='application/pdf'||file.name.toLowerCase().endsWith('.pdf');
-    if(isPdf){
-      try{b64=await _pdfToB64(file);}
-      catch(err){toast('⚠ No se pudo leer el PDF: '+(err.message||err));return;}
-    }else{
-      b64=await new Promise(res=>{
-        const r=new FileReader();
-        r.onload=ev=>{
-          const img=new Image();
-          img.onload=()=>{
-            const MAX=1200;let w=img.width,h=img.height;
-            if(w>MAX||h>MAX){if(w>h){h=Math.round(h*MAX/w);w=MAX;}else{w=Math.round(w*MAX/h);h=MAX;}}
-            const cv=document.createElement('canvas');cv.width=w;cv.height=h;
-            cv.getContext('2d').drawImage(img,0,0,w,h);
-            res(cv.toDataURL('image/jpeg',0.85).split(',')[1]);
-          };
-          img.src=ev.target.result;
+  const file=e.target.files[0];if(!file)return;
+  e.target.value=''; // permite seleccionar el mismo archivo otra vez
+  let b64;
+  const isPdf=file.type==='application/pdf'||file.name.toLowerCase().endsWith('.pdf');
+  if(isPdf){
+    try{b64=await _pdfToB64(file);}
+    catch(err){toast('⚠ No se pudo leer el PDF: '+(err.message||err));return;}
+  }else{
+    b64=await new Promise(res=>{
+      const r=new FileReader();
+      r.onload=ev=>{
+        const img=new Image();
+        img.onload=()=>{
+          const MAX=1200;let w=img.width,h=img.height;
+          if(w>MAX||h>MAX){if(w>h){h=Math.round(h*MAX/w);w=MAX;}else{w=Math.round(w*MAX/h);h=MAX;}}
+          const cv=document.createElement('canvas');cv.width=w;cv.height=h;
+          cv.getContext('2d').drawImage(img,0,0,w,h);
+          res(cv.toDataURL('image/jpeg',0.85).split(',')[1]);
         };
-        r.readAsDataURL(file);
-      });
-    }
-    openModal('modal-invoice');
-    document.getElementById('inv-loading').style.display='flex';
-    document.getElementById('inv-body').style.display='none';
-    try{
-      const prompt=`Eres un experto en facturas, albaranes y ofertas de material industrial. Analiza el documento y devuelve SOLO JSON sin texto extra, con este formato exacto:
+        img.src=ev.target.result;
+      };
+      r.readAsDataURL(file);
+    });
+  }
+  openModal('modal-invoice');
+  document.getElementById('inv-loading').style.display='flex';
+  document.getElementById('inv-body').style.display='none';
+  try{
+    const prompt=`Eres un experto en facturas, albaranes y ofertas de material industrial. Analiza el documento y devuelve SOLO JSON sin texto extra, con este formato exacto:
 {"proveedor":"nombre empresa emisora","fecha":"DD/MM/YYYY o vacío","lines":[{"desc":"descripción del artículo","ref":"referencia fabricante","qty":1.0,"price":0.00,"unit":"ud"}]}
 
 Reglas para extraer cada campo:
@@ -4477,26 +4475,24 @@ Reglas para extraer cada campo:
 - price: precio UNITARIO. Si el precio mostrado ya es neto/con descuento aplicado, usa ese. Si no hay precio, null
 - unit: unidad de medida (ud/m/kg/l/etc.). Si no se indica, "ud"
 Extrae TODAS las líneas de producto visibles.`;
-      const data=await aiBuscar(b64,prompt);
-      let parsed={lines:[]};
-      try{
-        const m=data.text.match(/\{[\s\S]*\}/);
-        if(m)parsed=JSON.parse(m[0]);
-      }catch(_){}
-      _invLines=(parsed.lines||[]).map(l=>({...l,status:'pending',itemId:null}));
-      _invProvider=parsed.proveedor||'';
-      _invFecha=parsed.fecha||'';
-      _invCreateIdx=null;
-      renderInvoiceModal();
-    }catch(err){
-      toast('⚠ Error al analizar la factura: '+(err.message||err));
-      closeModal('modal-invoice');
-    }finally{
-      document.getElementById('inv-loading').style.display='none';
-      document.getElementById('inv-body').style.display='block';
-    }
-  };
-  input.click();
+    const data=await aiBuscar(b64,prompt);
+    let parsed={lines:[]};
+    try{
+      const m=data.text.match(/\{[\s\S]*\}/);
+      if(m)parsed=JSON.parse(m[0]);
+    }catch(_){}
+    _invLines=(parsed.lines||[]).map(l=>({...l,status:'pending',itemId:null}));
+    _invProvider=parsed.proveedor||'';
+    _invFecha=parsed.fecha||'';
+    _invCreateIdx=null;
+    renderInvoiceModal();
+  }catch(err){
+    toast('⚠ Error al analizar la factura: '+(err.message||err));
+    closeModal('modal-invoice');
+  }finally{
+    document.getElementById('inv-loading').style.display='none';
+    document.getElementById('inv-body').style.display='block';
+  }
 }
 
 function renderInvoiceModal(){
@@ -4584,6 +4580,8 @@ async function assignInvoiceLine(idx,itemId){
   _invLines[idx].itemId=itemId;
   closeModal('modal-inv-search');
   renderInvoiceLines();
+  renderAll();
+  if(document.getElementById('page-inicio')?.classList.contains('active'))renderHomeMovements();
   toast(`✓ ${it.name} · +${qty} ud`);
 }
 
