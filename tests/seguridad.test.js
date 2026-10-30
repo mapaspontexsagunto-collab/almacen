@@ -20,7 +20,7 @@ const ctx = vm.createContext({
   Intl, URL, Blob: function () {}, FileReader: function () {}, Image: function () {},
 });
 // Las declaraciones `let/const` de nivel superior no cuelgan del contexto: las exponemos con una función
-vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid,quienMov,whBarHtml,sesStorageKey,logout,isAdminRole,ensureOnline,GUARDED_FUNCS,asegurarFotos,noPhotoIds,pedirFoto};', ctx);
+vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid,quienMov,whBarHtml,sesStorageKey,logout,isAdminRole,ensureOnline,GUARDED_FUNCS,asegurarFotos,noPhotoIds,pedirFoto,parseNumES,_invSanitize,_invValidate,assignInvoiceLine};', ctx);
 const t = ctx.__t;
 
 test('ids: solo letras, números, guion y guion bajo', () => {
@@ -251,6 +251,144 @@ test('fotos bajo demanda: solo se descargan las que faltan y se recuerdan las qu
   assert.strictEqual(vm.runInContext('__llamadas.length', ctx), 1, 'la segunda vez no pide nada');
   t.noPhotoIds.clear();
   vm.runInContext('sb=null', ctx);
+});
+
+test('escáner: parseNumES entiende el formato español e inglés y rechaza lo que no es número', () => {
+  assert.strictEqual(t.parseNumES('12,50'), 12.5);
+  assert.strictEqual(t.parseNumES('1.234,56'), 1234.56);
+  assert.strictEqual(t.parseNumES('1,234.56'), 1234.56);
+  assert.strictEqual(t.parseNumES('12.5'), 12.5);
+  assert.strictEqual(t.parseNumES('12 €'), 12);
+  assert.strictEqual(t.parseNumES(7), 7);
+  assert.ok(Number.isNaN(t.parseNumES('abc')));
+  assert.ok(Number.isNaN(t.parseNumES({})));
+  assert.ok(Number.isNaN(t.parseNumES(null)));
+  assert.ok(Number.isNaN(t.parseNumES(NaN)));
+  assert.ok(Number.isNaN(t.parseNumES('')));
+});
+
+test('escáner: _invSanitize limpia texto, números y límites de lo que devuelve la IA', () => {
+  const r = t._invSanitize({
+    proveedor: '<img src=x onerror=1>ACME',
+    fecha: '01/02/2026',
+    lines: [
+      { desc: '<b>Rodamiento</b> 6205', ref: 'R-1', qty: '3', price: '12,50', unit: 'ud' },
+      { desc: 'Sin cantidad', qty: 'abc', price: -4 },
+      { desc: 'Enorme', qty: 1e15, price: 1e9 },
+      { desc: 'Abono', qty: -2, price: 5 },
+      { desc: { x: 1 }, ref: [1], qty: 2, price: null, unit: '<script>' },
+      null, 7,
+    ],
+  });
+  assert.ok(!/[<>]/.test(r.proveedor), 'proveedor sin < ni >');
+  assert.strictEqual(r.lines.length, 5);
+  assert.ok(!/[<>]/.test(r.lines[0].desc));
+  assert.strictEqual(r.lines[0].qty, 3);
+  assert.strictEqual(r.lines[0].price, 12.5);
+  assert.strictEqual(r.lines[1].qty, null);
+  assert.strictEqual(r.lines[1].price, null);
+  assert.strictEqual(r.lines[1].priceBad, true);
+  assert.strictEqual(r.lines[2].qty, null, 'cantidad enorme descartada');
+  assert.strictEqual(r.lines[2].price, null);
+  assert.strictEqual(r.lines[3].qty, null, 'cantidad negativa descartada');
+  assert.strictEqual(r.lines[4].unit, 'ud', 'unidad rara -> ud');
+  assert.strictEqual(typeof r.lines[4].desc, 'string');
+  const muchas = t._invSanitize({ lines: Array.from({ length: 500 }, () => ({ desc: 'x', qty: 1 })) });
+  assert.strictEqual(muchas.lines.length, 200, 'máximo 200 líneas');
+  assert.strictEqual(t._invSanitize(null).lines.length, 0);
+});
+
+test('escáner: _invValidate exige cantidad entera positiva y precio válido', () => {
+  assert.strictEqual(t._invValidate({ qty: 3, price: 2.5 }), '');
+  assert.strictEqual(t._invValidate({ qty: 3, price: null }), '');
+  assert.notStrictEqual(t._invValidate({ qty: null }), '');
+  assert.notStrictEqual(t._invValidate({ qty: 0 }), '');
+  assert.notStrictEqual(t._invValidate({ qty: -1 }), '');
+  assert.notStrictEqual(t._invValidate({ qty: 2.5 }), '', 'decimales: hay que editarla');
+  assert.notStrictEqual(t._invValidate({ qty: 1, price: -3 }), '');
+  assert.notStrictEqual(t._invValidate(null), '');
+});
+
+test('artículos: cleanItem quita < y > de nombre, referencia, marca, máquina y notas', () => {
+  const c = vm.runInContext('cleanItem', ctx)({ id: 'I1', name: '<img src=x onerror=1>Tornillo', ref: 'A<B', brand: '<b>X', machine: 'M>1', notes: '<script>' });
+  for (const k of ['name', 'ref', 'brand', 'machine', 'notes']) assert.ok(!/[<>]/.test(c[k]), k);
+  assert.ok(c.name.includes('Tornillo'));
+});
+
+test('escáner: registrar una línea suma el stock UNA vez, valida, exige admin y no repite', async () => {
+  const guardar = vm.runInContext('({rm:registrarMovimiento,dp:dbPut,cp:cloudPut,pa:cloudPriceAdd,ap:addProvider,dg:dbGetAll,cm:closeModal,rl:renderInvoiceLines,rv:refreshVisiblePage})', ctx);
+  const dummy = { classList: { add() {}, remove() {} }, style: {}, textContent: '', innerHTML: '' };
+  const getAntes = ctx.document.getElementById;
+  ctx.document.getElementById = () => dummy;
+  try {
+    vm.runInContext(String.raw`
+      __movs=[];__precios=[];
+      registrarMovimiento=async(it,a,n,tipo,c,prov)=>{__movs.push([a,n,tipo,c,prov]);};
+      __nube=5;
+      dbPut=async()=>{};cloudPut=async it=>{__nube=it.stock;return true;};cloudPriceAdd=async e=>{__precios.push(e);return true;};addProvider=async()=>{};
+      dbGetAll=async()=>items;closeModal=()=>{};renderInvoiceLines=()=>{};refreshVisiblePage=()=>{};
+      WH={tblCfg:'config',tblItems:'items'};
+      sb={from:()=>({select:()=>({limit:async()=>({error:null}),eq:()=>({maybeSingle:async()=>({data:{stock:__nube},error:null})})})})};
+      items=[{id:'I1',name:'Rodamiento',stock:99,precio:1}];
+      _invProvider='ACME';
+      _invLines=[{desc:'x',qty:3,price:2,status:'pending',itemId:null},{desc:'y',qty:null,price:null,status:'pending',itemId:null}];
+      adminUnlocked=false;
+    `, ctx);
+    // sin modo administrador: no hace nada
+    await t.assignInvoiceLine(0, 'I1');
+    assert.strictEqual(vm.runInContext('items[0].stock', ctx), 99);
+    assert.strictEqual(vm.runInContext('_invLines[0].status', ctx), 'pending');
+    // con administrador: usa el stock de la nube (5), no el local (99)
+    vm.runInContext('adminUnlocked=true', ctx);
+    await t.assignInvoiceLine(0, 'I1');
+    assert.strictEqual(vm.runInContext('items[0].stock', ctx), 8, 'stock de la nube 5 + 3');
+    assert.strictEqual(vm.runInContext('items[0].precio', ctx), 2);
+    assert.strictEqual(vm.runInContext('_invLines[0].status', ctx), 'assigned');
+    assert.strictEqual(vm.runInContext('__movs.length', ctx), 1);
+    assert.strictEqual(vm.runInContext('__precios.length', ctx), 1);
+    assert.strictEqual(vm.runInContext('__movs[0][2]', ctx), 'Compra');
+    // dos pulsaciones a la vez: solo una entrada
+    vm.runInContext("_invLines=[{desc:'z',qty:2,price:null,status:'pending',itemId:null}];items[0].stock=8;__nube=8;__movs=[];", ctx);
+    await Promise.all([t.assignInvoiceLine(0, 'I1'), t.assignInvoiceLine(0, 'I1')]);
+    assert.strictEqual(vm.runInContext('__movs.length', ctx), 1, 'una sola entrada con doble pulsación');
+    assert.strictEqual(vm.runInContext('items[0].stock', ctx), 10);
+    // repetir una línea ya registrada no suma otra vez
+    await t.assignInvoiceLine(0, 'I1');
+    assert.strictEqual(vm.runInContext('items[0].stock', ctx), 10);
+    // línea con cantidad no válida: no se registra
+    vm.runInContext("_invLines=[{desc:'q',qty:null,price:null,status:'pending',itemId:null}];__movs=[];", ctx);
+    await t.assignInvoiceLine(0, 'I1');
+    assert.strictEqual(vm.runInContext('__movs.length', ctx), 0);
+    // sin conexión: no cambia nada
+    vm.runInContext("_invLines=[{desc:'w',qty:4,price:null,status:'pending',itemId:null}];sb=null;", ctx);
+    ctx.navigator = { onLine: false };
+    await t.assignInvoiceLine(0, 'I1');
+    assert.strictEqual(vm.runInContext('items[0].stock', ctx), 10);
+    assert.strictEqual(vm.runInContext('_invLines[0].status', ctx), 'pending');
+  } finally {
+    ctx.navigator = {};
+    ctx.document.getElementById = getAntes;
+    ctx.__g = guardar;
+    vm.runInContext('registrarMovimiento=__g.rm;dbPut=__g.dp;cloudPut=__g.cp;cloudPriceAdd=__g.pa;addProvider=__g.ap;dbGetAll=__g.dg;closeModal=__g.cm;renderInvoiceLines=__g.rl;refreshVisiblePage=__g.rv;sb=null;adminUnlocked=false;_invLines=[];', ctx);
+  }
+});
+
+test('escáner: cerrar el formulario sin guardar olvida la línea y no se asocia a otro artículo', async () => {
+  const dummy = { classList: { add() {}, remove() {} }, style: {}, textContent: '', innerHTML: '' };
+  const getAntes = ctx.document.getElementById;
+  ctx.document.getElementById = () => dummy;
+  try {
+    vm.runInContext("_invLines=[{desc:'a',qty:1,status:'pending'}];_invCreateIdx=0;", ctx);
+    vm.runInContext("closeModal('modal-form')", ctx); // Escape, deslizar o Cancelar
+    assert.strictEqual(vm.runInContext('_invCreateIdx', ctx), null);
+    vm.runInContext("closeModal('modal-otro')", ctx); // otras ventanas no tocan la línea
+    vm.runInContext("_invCreateIdx=0;closeModal('modal-otro')", ctx);
+    assert.strictEqual(vm.runInContext('_invCreateIdx', ctx), 0);
+    await new Promise(r => setTimeout(r, 20)); // deja terminar el temporizador que vuelve a la factura
+  } finally {
+    ctx.document.getElementById = getAntes;
+    vm.runInContext('_invCreateIdx=null;_invLines=[];', ctx);
+  }
 });
 
 test('no quedan contraseñas por defecto en el código', () => {

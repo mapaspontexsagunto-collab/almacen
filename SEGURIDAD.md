@@ -51,3 +51,15 @@ Un corte momentáneo (cambio de repetidor wifi) se reintenta una vez antes de av
 - El stock se corrige leyendo el valor actual antes de cada cambio; dos personas actuando en el mismo segundo sobre el mismo
   artículo podrían pisarse. Editar el formulario de un artículo guarda también el stock que tenía al abrirlo.
 - Copias de seguridad: el plan gratuito de Supabase no permite recuperar un punto anterior. Exporta desde Ajustes de vez en cuando.
+
+## Escáner de facturas (IA)
+- Solo para administradores (modo administrador activado) y con conexión. Al bloquear el modo administrador se cierra y se olvida la factura.
+- **Privacidad:** cada factura o PDF completo se envía a la función `bright-worker` y de ahí a Gemini (Google). Contiene proveedor,
+  precios y posiblemente direcciones o NIF. No subas documentos que no deban salir de la empresa.
+- Todo lo que devuelve la IA se trata como dato no fiable: se limpia, se validan cantidad y precio (formato español "12,50" incluido,
+  cantidades enteras, límites) y se muestra una confirmación con lo que se va a registrar antes de tocar el stock. El artículo lo elige siempre una persona.
+- Cada entrada pasa por las mismas protecciones que una compra normal: conexión real, stock actual leído de la nube, bloqueo anti doble pulsación.
+  Una línea registrada no se puede repetir ni "deshacer" desde la factura (para corregir, ajusta el stock en la ficha del artículo).
+- Los PDF se leen con pdf.js 3.11.174 fijado: el script lleva control de integridad (SRI), el worker se verifica por huella antes de usarlo,
+  y se abre con `isEvalSupported:false` (mitigación de CVE-2024-4367). Máximo 15 MB y 3 páginas por documento.
+- Límites de la función en el servidor (no están en este repositorio): debe seguir exigiendo sesión de usuario y limitar el tamaño de imagen.

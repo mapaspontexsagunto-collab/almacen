@@ -513,3 +513,9 @@ input,select,button,textarea{font-family:inherit;font-size:16px;}
 .inv-srch-item:active{background:var(--border);}
 .inv-srch-name{font-size:14px;font-weight:600;}
 .inv-srch-sub{font-size:12px;color:var(--text2);}
+
+/* Escáner de facturas: cantidad y precio editables */
+.inv-line-edit{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0;}
+.inv-line-edit label{font-size:12px;color:var(--text2);display:flex;align-items:center;gap:4px;}
+.inv-in{width:84px;padding:6px 8px;border:1px solid #d8d5cf;border-radius:8px;font:inherit;font-size:16px;background:#fff;color:inherit;}
+.inv-in.bad{border-color:#c00;background:#fff0f0;}
