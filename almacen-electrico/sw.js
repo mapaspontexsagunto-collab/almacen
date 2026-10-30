@@ -24,12 +24,21 @@ const PRECACHE_URLS = [
   'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js'
 ];
 
+const PRECACHE_CRITICOS = ['./index.html', '../shared/app.js'];
+
 self.addEventListener('install', (event) => {
-  // Un fichero que falle no debe impedir instalar el resto
+  // Un fichero secundario (librerías, iconos) que falle no impide instalar, pero se deja constancia en la consola.
+  // Si faltan la página (index.html) o la app (app.js) la instalación FALLA: así no se activa una versión que luego no abre sin conexión
+  // y el service worker anterior (si lo hay) sigue funcionando.
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) =>
       Promise.allSettled(PRECACHE_URLS.map((u) => cache.add(u.startsWith('http') ? u : new Request(u, { cache: 'reload' }))))
-    )
+    ).then((resultados) => {
+      const fallidos = PRECACHE_URLS.filter((u, i) => resultados[i].status === 'rejected');
+      if (fallidos.length) console.warn('SW: no se pudieron guardar para uso sin conexión:', fallidos.join(', '));
+      const criticos = fallidos.filter((u) => PRECACHE_CRITICOS.includes(u));
+      if (criticos.length) throw new Error('SW: faltan ficheros imprescindibles: ' + criticos.join(', '));
+    })
   );
   self.skipWaiting();
 });
@@ -56,10 +65,10 @@ self.addEventListener('fetch', (event) => {
   // Librerías externas: primero la copia guardada (las versiones no cambian)
   if (CDN_HOSTS.includes(url.hostname)) {
     event.respondWith(
-      caches.match(req).then((hit) => hit || fetch(req).then((res) => {
+      caches.match(req, { cacheName: CACHE_NAME }).then((hit) => hit || fetch(req).then((res) => {
         if (res.ok && res.status === 200) {
           const copia = res.clone();
-          event.waitUntil(caches.open(CACHE_NAME).then((c) => c.put(req, copia)).catch(() => {}));
+          event.waitUntil(caches.open(CACHE_NAME).then((c) => c.put(req, copia)).catch((e) => console.warn('SW: no se pudo guardar en caché', req.url, e)));
         }
         return res;
       }))
@@ -76,9 +85,9 @@ self.addEventListener('fetch', (event) => {
   const refresco = red.then((res) => {
     if (res.ok && res.status === 200) {
       const copia = res.clone(); // se clona enseguida, antes de que nadie lea la respuesta
-      return caches.open(CACHE_NAME).then((c) => c.put(req, copia));
+      return caches.open(CACHE_NAME).then((c) => c.put(req, copia)).catch((e) => console.warn('SW: no se pudo guardar en caché (¿sin espacio?)', req.url, e));
     }
-  }).catch(() => {});
+  }).catch(() => {}); // fallo de red: lo gestiona la respuesta de abajo
   event.waitUntil(refresco);
   red.catch(() => {}); // evita avisos si la red falla después de usar la copia guardada
   const limite = new Promise((resolve) => setTimeout(() => resolve(null), NETWORK_TIMEOUT_MS));
@@ -87,14 +96,14 @@ self.addEventListener('fetch', (event) => {
     try {
       const res = await Promise.race([red, limite]);
       if (res) return res;
-      const hit = await caches.match(req, { ignoreSearch: true });
+      const hit = await caches.match(req, { ignoreSearch: true, cacheName: CACHE_NAME });
       if (hit) return hit;
       return await red;
     } catch (e) {
-      const hit = await caches.match(req, { ignoreSearch: true });
+      const hit = await caches.match(req, { ignoreSearch: true, cacheName: CACHE_NAME });
       if (hit) return hit;
       if (req.mode === 'navigate') {
-        const shell = await caches.match('./index.html', { ignoreSearch: true });
+        const shell = await caches.match('./index.html', { ignoreSearch: true, cacheName: CACHE_NAME });
         if (shell) return shell;
       }
       return new Response('Sin conexión', { status: 503, statusText: 'Sin conexión' });

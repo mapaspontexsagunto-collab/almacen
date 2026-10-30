@@ -77,6 +77,15 @@ Un corte momentáneo (cambio de repetidor wifi) se reintenta una vez antes de av
 - Mover entre almacenes lee el stock actual de la nube antes de copiar y solo quita el artículo de aquí si la copia se subió y el borrado
   en la nube tuvo éxito; si no, avisa "queda en los dos almacenes" (el borrado pendiente se reintenta al sincronizar). "Borrar todo" y
   "mover varios" informan de cuántos salieron bien y fallaron.
+- Cerrar sesión intenta primero subir lo pendiente (movimientos, artículos, borrados, columnas y configuración), esperando a que acabe
+  una sincronización en curso. Si con conexión no se consigue, o no hay conexión, pide confirmación explícita; si se acepta, lo pendiente
+  NO se borra y se subirá más adelante a nombre de quien entre después en este móvil (la limpieza de la base local al salir no está hecha).
+- Con Supabase Auth, la comprobación de conexión de antes de cada cambio exige también una sesión viva: con la sesión caducada la app
+  avisa "La sesión ha caducado" y funciona solo para consultar. Si la nube devuelve 0 artículos y hay artículos locales, se conservan
+  los locales y el indicador queda en "Sin conexión" (no puede saberse si está de verdad vacía o es una sesión caducada).
+- Al desplegar una versión nueva, la app abierta se recarga sola cuando no hay ventanas abiertas ni cambios de stock o sincronización
+  en curso. El service worker falla la instalación si no puede guardar `index.html` o `app.js`, y busca solo en la caché de su almacén.
+- Si la base de datos del móvil no se puede abrir (modo privado, bloqueada, sin espacio) aparece un aviso rojo con el botón Reintentar.
 
 ## Escáner de facturas (IA)
 - Solo para administradores (modo administrador activado) y con conexión. Al bloquear el modo administrador se cierra y se olvida la factura.

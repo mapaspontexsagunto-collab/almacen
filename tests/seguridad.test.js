@@ -2473,3 +2473,482 @@ test('avisos L11: la duración crece con el texto (2,5 s + 40 ms por carácter, 
   } finally { ctx.document.getElementById = getAntes; ctx.setTimeout = stAntes; }
   assert.deepStrictEqual(esperas, [2500 + 100 * 40, 2500]);
 });
+
+// ===== Robustez de uso (bloque R4) =====
+// closeModal/openModal reales (conNube los sustituye por registradores): se capturan aquí, antes de que corra ninguna prueba
+ctx.__cmReal = ev('closeModal');
+ctx.__omReal = ev('openModal');
+const WH_R4 = "var WAREHOUSE_CONFIG={key:'electrico',name:'Almacén Eléctrico',icon:'E',useSupabaseAuth:true}";
+const quitarWH = () => ev('WAREHOUSE_CONFIG=undefined; delete globalThis.WAREHOUSE_CONFIG');
+const esperar = ms => new Promise(r => setTimeout(r, ms));
+// Silencia console.warn/error durante la prueba y los recoge
+function recogerAvisos() {
+  const w = console.warn, e = console.error, avisos = [];
+  console.warn = (...a) => { avisos.push(a.map(String).join(' ')); };
+  console.error = (...a) => { avisos.push(a.map(String).join(' ')); };
+  return { avisos, restaurar: () => { console.warn = w; console.error = e; } };
+}
+
+test('R4 E-M6: cerrar el escáner por cualquier vía (Cancelar, deslizar, Escape) apaga la cámara y el siguiente abre una sola instancia', async () => {
+  const guardada = ctx.Html5Qrcode;
+  ctx.__n = 0; ctx.__log = [];
+  ctx.Html5Qrcode = class {
+    constructor() { this.n = ++ctx.__n; ctx.__log.push('new' + this.n); }
+    start() { ctx.__log.push('start' + this.n); return new Promise(r => setTimeout(r, 5)); }
+    stop() { ctx.__log.push('stop' + this.n); return new Promise(r => setTimeout(r, 5)); }
+    clear() { ctx.__log.push('clear' + this.n); }
+  };
+  try {
+    await conNube({ dom: { 'modal-scan': { classList: { add() {}, remove() {}, contains: () => true } } } }, async () => {
+      ev('closeModal=__cmReal;openModal=__omReal');
+      ev("scanPurpose='addhere'");
+      await ev('openScanner()');
+      // se cierra por deslizamiento ANTES de que termine el arranque: la cámara debe acabar apagada igualmente
+      ev("_swipeInicio({target:{closest:s=>s==='.modal-bg.open'?{id:'modal-scan'}:null},touches:[{clientX:0,clientY:0}]})");
+      ev("_swipeFin({changedTouches:[{clientX:200,clientY:5}]})");
+      await ev('_scannerStop');
+      assert.deepStrictEqual(evj('__log'), ['new1', 'start1', 'stop1', 'clear1']);
+      assert.strictEqual(ev('scanner'), null);
+      assert.strictEqual(ev('scanPurpose'), null, 'el propósito del escaneo se olvida');
+      // segundo escaneo: se cierra con closeModal (Escape) y se vuelve a abrir sin esperar a que pare la anterior
+      await ev('openScanner()');
+      ev("closeModal('modal-scan')");
+      await ev('openScanner()');
+      assert.deepStrictEqual(evj('__log'), ['new1', 'start1', 'stop1', 'clear1', 'new2', 'start2', 'stop2', 'clear2', 'new3', 'start3']);
+      ev("closeScanner()");
+      await ev('_scannerStop');
+      assert.deepStrictEqual(evj('__log').slice(-2), ['stop3', 'clear3']);
+      assert.strictEqual(ev('scanner'), null);
+    });
+  } finally { ctx.Html5Qrcode = guardada; }
+});
+
+test('R4 E-M6: si se cierra el modal mientras se espera, no se arranca la cámara', async () => {
+  const guardada = ctx.Html5Qrcode;
+  ctx.__n = 0; ctx.__log = [];
+  ctx.Html5Qrcode = class { constructor() { ctx.__log.push('new'); } start() { return Promise.resolve(); } stop() { return Promise.resolve(); } clear() {} };
+  try {
+    await conNube({ dom: { 'modal-scan': { classList: { add() {}, remove() {}, contains: () => false } } } }, async () => {
+      await ev('openScanner()');
+      assert.deepStrictEqual(evj('__log'), []);
+      assert.strictEqual(ev('scanner'), null);
+    });
+  } finally { ctx.Html5Qrcode = guardada; }
+});
+
+test('R4 E-L1/SF-A19: openDB rechaza con un error legible y avisa si está bloqueada; arrancar muestra el aviso con Reintentar', async () => {
+  const idbAntes = ctx.indexedDB, ini = ev('init');
+  ctx.__ini = ini;
+  const rec = recogerAvisos();
+  try {
+    await conNube({ dom: { 'init-error': { style: { display: 'none' } }, 'init-error-msg': { textContent: '' } } }, async () => {
+      ctx.indexedDB = { open: () => { const r = { error: new Error('SecurityError') }; setTimeout(() => { r.onblocked(); r.onerror({ type: 'error' }); }, 0); return r; } };
+      await assert.rejects(() => ev('openDB()'), /SecurityError/);
+      assert.ok(ev('__toasts').some(m => m.includes('bloqueada')), 'avisa de la base bloqueada');
+      ctx.indexedDB = { open: () => { throw new Error('modo privado'); } }; // open puede lanzar de forma síncrona
+      await assert.rejects(() => ev('openDB()'), /modo privado/);
+      // arrancar: si init falla, aviso visible con el motivo
+      ev("init=async()=>{throw new Error('Quota exceeded')}");
+      await ev('arrancar()');
+      assert.strictEqual(ctx.__dom['init-error'].style.display, '');
+      assert.ok(ctx.__dom['init-error-msg'].textContent.includes('Quota exceeded'));
+      assert.ok(ev('__toasts').some(m => m.includes('Reintentar')));
+      // Reintentar: oculta el aviso y, si ahora funciona, no lo vuelve a mostrar
+      ev('init=async()=>{}');
+      await ev('arrancar()');
+      assert.strictEqual(ctx.__dom['init-error'].style.display, 'none');
+    });
+  } finally { ctx.indexedDB = idbAntes; ev('init=__ini'); rec.restaurar(); }
+});
+
+test('R4 E-L1: enterApp lanza el arranque con aviso (arrancar) y la página tiene el aviso con Reintentar', () => {
+  assert.ok(ev('enterApp.toString()').includes('arrancar()'));
+  for (const w of ['almacen-electrico', 'almacen-mecanico']) {
+    const h = fs.readFileSync(path.join(__dirname, '..', w, 'index.html'), 'utf8');
+    assert.ok(h.includes('id="init-error"') && h.includes('id="init-error-msg"') && h.includes('onclick="arrancar()"'), w);
+  }
+});
+
+test('R4 E-L2: controllerchange recarga solo sin ventanas abiertas ni stock/sincronización en curso, una vez y sin acumular temporizadores', async () => {
+  const locAntes = ctx.location, stAntes = ctx.setTimeout;
+  ctx.__rl = 0; ctx.__t10 = []; ctx.__modalAbierto = true;
+  ctx.location = { reload() { ctx.__rl++; } };
+  ctx.document.querySelector = () => (ctx.__modalAbierto ? {} : null);
+  ctx.setTimeout = (f, ms, ...a) => { if (ms === 10000) { ctx.__t10.push(f); return 1; } return stAntes(f, ms, ...a); };
+  try {
+    await conNube({}, async () => {
+      ev('_swRecarga=false;_swEspera=null');
+      ev('_swControllerChange()');
+      ev('_swControllerChange()');
+      assert.strictEqual(ctx.__rl, 0, 'con una ventana abierta no recarga');
+      assert.strictEqual(ctx.__t10.length, 1, 'un solo reintento programado');
+      ctx.__modalAbierto = false;
+      ev('_stockBusy=true');
+      ctx.__t10.shift()();
+      assert.strictEqual(ctx.__rl, 0, 'con un cambio de stock en curso no recarga');
+      ev('_stockBusy=false;_syncing=true');
+      ctx.__t10.shift()();
+      assert.strictEqual(ctx.__rl, 0, 'con una sincronización en curso no recarga');
+      ev('_syncing=false');
+      ctx.__t10.shift()();
+      assert.strictEqual(ctx.__rl, 1, 'libre: recarga');
+      ev('_swControllerChange()');
+      assert.strictEqual(ctx.__rl, 1, 'solo una recarga');
+    });
+  } finally {
+    ctx.location = locAntes; ctx.setTimeout = stAntes; delete ctx.document.querySelector;
+    ev('_swRecarga=false;_swEspera=null');
+  }
+});
+
+// Cierre de sesión: entorno con Supabase Auth simulado, subidas registradas en __orden y la cola local simulada (__pend)
+async function conSalida(fn) {
+  const locAntes = ctx.location, navAntes = ctx.navigator, esp = ev('SALIR_ESPERA_MS');
+  ctx.__rl = 0; ctx.location = { reload() { ctx.__rl++; } };
+  try {
+    await conR2({}, async () => {
+      await conStubs(['movGetAll', 'pushPendingMovements', 'flushDirty', 'flushDirtyCfg'], async () => {
+        ev(WH_R4);
+        ev(`__orden=[];__pend=[{synced:false}];__pushOk=true;
+          movGetAll=async()=>__pend;
+          pushPendingMovements=async()=>{__orden.push('push');if(__pushOk)__pend=[];};
+          flushDirty=async()=>{__orden.push('flush');if(__pushOk)dirtyIds=new Set();};
+          flushDirtyCfg=async()=>{__orden.push('cfg');if(__pushOk)dirtyCfg=new Set();};
+          sb={auth:{signOut:async()=>{__orden.push('signOut');return {error:null};}}};
+          dirtyIds=new Set(['I1']);dirtyCfg=new Set(['shelves']);`);
+        await fn();
+      });
+    });
+  } finally { ctx.location = locAntes; ctx.navigator = navAntes; ev('SALIR_ESPERA_MS=' + esp + ';_saliendo=false'); quitarWH(); }
+}
+
+test('R4 E-L3: al cerrar sesión con conexión se suben los pendientes ANTES de salir y no se pide confirmación', async () => {
+  await conSalida(async () => {
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), ['push', 'flush', 'cfg', 'signOut']);
+    assert.strictEqual(ctx.__rl, 1);
+    assert.ok(!evj('__opened').includes('modal-confirm'));
+    assert.ok(ev('__toasts').some(m => m.includes('Subiendo')));
+  });
+});
+
+test('R4 E-L3: sin nada pendiente no se sube nada y se sale directamente', async () => {
+  await conSalida(async () => {
+    ev("__pend=[];dirtyIds=new Set();dirtyCfg=new Set()");
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), ['signOut']);
+    assert.strictEqual(ctx.__rl, 1);
+  });
+});
+
+test('R4 E-L3: sin conexión con pendientes exige confirmación explícita y, si se acepta, NO borra la cola', async () => {
+  await conSalida(async () => {
+    ctx.navigator = { onLine: false };
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), [], 'sin conexión no intenta subir ni cerrar');
+    assert.strictEqual(ctx.__rl, 0);
+    assert.ok(evj('__opened').includes('modal-confirm'));
+    assert.ok(ctx.__dom['confirm-msg'].textContent.includes('sin subir'));
+    ctx.__dom['confirm-ok'].onclick(); // el usuario acepta salir igualmente
+    await esperar(30);
+    assert.deepStrictEqual(evj('__orden'), ['signOut']);
+    assert.strictEqual(ctx.__rl, 1);
+    assert.strictEqual(ev("dirtyCfg.has('shelves')"), true, 'lo pendiente no se descarta');
+    assert.strictEqual(ev('dirtyIds.has("I1")'), true);
+  });
+});
+
+test('R4 E-L3: con conexión pero con la subida fallida también pide confirmación (y cancelar no cierra la sesión)', async () => {
+  await conSalida(async () => {
+    ev('__pushOk=false');
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), ['push', 'flush', 'cfg']);
+    assert.strictEqual(ctx.__rl, 0);
+    assert.ok(evj('__opened').includes('modal-confirm'));
+    assert.strictEqual(ev('_syncing'), false, 'el candado de sincronización se libera');
+    assert.strictEqual(ev('_saliendo'), false);
+  });
+});
+
+test('R4 E-L3: espera a que acabe una sincronización en curso antes de subir y, si no acaba, no pisa nada', async () => {
+  await conSalida(async () => {
+    ev('_syncing=true');
+    setTimeout(() => ev('_syncing=false'), 300);
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), ['push', 'flush', 'cfg', 'signOut']);
+  });
+  await conSalida(async () => {
+    ev('SALIR_ESPERA_MS=200;_syncing=true');
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), [], 'una sincronización que no termina no se interrumpe ni se duplica');
+    assert.ok(evj('__opened').includes('modal-confirm'));
+  });
+});
+
+test('R4 E-L4: pingCloud con Supabase Auth exige una sesión viva; sin sesión distingue "caducada" de "sin red"', async () => {
+  await conR2({}, async () => {
+    ev(WH_R4);
+    try {
+      const sbCon = ses => "sb={auth:{getSession:async()=>(" + ses + ")},from:()=>({select:()=>({limit:async()=>({data:[],error:null})})})}";
+      ev(sbCon("{data:{session:{user:{id:'u'}}},error:null}"));
+      assert.strictEqual(await ev('pingCloud()'), true);
+      // refresh token inválido: sesión null SIN error -> la petición iría como anónima: no cuenta como conexión
+      ev(sbCon("{data:{session:null},error:null}"));
+      assert.strictEqual(await ev('pingCloud()'), false);
+      assert.strictEqual(ev('_pingSinSesion'), true);
+      // no pudo renovar el token por falta de red: es "sin conexión", no "sesión caducada"
+      ev(sbCon("{data:{session:null},error:{name:'AuthRetryableFetchError',status:0,message:'fetch'}}"));
+      assert.strictEqual(await ev('pingCloud()'), false);
+      assert.strictEqual(ev('_pingSinSesion'), false);
+      // getSession lanza
+      ev("sb={auth:{getSession:async()=>{throw new Error('boom')}},from:()=>({})}");
+      assert.strictEqual(await ev('pingCloud()'), false);
+      // ensureOnline con la sesión caducada: aviso concreto y sin esperar el reintento de 1,5 s
+      ev(sbCon("{data:{session:null},error:null}"));
+      ev('__toasts=[]');
+      const t0 = Date.now();
+      assert.strictEqual(await ev("ensureOnline('guardar')"), false);
+      assert.ok(Date.now() - t0 < 1000);
+      assert.ok(ev('__toasts').some(m => m.includes('sesión ha caducado')));
+    } finally { quitarWH(); }
+  });
+  // modo antiguo (sin Supabase Auth): no se exige sesión
+  await conR2({}, async () => {
+    ev("sb={auth:{getSession:async()=>({data:{session:null},error:null})},from:()=>({select:()=>({limit:async()=>({data:[],error:null})})})}");
+    assert.strictEqual(await ev('pingCloud()'), true);
+  });
+});
+
+test('R4 E-L16/SF-A18: doLogin distingue credenciales erróneas de fallo de red, captura excepciones y solo borra la contraseña si era incorrecta', async () => {
+  await conR2({ dom: { 'login-user': { value: 'ana@x.com' }, 'login-pass': { value: 'secreta' }, 'login-error': { textContent: '' } } }, async () => {
+    await conStubs(['enterApp'], async () => {
+      ev(WH_R4);
+      const rec = recogerAvisos();
+      try {
+        ev('__entro=0;enterApp=()=>{__entro++}');
+        const caso = async res => {
+          ev("document.getElementById('login-pass').value='secreta';document.getElementById('login-error').textContent=''");
+          ev("sb={auth:{signInWithPassword:async()=>{" + res + "}}}");
+          await ev('doLogin()');
+          return { msg: ctx.__dom['login-error'].textContent, pass: ctx.__dom['login-pass'].value };
+        };
+        let r = await caso("return {error:{name:'AuthApiError',status:400,code:'invalid_credentials',message:'Invalid login credentials'}}");
+        assert.deepStrictEqual(r, { msg: 'Usuario o contraseña incorrectos', pass: '' });
+        r = await caso("return {error:{name:'AuthRetryableFetchError',status:0,message:'Failed to fetch'}}");
+        assert.ok(r.msg.includes('conectar') && !r.msg.includes('incorrectos'), r.msg);
+        assert.strictEqual(r.pass, 'secreta', 'un fallo de red no borra la contraseña');
+        r = await caso("throw new TypeError('Failed to fetch')");
+        assert.ok(r.msg.includes('conectar'), 'una excepción se captura y se trata como fallo de red');
+        assert.strictEqual(r.pass, 'secreta');
+        r = await caso("return {error:{name:'AuthApiError',status:429,code:'over_request_rate_limit'}}");
+        assert.ok(r.msg.includes('Demasiados'));
+        assert.strictEqual(r.pass, 'secreta');
+        r = await caso("return {error:{name:'AuthApiError',status:422,code:'validation_failed'}}");
+        assert.ok(r.msg.includes('No se pudo iniciar sesión') && !r.msg.includes('incorrectos'));
+        assert.strictEqual(ev('__entro'), 0);
+        await caso("return {error:null,data:{session:{}}}");
+        assert.strictEqual(ev('__entro'), 1, 'con credenciales correctas entra');
+      } finally { rec.restaurar(); quitarWH(); }
+    });
+  });
+});
+
+test('R4 E-L11: un deslizamiento que empieza en un control deslizante no cierra la ventana; fuera de él sí', async () => {
+  await conNube({}, async () => {
+    const rango = "{target:{closest:s=>s==='input[type=range]'?{}:{id:'modal-start-pos'}},touches:[{clientX:0,clientY:0}]}";
+    const normal = "{target:{closest:s=>s==='input[type=range]'?null:{id:'modal-start-pos'}},touches:[{clientX:0,clientY:0}]}";
+    const fin = "{changedTouches:[{clientX:200,clientY:5}]}";
+    ev('__closed=[]');
+    ev('_swipeInicio(' + rango + ')'); ev('_swipeFin(' + fin + ')');
+    assert.deepStrictEqual(evj('__closed'), [], 'sobre el slider no cierra');
+    ev('_swipeInicio(' + normal + ')'); ev('_swipeFin(' + fin + ')');
+    assert.deepStrictEqual(evj('__closed'), ['modal-start-pos'], 'fuera del slider sigue cerrando');
+    ev('_swipeInicio(' + normal + ')'); ev("_swipeFin({changedTouches:[{clientX:30,clientY:0}]})");
+    ev('_swipeInicio(' + rango + ')'); ev('_swipeFin(' + fin + ')');
+    assert.deepStrictEqual(evj('__closed'), ['modal-start-pos'], 'ni un gesto corto ni el del slider cierran');
+  });
+});
+
+test('R4 E-L12: doPrintLabels quita la hoja de estilos del mapa que haya quedado', async () => {
+  ctx.__rm = 0; ctx.__ls = ev('labelSel');
+  try {
+    await conNube({ dom: { 'map-print-page-style': { remove() { ctx.__rm++; } } } }, async () => {
+      ev('labelSel=new Set();items=[]');
+      await ev('doPrintLabels()');
+      assert.strictEqual(ctx.__rm, 1);
+    });
+  } finally { ev('labelSel=__ls'); }
+});
+
+test('R4 E-L17: renderUserBar no escribe "undefined" cuando la sesión no tiene correo', async () => {
+  const nombre = ev('_sessionName'), uid = ev('_sessionUid');
+  ctx.__sn = nombre; ctx.__su = uid;
+  try {
+    await conNube({ dom: { whbar: { innerHTML: '' } } }, async () => {
+      ev(WH_R4);
+      ev("_sessionName='';_sessionUid=null;sb={auth:{getSession:async()=>({data:{session:{user:{id:'u1'}}}})}}");
+      await ev('renderUserBar()');
+      assert.strictEqual(ev('_sessionName'), '');
+      assert.ok(!ctx.__dom.whbar.innerHTML.includes('undefined'));
+      assert.strictEqual(ev('_sessionUid'), 'u1');
+      ev("sb={auth:{getSession:async()=>({data:{session:null}})}}");
+      await ev('renderUserBar()'); // sin sesión: sin error ni "undefined"
+      assert.strictEqual(ev('_sessionName'), '');
+      ev("sb={auth:{getSession:async()=>({data:{session:{user:{id:'u2',email:'Ana.Lopez@x.com'}}}})}}");
+      await ev('renderUserBar()');
+      assert.strictEqual(ev('_sessionName'), 'Ana.Lopez');
+      assert.ok(ctx.__dom.whbar.innerHTML.includes('Ana.Lopez'));
+    });
+  } finally { ev('_sessionName=__sn;_sessionUid=__su'); quitarWH(); }
+});
+
+test('R4 E-L14: la sincronización limpia todos los artículos con el mismo modo (no el índice como "fast") y registra los códigos no válidos', async () => {
+  await conR2({}, async () => {
+    await conStubs(['pushPendingMovements', 'flushDirty', 'flushDirtyCfg', 'cloudGetMeta', 'cloudCfgGetMany', 'dbReplaceAll', 'setCloudStatus', 'cleanItem', 'updateSyncBadge'], async () => {
+      const rec = recogerAvisos();
+      ctx.__ci = ev('cleanItem');
+      try {
+        ev(`__fast=[];__badge=[];pushPendingMovements=async()=>{};flushDirty=async()=>{};flushDirtyCfg=async()=>{};
+          cloudCfgGetMany=async()=>undefined;dbReplaceAll=async()=>{};setCloudStatus=()=>{};
+          updateSyncBadge=s=>{__badge.push(s)};
+          cleanItem=(it,f)=>{__fast.push(f);return __ci(it,f)};
+          cloudGetMeta=async()=>[{id:'A',name:'a',stock:1},{id:'B',name:'b',stock:2},{id:'C',name:'c',stock:3},{id:'x y!',name:'malo'}];
+          items=[];`);
+        await ev('_syncFromCloud(false)');
+        assert.deepStrictEqual(evj('__fast'), [true, true, true], 'todos con el mismo modo, ninguno con un índice');
+        assert.deepStrictEqual(evj('items.map(i=>i.id)'), ['A', 'B', 'C']);
+        assert.ok(rec.avisos.some(a => a.includes('código no válido')), 'se registra el descarte');
+      } finally { rec.restaurar(); }
+    });
+  });
+});
+
+test('R4 SF-B: una nube vacía con artículos locales conserva lo local pero no marca "Sincronizado" y avisa una vez', async () => {
+  await conR2({}, async () => {
+    await conStubs(['pushPendingMovements', 'flushDirty', 'flushDirtyCfg', 'cloudGetMeta', 'setCloudStatus', 'updateSyncBadge'], async () => {
+      const rec = recogerAvisos();
+      const av = ev('_nubeVaciaAviso');
+      ctx.__av = av;
+      try {
+        ev(`__badge=[];pushPendingMovements=async()=>{};flushDirty=async()=>{};flushDirtyCfg=async()=>{};setCloudStatus=()=>{};
+          updateSyncBadge=s=>{__badge.push(s)};cloudGetMeta=async()=>[];_nubeVaciaAviso=false;
+          items=[{id:'A',name:'a',stock:1}];`);
+        await ev('_syncFromCloud(false)');
+        await ev('_syncFromCloud(false)');
+        assert.deepStrictEqual(evj('__badge'), ['syncing', 'off', 'syncing', 'off']);
+        assert.deepStrictEqual(evj('items.map(i=>i.id)'), ['A'], 'no se borra lo local');
+        assert.strictEqual(ev('__toasts.filter(m=>m.includes("no devolvió")).length'), 1);
+      } finally { rec.restaurar(); ev('_nubeVaciaAviso=__av'); }
+    });
+  });
+});
+
+test('R4 SF-B: un sync fallido marca la nube como no conectada (texto de Ajustes incluido)', async () => {
+  await conR2({}, async () => {
+    const rec = recogerAvisos();
+    try {
+      ev("__estado=[];_syncFromCloud=async()=>{throw new Error('boom')};setCloudStatus=ok=>{__estado.push(ok)};cloudOK=true");
+      await ev('syncFromCloud()');
+      assert.deepStrictEqual(evj('__estado'), [false]);
+      assert.strictEqual(ev('cloudOK'), false);
+      assert.strictEqual(ev('_syncing'), false);
+    } finally { rec.restaurar(); }
+  });
+});
+
+test('R4 SF-B: persistDirty nunca rechaza, se puede esperar, avisa una sola vez; loadDirty avisa si no puede leer la cola', async () => {
+  await conR2({}, async () => {
+    const rec = recogerAvisos();
+    ctx.__av = ev('_dirtyAviso');
+    try {
+      ev("_dirtyAviso=false;__toasts=[];cfgPut=async()=>{throw new Error('cuota')}");
+      await ev('persistDirty()'); // si rechazara, la prueba fallaría aquí
+      assert.strictEqual(ev('__toasts.length'), 1);
+      assert.ok(ev('__toasts[0]').includes('guardar'));
+      await ev('persistDirty()');
+      assert.strictEqual(ev('__toasts.length'), 1, 'el aviso sale una sola vez');
+      assert.ok(rec.avisos.filter(a => a.includes('Cola de pendientes')).length >= 6, 'cada fallo queda en la consola');
+      // funciona y se puede esperar al guardado
+      ev("_dirtyAviso=false;cfgPut=async(k,v)=>{await Promise.resolve();__cfg[k]=JSON.parse(JSON.stringify(v));};dirtyIds=new Set(['I1']);dirtyDel=new Set();dirtyFields=Object.create(null)");
+      await ev('persistDirty()');
+      assert.deepStrictEqual(evj('__cfg.dirtyIds'), ['I1']);
+      // lectura de la cola fallida
+      ev("_dirtyAviso=false;__toasts=[];cfgGet=async()=>{throw new Error('lectura')}");
+      await ev('loadDirty()');
+      assert.ok(ev('__toasts').some(m => m.includes('leer')), 'avisa de que no pudo leer la cola');
+    } finally { rec.restaurar(); ev('_dirtyAviso=__av'); }
+  });
+});
+
+test('R4 SF-B: flushDirty espera a que se guarde la cola', () => {
+  assert.ok(/await persistDirty\(\)/.test(ev('flushDirty.toString()')));
+});
+
+// Service workers: se cargan en un contexto aislado con caches/fetch simulados
+function cargarSW(carpeta, { fallan = [], putFalla = false, fetchFalla = false } = {}) {
+  const codigo = fs.readFileSync(path.join(__dirname, '..', carpeta, 'sw.js'), 'utf8');
+  const handlers = {}, avisos = [], matches = [];
+  const cache = {
+    add: async r => { const u = typeof r === 'string' ? r : r.url; if (fallan.includes(u)) throw new TypeError('no disponible: ' + u); },
+    put: async () => { if (putFalla) throw new Error('cuota agotada'); }
+  };
+  const cachesFalsas = {
+    open: async () => cache,
+    keys: async () => [],
+    delete: async () => true,
+    match: async (r, o) => { matches.push(o || {}); return undefined; }
+  };
+  const respuesta = { ok: true, status: 200, clone() { return { copia: true }; } };
+  const caja = {
+    self: { addEventListener: (t, f) => { handlers[t] = f; }, location: { origin: 'https://x.test' }, skipWaiting() {}, clients: { claim() {} } },
+    caches: cachesFalsas, URL, Request: class { constructor(u, o) { this.url = u; this.o = o; } },
+    Response: class { constructor(b, o) { this.b = b; this.o = o; } },
+    fetch: async () => { if (fetchFalla) throw new TypeError('sin red'); return respuesta; },
+    setTimeout: () => 0, console: { warn: (...a) => avisos.push(a.map(String).join(' ')), log() {}, error() {} }
+  };
+  vm.runInNewContext(codigo, caja);
+  const instalar = async () => { let p; handlers.install({ waitUntil: x => { p = x; } }); await p; };
+  const pedir = async url => {
+    const esperas = []; let resp;
+    handlers.fetch({ request: { method: 'GET', url, mode: 'navigate' }, waitUntil: x => esperas.push(x), respondWith: x => { resp = x; } });
+    const r = await resp; await Promise.all(esperas); return r;
+  };
+  return { instalar, pedir, avisos, matches };
+}
+
+for (const carpeta of ['almacen-electrico', 'almacen-mecanico']) {
+  test('R4 SF-A22 (' + carpeta + '): el SW falla al instalar si faltan index.html o app.js y avisa de lo que no pudo guardar', async () => {
+    let sw = cargarSW(carpeta);
+    await sw.instalar(); // todo bien
+    assert.deepStrictEqual(sw.avisos, []);
+    sw = cargarSW(carpeta, { fallan: ['https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js', './icons/icon-192.png'] });
+    await sw.instalar(); // lo secundario no impide instalar, pero queda constancia
+    assert.ok(sw.avisos.some(a => a.includes('exceljs') && a.includes('icon-192')), sw.avisos.join('|'));
+    sw = cargarSW(carpeta, { fallan: ['./index.html'] });
+    await assert.rejects(sw.instalar, /imprescindibles.*index\.html/);
+    sw = cargarSW(carpeta, { fallan: ['../shared/app.js'] });
+    await assert.rejects(sw.instalar, /imprescindibles.*app\.js/);
+  });
+
+  test('R4 SF-A22 (' + carpeta + '): las búsquedas en caché se limitan a la caché de este almacén y un fallo de cache.put no se oculta', async () => {
+    const nombre = carpeta === 'almacen-electrico' ? 'almacen-electrico-v3' : 'almacen-mecanico-v3';
+    // sin red: se busca en caché (siempre con cacheName propio, también la página de arranque)
+    let sw = cargarSW(carpeta, { fetchFalla: true });
+    const r = await sw.pedir('https://x.test/shared/app.js');
+    assert.strictEqual(r.o.status, 503);
+    assert.ok(sw.matches.length >= 2);
+    assert.ok(sw.matches.every(o => o.cacheName === nombre), JSON.stringify(sw.matches));
+    // librería de CDN
+    sw = cargarSW(carpeta);
+    await sw.pedir('https://cdnjs.cloudflare.com/ajax/libs/x.js');
+    assert.ok(sw.matches.length >= 1 && sw.matches.every(o => o.cacheName === nombre), JSON.stringify(sw.matches));
+    // cuota agotada al guardar: queda en consola (propio y CDN)
+    sw = cargarSW(carpeta, { putFalla: true });
+    const ok = await sw.pedir('https://x.test/shared/app.css');
+    assert.strictEqual(ok.ok, true, 'la página se sirve igualmente');
+    assert.ok(sw.avisos.some(a => a.includes('SW: no se pudo guardar') && a.includes('cuota agotada')), sw.avisos.join('|'));
+    sw = cargarSW(carpeta, { putFalla: true });
+    await sw.pedir('https://cdn.jsdelivr.net/npm/x.js');
+    assert.ok(sw.avisos.some(a => a.includes('SW: no se pudo guardar')), sw.avisos.join('|'));
+  });
+}
