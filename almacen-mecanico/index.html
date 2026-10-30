@@ -383,7 +383,7 @@
     </div>
     <div class="fg"><label class="fl">Nombre *</label><input type="text" class="fi" id="f-name" placeholder="Ej: Relé térmico Schneider LRD10" oninput="validateAddForm()"></div>
     <div class="fg"><label class="fl">Categoría *</label><select class="fi" id="f-cat" onchange="checkNewCat();renderCatChips();"></select></div>
-    <div class="fg" id="newcat-zone" style="display:none;"><label class="fl">Nueva categoría</label><input type="text" class="fi" id="f-newcat" placeholder="Nombre de la nueva categoría"></div>
+    <div class="fg" id="newcat-zone" style="display:none;"><label class="fl">Nueva categoría</label><input type="text" class="fi" id="f-newcat" maxlength="60" placeholder="Nombre de la nueva categoría"></div>
     <div class="fg"><label class="fl">Familias adicionales (opcional)</label><div class="msub" style="margin:0 0 8px;">Toca para añadir el material a más familias. Aparecerá al filtrar por cualquiera de ellas.</div><div id="f-cats-chips" class="cats-chips"></div></div>
     <div class="fr">
       <div class="fg"><label class="fl">Estantería *</label><select class="fi" id="f-shelf" onchange="updateBaldaOptions()"></select></div>

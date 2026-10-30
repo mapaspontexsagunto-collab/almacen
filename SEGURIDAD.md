@@ -14,7 +14,10 @@
   del código; con `useSupabaseAuth:false` en `config.js` ya no se puede entrar. La app sigue borrando del móvil los restos de aquel acceso
   (`almacen_auth_cache`, `almacen_login`).
 - El cliente de Supabase se crea con `detectSessionInUrl:false` y flujo PKCE: un enlace con `#access_token=...` no puede sustituir la sesión
-  de quien lo abre (la app no usa enlaces de acceso ni de recuperación de contraseña).
+  de quien lo abre (la app no usa enlaces de acceso ni de recuperación de contraseña). Consecuencia: los correos de invitación y de
+  "olvidé mi contraseña" de Supabase NO inician sesión ni permiten fijar contraseña al abrirse en la app; las altas se hacen con
+  correo y contraseña desde el panel de Supabase (ver abajo) y la app no tiene pantalla para fijar o cambiar una contraseña: ese
+  paso se hace fuera de la app (panel o API de administración de Supabase).
 
 ## Regla sin conexión: solo consulta
 Cualquier cambio (stock, compras, artículos, ubicaciones, borrados, importaciones) exige conexión real con la nube.
@@ -54,10 +57,15 @@ queda en la cola de configuración pendiente (`dirtyCfg`) hasta que se sube.
 - Si alguien reactiva los registros o un proveedor externo en Supabase, cualquiera podría acceder. Mantén desactivados
   *Allow new users to sign up* y *Allow anonymous sign-ins*.
 - Cualquier usuario con sesión puede modificar la configuración compartida (categorías, estanterías, mapa). La app valida
-  los datos al leerlos (también al importar una copia) y los acota para que no puedan congelarla: como máximo 200 estanterías,
-  200 pasillos, 500 categorías o proveedores de hasta 60 caracteres (y 500 familias por artículo), 8 bloques por balda y
-  100 cajones (filas x columnas) por gavetero. Aun así, un usuario malintencionado podría desordenarlos. Los límites están en la
-  app; la base de datos no los impone.
+  los datos al leerlos (también al importar una copia) y los acota para que no puedan congelarla: como máximo 500 estanterías,
+  500 pasillos, 500 categorías o proveedores de hasta 60 caracteres (y 500 familias por artículo), 40 bloques por balda y
+  144 cajones (12 x 12 filas x columnas) por gavetero: lo que el editor permite crear de verdad, para que nada legítimo se
+  recorte. Aun así, un usuario malintencionado podría desordenarlos. Los límites están en la app; la base de datos no los impone.
+  Si al cargar o sincronizar la limpieza recorta algo, la app lo deja en la consola y avisa UNA vez por sesión ("Se han recortado
+  datos de configuración demasiado grandes; revisa estanterías/categorías"); esa copia recortada solo se guarda en el móvil, nunca
+  se sube sola a la nube (solo se sube lo que el usuario edita después). Al importar una copia, la confirmación enumera lo que se
+  recortará ("Se recortarán: 3 categorías, ..."). Los nombres de categoría se cortan a 60 caracteres también al crearlas (campo
+  con maxlength) y no se pueden crear más de 500.
 - Mover entre almacenes no registra movimientos de entrada y salida.
 - No hay registro de quién crea, edita o borra artículos, solo de los movimientos de stock.
 - No hay cabeceras de seguridad (GitHub Pages no permite configurarlas). Cada `index.html` lleva solo una CSP mínima por `<meta>`
@@ -67,7 +75,11 @@ queda en la cola de configuración pendiente (`dirtyCfg`) hasta que se sube.
 - Las librerías externas llevan control de integridad (SRI) y sus huellas están fijadas en tres sitios (`index.html`, constantes
   `PDFJS_*` de `app.js` y `CDN_SRI` de cada `sw.js`): al actualizar una versión hay que recalcular su hash en todos. El service worker
   solo guarda en caché una librería si su contenido coincide con esa huella (si no, la sirve desde la red sin guardarla), y la caché
-  se renovó (versión v4) para descartar lo guardado antes de esa comprobación.
+  se renovó (versión v4) para descartar lo guardado antes de esa comprobación. Si la precarga de una librería falla, el aviso de la
+  consola del service worker dice el motivo de cada URL (red, "hash distinto" o "error de lectura") y cada fallo se reintenta hasta
+  2 veces; en uso normal, una huella conocida que no coincide también deja un aviso ("hash distinto"). Solo `index.html` y `app.js`
+  son imprescindibles para instalar. Límite: al subir de versión la caché antigua se borra al activar el nuevo service worker aunque
+  alguna librería no se haya podido precargar (esa librería se guarda al usarla con red; hasta entonces no hay copia sin conexión).
 - El stock se corrige leyendo el valor actual de la nube antes de cada cambio; dos personas actuando en el mismo segundo sobre el mismo
   artículo podrían pisarse. Al editar el formulario de un artículo, si no se toca el stock se guarda el que hay en ese momento en la nube
   (se relee al guardar; si no se puede comprobar, no se guarda), y si se cambia se registra el movimiento respecto a ese stock actual.
@@ -93,9 +105,11 @@ queda en la cola de configuración pendiente (`dirtyCfg`) hasta que se sube.
 - Historial e informes: el Excel de movimientos, los costes del mes y su PDF leen la nube de forma estricta; si no se puede leer
   el historial se aborta con "No se pudo leer el historial de la nube" (nunca salen informes parciales). Inicio sí muestra lo local
   pero con un aviso visible. Solo se consulta la ventana necesaria (6 meses en Inicio, el mes en Costes, el rango pedido al exportar).
-  En los Excel (inventario y movimientos) todo texto se recorta a 32000 caracteres (una celda de más de 32767 corrompe el archivo) y, si
-  empieza por `=`, `+`, `-` o `@`, se le antepone una comilla simple para que nunca se interprete como fórmula; los números siguen siendo
-  números. La app no importa Excel (solo copias `.json`, que pasan por la validación de datos).
+  En los Excel (inventario y movimientos) todo texto se escribe como cadena y se recorta a 32000 caracteres (una celda de más de 32767
+  corrompe el archivo), añadiendo ` [recortado]` si se cortó; los números siguen siendo números. No se antepone ninguna comilla a lo que
+  empieza por `=`, `+`, `-` o `@`: ExcelJS escribe las cadenas como celdas de texto (nunca como fórmulas), así que en un .xlsx no se
+  interpretan como fórmula y la comilla solo estropeaba textos legítimos como "-5 mm" o "+12V". Hoy no existe ninguna exportación CSV
+  (donde sí habría que neutralizarlos si se añadiera). La app no importa Excel (solo copias `.json`, que pasan por la validación de datos).
 - Borrar una línea del historial solo borra la copia local si la nube la borró (o ya no existía, comprobado con una lectura que sí devuelve filas:
   con la sesión caducada la base de datos devuelve 0 filas sin error y eso NO cuenta como borrado; igual al borrar artículos); un fallo de red lo avisa y no toca nada.
   El proveedor de un movimiento solo se descarta si la tabla no tiene la columna `provider` (se avisa en el toast final de la compra, una vez por sesión,
@@ -107,16 +121,30 @@ queda en la cola de configuración pendiente (`dirtyCfg`) hasta que se sube.
 - Cerrar sesión intenta primero subir lo pendiente (movimientos, artículos, borrados, columnas y configuración), esperando a que acabe
   una sincronización en curso. Si con conexión no se consigue, o no hay conexión, pide confirmación explícita avisando de que lo pendiente
   SE PERDERÁ; si se cancela no se toca nada, y si se acepta se descarta (así nunca se sube a nombre de quien entre después).
-  Una vez cerrada la sesión, se vacía la base local del almacén actual (artículos con precio y fotos, movimientos, colas de pendientes y
-  configuración) y el historial de búsqueda de los dos almacenes; el móvil queda sin datos de la persona anterior y no se puede consultar
-  nada sin volver a entrar (para lo que hace falta conexión). Límite: la base del OTRO almacén solo se vacía si no tiene cambios sin
-  subir (desde aquí no se pueden subir); si los tiene se conserva (aviso en la consola) y se subirían más adelante a nombre de quien
-  entre después. Cerrar el navegador sin cerrar sesión no vacía nada.
+  Los cambios sin subir se cuentan en LOS DOS almacenes (los del otro se leen de su base local, solo lectura; desde aquí no se pueden
+  subir, hay que abrirlo y esperar a "Sincronizado"): la confirmación dice "Quedan X cambio(s) sin subir (este almacén Y, el otro Z)"
+  y, si se acepta, se descartan los de los dos. Se vuelve a contar justo antes de vaciar.
+  Una vez cerrada la sesión, se vacían las bases locales de los dos almacenes (artículos con precio y fotos, movimientos, colas de
+  pendientes y configuración), el historial de búsqueda y los restos del acceso antiguo (`almacen_auth_cache`, `almacen_login`); el móvil
+  queda sin datos de la persona anterior y no se puede consultar nada sin volver a entrar (para lo que hace falta conexión).
+  El borrado es a prueba de cierres bruscos: antes de cerrar la sesión se escribe la marca `almacen_borrar_pendiente` en el móvil y solo
+  se quita cuando todo se vació sin error; si la app se cierra o muere a mitad, al abrirla se vacía ANTES de mirar la sesión o leer
+  la base local, y si aun así no se puede, aparece un aviso rojo que bloquea el arranque ("No se pudieron borrar los datos del usuario
+  anterior, cierra la app y vuelve a abrirla"). Cada paso tiene tiempo límite de 5 s (cerrar la sesión en Supabase y vaciar cada base),
+  así que el cierre nunca se queda colgado; si algún vaciado falla, se avisa (aviso y alert) antes de recargar y la marca se conserva.
+  Qué puede quedar en el móvil: (a) lo que falle al vaciar (aviso visible, se reintenta al abrir la app); (b) la base del OTRO almacén
+  solo si le aparecen cambios sin subir mientras se cierra la sesión (después de haber contado): se conserva, se avisa con un toast y un
+  alert ("El otro almacén conserva en este móvil cambios sin subir...") y se subirían a nombre de quien entre después, salvo que
+  se vuelva a entrar con el mismo usuario y se sincronice. Cerrar el navegador sin cerrar sesión no vacía nada.
+- La base local NO se vacía (no se vacía) cuando la sesión caduca por sí sola (`SESSION_MAX_MS`: 30 días, o un token revocado/renovación
+  fallida) ni cuando otra persona inicia sesión sin que la anterior haya cerrado la suya: solo "Salir" vacía el móvil. En un móvil
+  compartido hay que usar siempre **Salir** (quien entra sin que se haya salido verá lo descargado por la anterior hasta que su
+  sincronización lo sustituya, y los cambios pendientes de la anterior se subirían a nombre de la nueva persona).
 - Con Supabase Auth, la comprobación de conexión de antes de cada cambio exige también una sesión viva: con la sesión caducada la app
   avisa "La sesión ha caducado" y funciona solo para consultar (solo si el servidor rechaza la sesión; un límite de peticiones, un fallo del servidor o la red se avisan como "Sin conexión"). Si la nube devuelve 0 artículos y hay artículos locales, se conservan
   los locales y el indicador queda en "Sin conexión" (no puede saberse si está de verdad vacía o es una sesión caducada).
 - Al desplegar una versión nueva, la app abierta se recarga sola cuando no hay ventanas abiertas, ni editor del mapa abierto (borrador sin guardar), ni cambios de stock o sincronización
-  en curso. El service worker falla la instalación si no puede guardar `index.html` o `app.js`, y busca solo en la caché de su almacén.
+  en curso, ni cierre de sesión en curso. El service worker falla la instalación si no puede guardar `index.html` o `app.js`, y busca solo en la caché de su almacén.
 - Si la base de datos del móvil no se puede abrir (modo privado, bloqueada, sin espacio) aparece un aviso rojo con el botón Reintentar (si el fallo es otro, el aviso dice que la aplicación no ha podido arrancar). Un aviso de permiso de cámara sin contestar no bloquea el siguiente escaneo (espera máxima de 3 s).
 
 ## Datos que salen a terceros (IA y búsqueda web)

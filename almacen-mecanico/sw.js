@@ -40,40 +40,59 @@ const CDN_SRI = {
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js': 'sha384-SnzOobpRMLXZ52iJvZm/C0fYw0OQemTXzTjIsdsfMcrCtCEe9qgzxTd3RSklO5x2'
 };
 
-// ¿El cuerpo de la respuesta (se lee: pasar una copia) coincide con la huella fijada de esa URL? Sin huella conocida o sin poder calcularla: no.
-async function huellaCoincide(res, url) {
+// Compara el cuerpo de la respuesta (se lee: pasar una copia) con la huella fijada de esa URL. Devuelve {ok, tipo, detalle}:
+// tipo 'ok' (coincide), 'distinta' (hash distinto), 'desconocida' (la URL no tiene huella fijada) o 'lectura' (no se pudo leer o calcular).
+async function huellaEstado(res, url) {
   const esperada = CDN_SRI[url];
-  if (!esperada || typeof crypto === 'undefined' || !crypto.subtle) return false;
+  if (!esperada) return { ok: false, tipo: 'desconocida', detalle: 'sin huella fijada' };
+  if (typeof crypto === 'undefined' || !crypto.subtle) return { ok: false, tipo: 'lectura', detalle: 'crypto.subtle no disponible' };
   try {
     const h = new Uint8Array(await crypto.subtle.digest('SHA-384', await res.arrayBuffer()));
     let s = '';
     for (const b of h) s += String.fromCharCode(b);
-    return 'sha384-' + btoa(s) === esperada;
+    return 'sha384-' + btoa(s) === esperada ? { ok: true, tipo: 'ok' } : { ok: false, tipo: 'distinta', detalle: 'hash distinto' };
   } catch (e) {
-    return false;
+    return { ok: false, tipo: 'lectura', detalle: String((e && e.message) || e) };
   }
 }
 
-// Precarga de una librería externa: solo se guarda si la huella coincide (si no, falla y queda constancia en la consola)
+// Precarga de una librería externa: solo se guarda si la huella coincide (si no, falla y el motivo queda en la consola)
 async function guardarVerificada(cache, url) {
   const res = await fetch(url, { cache: 'reload' });
   if (!res.ok || res.status !== 200) throw new Error('HTTP ' + res.status);
-  if (!(await huellaCoincide(res.clone(), url))) throw new Error('la huella no coincide con la fijada');
+  const h = await huellaEstado(res.clone(), url);
+  if (!h.ok) throw new Error(h.tipo === 'distinta' ? 'hash distinto: la huella no coincide con la fijada' : h.tipo === 'lectura' ? 'error de lectura al comprobar la huella: ' + h.detalle : h.detalle);
   await cache.put(url, res);
 }
 
+// Un fallo de red momentáneo no debe dejar sin guardar una librería: se reintenta hasta 2 veces más, con una pausa corta creciente
+const PRECACHE_REINTENTOS = 2, PRECACHE_PAUSA_MS = 500;
+async function conReintentos(tarea) {
+  let ultimo;
+  for (let i = 0; i <= PRECACHE_REINTENTOS; i++) {
+    try {
+      return await tarea();
+    } catch (e) {
+      ultimo = e;
+      if (i < PRECACHE_REINTENTOS) await new Promise((r) => setTimeout(r, PRECACHE_PAUSA_MS * (i + 1)));
+    }
+  }
+  throw ultimo;
+}
+const motivoDe = (e) => String((e && e.message) || e || 'error desconocido').slice(0, 200);
+
 self.addEventListener('install', (event) => {
-  // Un fichero secundario (librerías, iconos) que falle no impide instalar, pero se deja constancia en la consola.
+  // Un fichero secundario (librerías, iconos) que falle no impide instalar, pero se deja constancia en la consola (con el motivo de cada fallo).
   // Si faltan la página (index.html) o la app (app.js) la instalación FALLA: así no se activa una versión que luego no abre sin conexión
   // y el service worker anterior (si lo hay) sigue funcionando.
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) =>
-      Promise.allSettled(PRECACHE_URLS.map((u) => (u.startsWith('http') ? guardarVerificada(cache, u) : cache.add(new Request(u, { cache: 'reload' })))))
+      Promise.allSettled(PRECACHE_URLS.map((u) => conReintentos(() => (u.startsWith('http') ? guardarVerificada(cache, u) : cache.add(new Request(u, { cache: 'reload' }))))))
     ).then((resultados) => {
-      const fallidos = PRECACHE_URLS.filter((u, i) => resultados[i].status === 'rejected');
-      if (fallidos.length) console.warn('SW: no se pudieron guardar para uso sin conexión:', fallidos.join(', '));
-      const criticos = fallidos.filter((u) => PRECACHE_CRITICOS.includes(u));
-      if (criticos.length) throw new Error('SW: faltan ficheros imprescindibles: ' + criticos.join(', '));
+      const fallidos = PRECACHE_URLS.map((u, i) => ({ u, r: resultados[i] })).filter((x) => x.r.status === 'rejected');
+      if (fallidos.length) console.warn('SW: no se pudieron guardar para uso sin conexión: ' + fallidos.map((x) => x.u + ' (' + motivoDe(x.r.reason) + ')').join(', '));
+      const criticos = fallidos.filter((x) => PRECACHE_CRITICOS.includes(x.u));
+      if (criticos.length) throw new Error('SW: faltan ficheros imprescindibles: ' + criticos.map((x) => x.u).join(', '));
     })
   );
   self.skipWaiting();
@@ -106,8 +125,13 @@ self.addEventListener('fetch', (event) => {
         if (res.ok && res.status === 200) {
           const paraHuella = res.clone(), paraGuardar = res.clone(); // se clonan ya, antes de que la página lea la respuesta
           event.waitUntil(
-            huellaCoincide(paraHuella, req.url)
-              .then((ok) => (ok ? caches.open(CACHE_NAME).then((c) => c.put(req, paraGuardar)) : undefined))
+            huellaEstado(paraHuella, req.url)
+              .then((h) => {
+                if (h.ok) return caches.open(CACHE_NAME).then((c) => c.put(req, paraGuardar));
+                // Una huella conocida que NO coincide (o que no se pudo leer) deja constancia, distinguiendo una de otra; una URL sin huella no avisa
+                if (h.tipo === 'distinta') console.warn('SW: hash distinto, no se guarda en caché (la página aplica su propio SRI): ' + req.url);
+                else if (h.tipo === 'lectura') console.warn('SW: error de lectura al comprobar la huella, no se guarda en caché: ' + req.url + ' (' + h.detalle + ')');
+              })
               .catch((e) => console.warn('SW: no se pudo guardar en caché', req.url, e))
           );
         }

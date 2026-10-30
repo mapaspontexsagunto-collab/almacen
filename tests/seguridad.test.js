@@ -2706,6 +2706,8 @@ ctx.__omReal = ev('openModal');
 const WH_R4 = "var WAREHOUSE_CONFIG={key:'electrico',name:'Almacén Eléctrico',icon:'E',useSupabaseAuth:true}";
 const quitarWH = () => ev('WAREHOUSE_CONFIG=undefined; delete globalThis.WAREHOUSE_CONFIG');
 const esperar = ms => new Promise(r => setTimeout(r, ms));
+// Espera (con tope) a que se cumpla una condición: evita depender de una pausa fija que flaquea con la máquina cargada
+async function esperarHasta(cond, max = 3000) { const t0 = Date.now(); while (!cond() && Date.now() - t0 < max) await esperar(5); }
 // Silencia console.warn/error durante la prueba y los recoge
 function recogerAvisos() {
   const w = console.warn, e = console.error, avisos = [];
@@ -3349,11 +3351,14 @@ const SRI_FIJADOS = {};
     SRI_FIJADOS[src.match(new RegExp(k + "_URL='([^']+)'"))[1]] = src.match(new RegExp(k + "_SRI='([^']+)'"))[1];
   }
 }
-function cargarSW(carpeta, { fallan = [], putFalla = false, fetchFalla = false, malaHuella = [], enCache = [] } = {}) {
+// transitorios = { url: n }: esa URL falla las n primeras veces (cache.add y fetch) y luego funciona; intentos cuenta las llamadas por URL.
+// lecturaFalla: el cuerpo de las respuestas no se puede leer (arrayBuffer rechaza). Los retardos de reintento (< 4 s) se ejecutan al instante.
+function cargarSW(carpeta, { fallan = [], putFalla = false, fetchFalla = false, malaHuella = [], enCache = [], transitorios = {}, lecturaFalla = false } = {}) {
   const codigo = fs.readFileSync(path.join(__dirname, '..', carpeta, 'sw.js'), 'utf8');
-  const handlers = {}, avisos = [], matches = [], puestos = [];
+  const handlers = {}, avisos = [], matches = [], puestos = [], intentos = {};
+  const transitorio = u => { intentos[u] = (intentos[u] || 0) + 1; return !!transitorios[u] && intentos[u] <= transitorios[u]; };
   const cache = {
-    add: async r => { const u = typeof r === 'string' ? r : r.url; if (fallan.includes(u)) throw new TypeError('no disponible: ' + u); },
+    add: async r => { const u = typeof r === 'string' ? r : r.url; if (fallan.includes(u)) throw new TypeError('no disponible: ' + u); if (transitorio(u)) throw new TypeError('fallo transitorio: ' + u); },
     put: async r => { if (putFalla) throw new Error('cuota agotada'); puestos.push(typeof r === 'string' ? r : r.url); }
   };
   const cachesFalsas = {
@@ -3363,7 +3368,7 @@ function cargarSW(carpeta, { fallan = [], putFalla = false, fetchFalla = false, 
     match: async (r, o) => { matches.push(o || {}); const u = typeof r === 'string' ? r : r.url; return enCache.includes(u) ? { ok: true, hit: u } : undefined; }
   };
   // El cuerpo de cada respuesta es su URL (o 'malo'); el crypto falso devuelve la huella fijada de esa URL (o una distinta si es 'malo')
-  const resp = u => ({ ok: true, status: 200, url: u, clone() { return resp(u); }, arrayBuffer: async () => (malaHuella.includes(u) ? 'malo' : u) });
+  const resp = u => ({ ok: true, status: 200, url: u, clone() { return resp(u); }, arrayBuffer: async () => { if (lecturaFalla) throw new Error('lectura rota'); return malaHuella.includes(u) ? 'malo' : u; } });
   const crypto = { subtle: { digest: async (alg, cuerpo) => {
     assert.strictEqual(alg, 'SHA-384');
     return cuerpo === 'malo' || !SRI_FIJADOS[cuerpo] ? new Uint8Array(48).fill(7) : new Uint8Array(Buffer.from(SRI_FIJADOS[cuerpo].slice(7), 'base64'));
@@ -3373,8 +3378,8 @@ function cargarSW(carpeta, { fallan = [], putFalla = false, fetchFalla = false, 
     self: { addEventListener: (t, f) => { handlers[t] = f; }, location: { origin: 'https://x.test' }, skipWaiting() {}, clients: { claim() {} } },
     caches: cachesFalsas, URL, Request: class { constructor(u, o) { this.url = u; this.o = o; } },
     Response: class { constructor(b, o) { this.b = b; this.o = o; } },
-    fetch: async r => { const u = typeof r === 'string' ? r : r.url; if (fetchFalla || fallan.includes(u)) throw new TypeError('sin red: ' + u); return resp(u); },
-    setTimeout: () => 0, console: { warn: (...a) => avisos.push(a.map(String).join(' ')), log() {}, error() {} }
+    fetch: async r => { const u = typeof r === 'string' ? r : r.url; if (fetchFalla || fallan.includes(u)) throw new TypeError('sin red: ' + u); if (transitorio(u)) throw new TypeError('red intermitente: ' + u); return resp(u); },
+    setTimeout: (f, ms) => { if (ms < 4000) setImmediate(f); return 0; }, console: { warn: (...a) => avisos.push(a.map(String).join(' ')), log() {}, error() {} }
   };
   vm.runInNewContext(codigo, caja);
   const instalar = async () => { let p; handlers.install({ waitUntil: x => { p = x; } }); await p; };
@@ -3383,7 +3388,7 @@ function cargarSW(carpeta, { fallan = [], putFalla = false, fetchFalla = false, 
     handlers.fetch({ request: { method: 'GET', url, mode: 'navigate' }, waitUntil: x => esperas.push(x), respondWith: x => { resp = x; } });
     const r = await resp; await Promise.all(esperas); return r;
   };
-  return { instalar, pedir, avisos, matches, puestos };
+  return { instalar, pedir, avisos, matches, puestos, intentos };
 }
 
 for (const carpeta of ['almacen-electrico', 'almacen-mecanico']) {
@@ -3427,27 +3432,30 @@ for (const carpeta of ['almacen-electrico', 'almacen-mecanico']) {
 const LIB_EXCELJS = 'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js';
 const LIB_SUPABASE = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js';
 
-test('R5 SEC-M1: cleanShelves y cleanAisles limitan a 200 elementos y respetan lo normal', () => {
-  const sh = Array.from({ length: 250 }, (_, i) => ({ id: 'S' + i, baldas: 5 }));
-  assert.strictEqual(t.cleanShelves(sh).length, 200);
-  assert.strictEqual(t.cleanShelves(sh.slice(0, 200)).length, 200);
+test('R5 SEC-M1 / R6 W-3: cleanShelves y cleanAisles limitan a 500 elementos y respetan lo normal (incluidas 200 estanterías legítimas)', () => {
+  const sh = Array.from({ length: 600 }, (_, i) => ({ id: 'S' + i, baldas: 5 }));
+  assert.strictEqual(t.cleanShelves(sh).length, 500);
+  assert.strictEqual(t.cleanShelves(sh.slice(0, 500)).length, 500);
+  assert.strictEqual(t.cleanShelves(sh.slice(0, 250)).length, 250, 'antes se recortaba a 200 en silencio');
   assert.strictEqual(t.cleanShelves(sh.slice(0, 26)).length, 26);
-  const ai = Array.from({ length: 300 }, (_, i) => ({ label: 'P' + i, x: i, y: 0, w: 5, h: 5 }));
-  assert.strictEqual(t.cleanAisles(ai).length, 200);
+  const ai = Array.from({ length: 700 }, (_, i) => ({ label: 'P' + i, x: i, y: 0, w: 5, h: 5 }));
+  assert.strictEqual(t.cleanAisles(ai).length, 500);
+  assert.strictEqual(t.cleanAisles(ai.slice(0, 300)).length, 300);
   assert.strictEqual(t.cleanAisles(ai.slice(0, 10)).length, 10);
   // los descartados no gastan cupo: 150 válidos tras 100 basura siguen entrando
   assert.strictEqual(t.cleanAisles([...Array(100).fill(null), ...ai.slice(0, 150)]).length, 150);
 });
 
-test('R5 SEC-M1: como máximo 8 bloques por balda y filas x columnas <= 100 (sin tocar lo normal)', () => {
-  const bloques = Array.from({ length: 12 }, (_, i) => ({ id: 'b' + i, k: 'h', n: 3 }));
+test('R5 SEC-M1 / R6 W-3: hasta 40 bloques por balda y 144 cajones (12 x 12) por gavetero, que es lo que permite el editor', () => {
+  const bloques = Array.from({ length: 50 }, (_, i) => ({ id: 'b' + i, k: 'h', n: 3 }));
   const gav = (rows, cols) => t.cleanShelves([{ id: '01', baldas: 5, layout: { 1: [{ id: 'g', k: 'g', rows, cols }] } }])[0].layout['1'][0];
-  assert.strictEqual(t.cleanShelves([{ id: '01', baldas: 5, layout: { 1: bloques } }])[0].layout['1'].length, 8);
-  assert.strictEqual(t.cleanShelves([{ id: '01', baldas: 5, layout: { 1: bloques.slice(0, 8) } }])[0].layout['1'].length, 8);
+  assert.strictEqual(t.cleanShelves([{ id: '01', baldas: 5, layout: { 1: bloques } }])[0].layout['1'].length, 40);
+  assert.strictEqual(t.cleanShelves([{ id: '01', baldas: 5, layout: { 1: bloques.slice(0, 40) } }])[0].layout['1'].length, 40);
+  assert.strictEqual(t.cleanShelves([{ id: '01', baldas: 5, layout: { 1: bloques.slice(0, 12) } }])[0].layout['1'].length, 12, 'antes se recortaba a 8');
   let g = gav(40, 40);
-  assert.ok(g.rows * g.cols <= 100 && g.rows >= 1 && g.cols >= 1, JSON.stringify(g));
+  assert.ok(g.rows * g.cols <= 144 && g.rows >= 1 && g.cols >= 1, JSON.stringify(g));
   g = gav(12, 12);
-  assert.ok(g.rows * g.cols <= 100, JSON.stringify(g));
+  assert.deepStrictEqual([g.rows, g.cols], [12, 12], 'un gavetero 12 x 12 (el máximo del editor) sobrevive intacto');
   g = gav(10, 10);
   assert.deepStrictEqual([g.rows, g.cols], [10, 10]);
   g = gav(3, 4);
@@ -3470,45 +3478,50 @@ test('R5 SEC-M1: strArr acota cantidad y longitud; cleanNames (categorías, prov
   assert.deepStrictEqual(evj('cleanNames("no")'), []);
   assert.ok(t.cleanItem({ id: 'I1', cats: ctx.__l }).cats.length === 500);
   // la importación de copias pasa por los mismos límites
-  ctx.__wd = { categories: ctx.__l, providers: ctx.__l, shelves: Array.from({ length: 250 }, (_, i) => ({ id: 'S' + i })), aisles: Array.from({ length: 250 }, () => ({ label: 'P' })) };
+  ctx.__wd = { categories: ctx.__l, providers: ctx.__l, shelves: Array.from({ length: 600 }, (_, i) => ({ id: 'S' + i })), aisles: Array.from({ length: 600 }, () => ({ label: 'P' })) };
   const cfg = evj('cfgDeCopia(__wd)');
   assert.strictEqual(cfg.categories.length, 500);
   assert.strictEqual(cfg.providers.length, 500);
-  assert.strictEqual(cfg.shelves.length, 200);
-  assert.strictEqual(cfg.aisles.length, 200);
+  assert.strictEqual(cfg.shelves.length, 500);
+  assert.strictEqual(cfg.aisles.length, 500);
 });
 
 test('R5 SEC-M1: la sincronización aplica los límites a lo que llega de la nube y ya no pide adminPass ni loginCfg', async () => {
   await conR2({}, async () => {
     ctx.__muchas = Array.from({ length: 600 }, (_, i) => i + 'x'.repeat(100));
-    ctx.__sh = Array.from({ length: 250 }, (_, i) => ({ id: 'S' + i, baldas: 5 }));
-    ctx.__ai = Array.from({ length: 250 }, () => ({ label: 'P' }));
+    ctx.__sh = Array.from({ length: 600 }, (_, i) => ({ id: 'S' + i, baldas: 5 }));
+    ctx.__ai = Array.from({ length: 600 }, () => ({ label: 'P' }));
     ev(`items=[];dirtyIds=new Set();__claves=null;
       pushPendingMovements=async()=>{};flushDirty=async()=>{};cloudGetMeta=async()=>[];dbReplaceAll=async()=>{};setCloudStatus=()=>{};
       cloudCfgGetMany=async k=>{__claves=k;return {categories:__muchas,providers:__muchas,shelves:__sh,aisles:__ai};};`);
     await ev('_syncFromCloud(false)');
     assert.strictEqual(ev('categories.length'), 500);
     assert.strictEqual(ev('providers.length'), 500);
-    assert.strictEqual(ev('shelves.length'), 200);
-    assert.strictEqual(ev('aisles.length'), 200);
+    assert.strictEqual(ev('shelves.length'), 500);
+    assert.strictEqual(ev('aisles.length'), 500);
     assert.ok(!evj('__claves').includes('adminPass') && !evj('__claves').includes('loginCfg'), evj('__claves').join());
   });
 });
 
-test('R5 SEC-M1: el editor de distribución no deja pasar de 8 bloques por balda ni de 100 cajones por gavetero', async () => {
+test('R5 SEC-M1 / R6 W-3: el editor de distribución no deja pasar de 40 bloques por balda y llega hasta 12 x 12 = 144 cajones (coherente con el límite al leer)', async () => {
   const dAntes = ev('layoutDraft'), sAntes = ev('layoutShelfId');
   try {
     await conNube({}, async () => {
       ev("shelves=[{id:'01',baldas:5}];layoutShelfId='01';layoutDraft={}");
-      for (let i = 0; i < 10; i++) ev("layAdd(1,'h')");
-      assert.strictEqual(ev("layoutDraft['1'].length"), 8);
-      assert.ok(ev('__toasts').some(m => m.includes('8')), ev('__toasts').join());
-      ev("layoutDraft={'1':[{id:'b',k:'g',rows:12,cols:8}]}");
-      ev("layStep(1,0,'cols',1)"); // 12 x 9 = 108 > 100
-      assert.strictEqual(ev("layoutDraft['1'][0].cols"), 8);
-      ev("layStep(1,0,'rows',-1)");
-      ev("layStep(1,0,'cols',1)"); // 11 x 9 = 99
-      assert.deepStrictEqual(evj("[layoutDraft['1'][0].rows,layoutDraft['1'][0].cols]"), [11, 9]);
+      for (let i = 0; i < 45; i++) ev("layAdd(1,'h')");
+      assert.strictEqual(ev("layoutDraft['1'].length"), 40);
+      assert.ok(ev('__toasts').some(m => m.includes('40')), ev('__toasts').join());
+      assert.strictEqual(ev('MAX_BLOQUES'), 40);
+      assert.strictEqual(ev('MAX_CAJONES'), 144);
+      // el editor permite hasta 12 x 12: justo el límite de lectura, así que nada de lo creado se recorta después
+      ev("layoutDraft={'1':[{id:'b',k:'g',rows:11,cols:12}]}");
+      ev("layStep(1,0,'rows',1)");
+      assert.deepStrictEqual(evj("[layoutDraft['1'][0].rows,layoutDraft['1'][0].cols]"), [12, 12]);
+      ev("layStep(1,0,'cols',1)"); // tope del editor: 12
+      assert.strictEqual(ev("layoutDraft['1'][0].cols"), 12);
+      ctx.__b = evj("layoutDraft['1'][0]");
+      const limpio = evj('cleanBlock(__b)');
+      assert.deepStrictEqual([limpio.rows, limpio.cols], [12, 12], 'lo creado en el editor sobrevive entero a la limpieza');
     });
   } finally { ctx.__d = dAntes; ev('layoutDraft=__d'); ctx.__d = sAntes; ev('layoutShelfId=__d'); }
 });
@@ -3583,30 +3596,28 @@ function excelFalso() {
   return filas;
 }
 
-test('R5 SEC-L8: xlsTexto neutraliza = + - @ (y tabulador/retorno), recorta a 32000 y no toca números', () => {
+test('R6 W-6: xlsTexto ya no antepone comilla (ExcelJS escribe cadenas, nunca fórmulas): textos como "-5 mm" o "+12V" salen intactos', () => {
   const x = v => { ctx.__x = v; return ev('xlsTexto(__x)'); };
-  assert.strictEqual(x('=1+1'), "'=1+1");
-  assert.strictEqual(x('+cmd'), "'+cmd");
-  assert.strictEqual(x('-2+3'), "'-2+3");
-  assert.strictEqual(x('@SUM(A1)'), "'@SUM(A1)");
-  assert.strictEqual(x('\t=1'), "'\t=1");
-  assert.strictEqual(x('\r=1'), "'\r=1");
+  for (const legitimo of ['-5 mm', '+12V', '=', '@casa', '-2+3', '\t=1', '=1+1', '+cmd', '@SUM(A1)']) assert.strictEqual(x(legitimo), legitimo, 'sin tocar: ' + JSON.stringify(legitimo));
   assert.strictEqual(x('Rodamiento 6204'), 'Rodamiento 6204');
   assert.strictEqual(x('a=b'), 'a=b');
   assert.strictEqual(x(null), '');
   assert.strictEqual(x(undefined), '');
   assert.strictEqual(x(0), '0');
   assert.strictEqual(x(''), '');
-  assert.strictEqual(x('x'.repeat(40000)).length, 32000);
-  assert.ok(x('=' + 'x'.repeat(40000)).length <= 32767);
-  assert.ok(x('=' + 'x'.repeat(40000)).startsWith("'="));
-  assert.strictEqual(ev('xlsVal(5)'), 5);
-  assert.strictEqual(ev("xlsVal('=5')"), "'=5");
+  assert.strictEqual(x(-5), '-5', 'se sigue forzando a texto con String()');
+  assert.strictEqual(x('x'.repeat(32000)), 'x'.repeat(32000), 'justo en el límite no se recorta ni se marca');
+  const largo = x('x'.repeat(40000));
+  assert.strictEqual(largo, 'x'.repeat(32000) + ' [recortado]');
+  assert.ok(largo.length <= 32767, 'una celda de más de 32767 corrompe el archivo');
+  assert.ok(x('=' + 'x'.repeat(40000)).endsWith(' [recortado]'));
+  assert.strictEqual(ev('xlsVal(5)'), 5, 'los números siguen siendo números');
+  assert.strictEqual(ev("xlsVal('=5')"), '=5');
   assert.strictEqual(ev("xlsVal('')"), '');
   assert.strictEqual(ev('xlsVal(null)'), '');
 });
 
-test('R5 SEC-L8: el Excel de inventario neutraliza fórmulas y recorta textos enormes (los números siguen siendo números)', async () => {
+test('R5 SEC-L8 / R6 W-6: el Excel de inventario deja los textos tal cual (sin comilla), marca los recortados y mantiene los números', async () => {
   const restaurar = descargaSimulada(), exAntes = ctx.ExcelJS;
   try {
     const filas = excelFalso();
@@ -3619,14 +3630,14 @@ test('R5 SEC-L8: el Excel de inventario neutraliza fórmulas y recorta textos en
     });
     assert.strictEqual(ctx.__blobs.length, 1, 'se generó el Excel');
     const v = filas[1].vals;
-    assert.strictEqual(v[1], "'=HYPERLINK(\"http://x\",\"a\")");
-    assert.deepStrictEqual([v[2], v[3], v[6], v[7], v[8]], ["'+cmd", "'-1", "'@SUM(A1)", 'ok', "'=1+1"]);
-    assert.strictEqual(v[9].length, 32000);
+    assert.strictEqual(v[1], '=HYPERLINK("http://x","a")');
+    assert.deepStrictEqual([v[2], v[3], v[6], v[7], v[8]], ['+cmd', '-1', '@SUM(A1)', 'ok', '=1+1']);
+    assert.strictEqual(v[9], 'n'.repeat(32000) + ' [recortado]');
     assert.deepStrictEqual([v[4], v[5], v[10], v[11]], [3, 1, 2.5, 7.5], 'stock, mínimo, precio y valor siguen siendo números');
   } finally { restaurar(); if (exAntes === undefined) delete ctx.ExcelJS; else ctx.ExcelJS = exAntes; }
 });
 
-test('R5 SEC-L8: el Excel de movimientos neutraliza fórmulas (también la columna de usuario) y no convierte en texto lo numérico', async () => {
+test('R5 SEC-L8 / R6 W-6: el Excel de movimientos deja los textos tal cual (también la columna de usuario) y no convierte en texto lo numérico', async () => {
   const restaurar = descargaSimulada(), exAntes = ctx.ExcelJS, modo = ev('movRangeMode');
   try {
     const filas = excelFalso();
@@ -3642,9 +3653,9 @@ test('R5 SEC-L8: el Excel de movimientos neutraliza fórmulas (también la colum
     });
     assert.strictEqual(ctx.__blobs.length, 1);
     const a = filas[1].vals, b = filas[2].vals;
-    assert.deepStrictEqual([a[5], a[6], a[7], a[12], a[14], a[15]], ["'=cmd|calc", "'@x", "'+1", "'-2", "'=m", "'=evil"]);
+    assert.deepStrictEqual([a[5], a[6], a[7], a[12], a[14], a[15]], ['=cmd|calc', '@x', '+1', '-2', '=m', '=evil'], 'sin comilla: la celda es una cadena, no una fórmula');
     assert.deepStrictEqual([a[8], a[10], a[9]], [5, 4, '-1'], 'las cifras no se prefijan: Antes/Después numéricos y diferencia con su signo');
-    assert.deepStrictEqual([b[8], b[9], b[10]], ["'=1", "'=2", 9], 'un valor de texto que llega de la nube sí se neutraliza');
+    assert.deepStrictEqual([b[8], b[9], b[10]], ['=1', '=2', 9], 'un valor de texto que llega de la nube sigue siendo texto');
   } finally { restaurar(); ctx.__m = modo; ev('movRangeMode=__m'); if (exAntes === undefined) delete ctx.ExcelJS; else ctx.ExcelJS = exAntes; }
 });
 
@@ -3751,8 +3762,8 @@ async function conLimpieza(bases, fn) {
       ev("DB_NAME='almacen_db';WAREHOUSE_CONFIG.db='almacen_db';var WAREHOUSE_OTHER_CONFIG={key:'mecanico',db:'almacen_mec_db'}");
       ev("sb.auth.signOut=async()=>{__orden.push('signOut');__log.push('signOut');return {error:null};}");
       const rl = ctx.location.reload; ctx.location.reload = () => { rl(); log.push('reload'); };
-      try { await fn({ log, creadas, ls }); }
-      finally { ev('delete globalThis.WAREHOUSE_OTHER_CONFIG;_cerrando=false'); }
+      try { await fn({ log, creadas, ls, avisos: rec.avisos }); } // avisos: lo que sale por console.warn/error durante la prueba
+      finally { ev('delete globalThis.WAREHOUSE_OTHER_CONFIG;WAREHOUSE_OTHER_CONFIG=undefined;_cerrando=false'); } // (delete no quita un var de script: se deja en undefined)
     });
   } finally { ctx.indexedDB = idbAntes; ctx.localStorage = lsAntes; ctx.__d = dbn; ev('DB_NAME=__d'); rec.restaurar(); }
 }
@@ -3787,25 +3798,29 @@ test('R5 SEC-L4: sin pendientes se vacía directamente; una base del otro almac�
   });
 });
 
-test('R5 SEC-L4: si no se pudo subir, cancelar no borra nada; aceptar descarta lo pendiente del almacén actual pero NO el de otro almacén con cambios sin subir', async () => {
+test('R5 SEC-L4 / R6 W-2: si no se pudo subir, cancelar no borra nada; aceptar descarta lo pendiente de los DOS almacenes y el aviso cuenta cada uno', async () => {
   const bases = { almacen_db: baseConDatos(true), almacen_mec_db: baseConDatos(true) };
-  await conLimpieza(bases, async ({ log }) => {
+  await conLimpieza(bases, async ({ log, ls }) => {
     ctx.navigator = { onLine: false };
     await ev('logout()');
     // el cuadro de confirmación avisa de que se perderán; no se ha tocado nada
     assert.ok(evj('__opened').includes('modal-confirm'));
-    assert.ok(/perder|borrar/i.test(ctx.__dom['confirm-msg'].textContent), ctx.__dom['confirm-msg'].textContent);
-    assert.ok(ctx.__dom['confirm-msg'].textContent.includes('sin subir'));
+    const msg = ctx.__dom['confirm-msg'].textContent;
+    assert.ok(/perder|borrar/i.test(msg), msg);
+    assert.ok(msg.includes('sin subir'));
+    // actual: 1 movimiento + dirtyIds + dirtyCfg (en memoria) = 3; el otro: 1 movimiento + dirtyIds = 2
+    assert.ok(msg.includes('Quedan 5 cambio(s) sin subir') && msg.includes('este almacén 3, el otro 2'), msg);
     assert.ok(!log.some(x => x.startsWith('clear:')) && ctx.__rl === 0, 'cancelar (no aceptar) no borra');
     assert.strictEqual(bases.almacen_db.items.length, 1);
+    assert.strictEqual(ls.almacen_borrar_pendiente, undefined, 'sin confirmar no se marca el borrado');
     // el usuario acepta
     ctx.__dom['confirm-ok'].onclick();
-    await esperar(100);
+    await esperarHasta(() => ctx.__rl >= 1);
     assert.ok(vacia(bases.almacen_db), 'lo aceptado se descarta: la base del almacén actual queda vacía');
-    assert.strictEqual(bases.almacen_mec_db.items.length, 1, 'el otro almacén tiene cambios sin subir: no se toca');
-    assert.strictEqual(bases.almacen_mec_db.movements.length, 1);
+    assert.ok(vacia(bases.almacen_mec_db), 'y también la del otro almacén (era lo que decía el aviso)');
     assert.strictEqual(ctx.__rl, 1);
     assert.ok(log.indexOf('signOut') < primero(log, 'clear:') && ultimo(log, 'clear:') < log.indexOf('reload'));
+    assert.strictEqual(ls.almacen_borrar_pendiente, undefined, 'tras vaciar bien se quita la marca');
   });
 });
 
@@ -3835,9 +3850,9 @@ test('R5 SEC-L4: aunque borrarDatosLocales lanzara una excepción, la sesión se
   });
 });
 
-test('R5 SEC-L4: la base del otro almacén se conserva por CUALQUIERA de sus pendientes (movimientos o cada cola) y se vacía si no tiene ninguno', async () => {
+const VARIANTES_PEND_OTRO = (() => {
   const valor = (b, k, v) => { b.config.find(r => r.key === k).value = v; };
-  const variantes = {
+  return {
     movimientos: b => { b.movements[0].synced = false; },
     dirtyIds: b => valor(b, 'dirtyIds', ['I1']),
     dirtyDel: b => valor(b, 'dirtyDel', ['I2']),
@@ -3845,14 +3860,55 @@ test('R5 SEC-L4: la base del otro almacén se conserva por CUALQUIERA de sus pen
     dirtyCfg: b => valor(b, 'dirtyCfg', ['shelves']),
     ninguno: () => {},
   };
-  for (const [nombre, poner] of Object.entries(variantes)) {
+})();
+
+test('R6 W-2: los cambios sin subir del OTRO almacén (movimientos o cada cola) se cuentan, se avisan y no se vacía nada hasta aceptar; aceptado, se vacían los dos', async () => {
+  for (const [nombre, poner] of Object.entries(VARIANTES_PEND_OTRO)) {
     const otra = baseConDatos();
     poner(otra);
     const bases = { almacen_db: baseConDatos(), almacen_mec_db: otra };
-    await conLimpieza(bases, async () => { await ev('logout()'); });
-    assert.ok(vacia(bases.almacen_db), nombre + ': el almacén actual se vacía');
-    if (nombre === 'ninguno') assert.ok(vacia(otra), 'sin pendientes también se vacía el otro');
-    else { assert.strictEqual(otra.items.length, 1, nombre + ': el otro almacén se conserva'); assert.strictEqual(otra.movements.length, 1, nombre); }
+    await conLimpieza(bases, async ({ log }) => {
+      await ev('logout()');
+      if (nombre === 'ninguno') {
+        assert.ok(vacia(bases.almacen_db) && vacia(otra), 'sin pendientes en ninguno se vacían los dos directamente');
+        assert.ok(!evj('__opened').includes('modal-confirm'));
+        return;
+      }
+      assert.ok(evj('__opened').includes('modal-confirm'), nombre + ': hay que preguntar (antes se conservaba en silencio)');
+      const msg = ctx.__dom['confirm-msg'].textContent;
+      assert.ok(msg.includes('Quedan 1 cambio(s) sin subir') && msg.includes('este almacén 0, el otro 1'), nombre + ': ' + msg);
+      assert.ok(/otro almac[eé]n/.test(msg) && msg.includes('SE PERDERÁN'), msg);
+      assert.ok(!log.some(x => x.startsWith('clear:')) && ctx.__rl === 0 && !evj('__orden').includes('signOut'), nombre + ': sin aceptar no se toca nada');
+      assert.strictEqual(otra.items.length, 1);
+      ctx.__dom['confirm-ok'].onclick();
+      await esperarHasta(() => ctx.__rl >= 1);
+      assert.ok(vacia(bases.almacen_db) && vacia(otra), nombre + ': aceptado se descartan los dos');
+      assert.strictEqual(ctx.__rl, 1);
+    });
+  }
+});
+
+test('R6 W-2: si el otro almacén recibe cambios mientras se cierra la sesión, se conserva (nunca se pierde en silencio) y se avisa con un aviso visible', async () => {
+  for (const [nombre, poner] of Object.entries(VARIANTES_PEND_OTRO)) {
+    const otra = baseConDatos();
+    const bases = { almacen_db: baseConDatos(), almacen_mec_db: otra };
+    const alertas = [], alAntes = ctx.alert;
+    ctx.alert = m => { alertas.push(String(m)); };
+    try {
+      await conLimpieza(bases, async ({ ls }) => {
+        ctx.__poner = () => poner(otra);
+        ev("sb.auth.signOut=async()=>{__orden.push('signOut');__log.push('signOut');__poner();return {error:null};}");
+        await ev('logout()');
+        assert.ok(vacia(bases.almacen_db), nombre + ': el actual se vacía');
+        assert.strictEqual(ls.almacen_borrar_pendiente, undefined, nombre + ': que se conserve no es un fallo: la marca se quita');
+        if (nombre === 'ninguno') { assert.ok(vacia(otra)); assert.strictEqual(alertas.length, 0); return; }
+        assert.strictEqual(otra.items.length, 1, nombre + ': el otro almacén se conserva');
+        assert.strictEqual(otra.movements.length, 1, nombre);
+        assert.ok(ev('__toasts').some(m => /otro almac[eé]n/.test(m) && m.includes('sin subir')), nombre + ': ' + ev('__toasts').join('|'));
+        assert.ok(alertas.some(m => /otro almac[eé]n/.test(m)), nombre + ': aviso visible antes de recargar');
+        assert.strictEqual(ctx.__rl, 1);
+      });
+    } finally { ctx.alert = alAntes; }
   }
 });
 
@@ -3952,4 +4008,468 @@ test('R5 documentación: SEGURIDAD.md ya no contiene afirmaciones que el código
   assert.ok(!src.includes('supabase_seguridad.sql'), 'los avisos de la app no deben remitir a un fichero SQL que ya no existe');
   for (const nuevo of ['IndexedDB', 'PKCE', 'Content-Security-Policy', 'bright-worker', 'Brave', 'savePrintedIds'])
     assert.ok(d.includes(nuevo), 'falta documentar: ' + nuevo);
+});
+
+// ===== Arreglos de la revisión ECC (bloque R6) =====
+const FLAG = 'almacen_borrar_pendiente';
+
+test('R6 documentación: SEGURIDAD.md describe la marca de borrado, lo que NO se vacía, los límites nuevos y el Excel sin comilla', () => {
+  const d = fs.readFileSync(path.join(__dirname, '..', 'SEGURIDAD.md'), 'utf8');
+  for (const nuevo of [FLAG, 'SESSION_MAX_MS', 'detectSessionInUrl', '[recortado]', 'Se recortarán', 'no existe ninguna exportación CSV', 'hash distinto'])
+    assert.ok(d.includes(nuevo), 'falta documentar: ' + nuevo);
+  for (const viejo of ['se le antepone una comilla simple', '8 bloques por balda', 'como máximo 200 estanterías', 'y 100 cajones'])
+    assert.ok(!d.includes(viejo), 'afirmación obsoleta: ' + viejo);
+  assert.ok(/no se vac[ií]a/i.test(d) && /Salir/.test(d), 'caducidad de sesión y cambio de usuario sin cerrar sesión');
+});
+
+// ---- W-1: borrado a prueba de cierres, con avisos y sin bloqueos
+test('R6 W-1: la marca de borrado se escribe ANTES de cerrar la sesión (si la app muere ahí, al arrancar se vacía) y se quita tras vaciar bien', async () => {
+  const bases = { almacen_db: baseConDatos(), almacen_mec_db: baseConDatos() };
+  await conLimpieza(bases, async ({ ls }) => {
+    ctx.__marca = 'sin leer';
+    ev("sb.auth.signOut=async()=>{__orden.push('signOut');__log.push('signOut');__marca=localStorage.getItem('almacen_borrar_pendiente');return {error:null};}");
+    await ev('logout()');
+    assert.strictEqual(ctx.__marca, '1', 'cuando se cierra la sesión la marca ya está escrita');
+    assert.strictEqual(ls[FLAG], undefined, 'tras vaciar sin errores se quita');
+    assert.ok(vacia(bases.almacen_db) && vacia(bases.almacen_mec_db));
+  });
+});
+
+test('R6 W-1: con la subida fallida y sin aceptar no se escribe la marca; sin conexión y aceptando sí (antes de cerrar la sesión)', async () => {
+  const bases = { almacen_db: baseConDatos(true), almacen_mec_db: baseConDatos() };
+  await conLimpieza(bases, async ({ ls, avisos }) => {
+    ctx.navigator = { onLine: false };
+    await ev('logout()');
+    assert.strictEqual(ls[FLAG], undefined, 'pendiente de confirmar: nada se marca');
+    ctx.__marca = 'sin leer';
+    ev("sb.auth.signOut=async()=>{__orden.push('signOut');__log.push('signOut');__marca=localStorage.getItem('almacen_borrar_pendiente');return {error:null};}");
+    ctx.__dom['confirm-ok'].onclick();
+    await esperarHasta(() => ctx.__rl >= 1);
+    assert.strictEqual(ctx.__marca, '1');
+    assert.strictEqual(ls[FLAG], undefined, 'tras vaciar bien se quita la marca: ' + avisos.join('|'));
+  });
+});
+
+test('R6 W-1: si el vaciado falla la marca se CONSERVA, se avisa con toast y alert antes de recargar, y la sesión ya está cerrada', async () => {
+  for (const modo of ['abrir lanza', 'una sola base falla', 'borrarDatosLocales lanza']) {
+    const bases = { almacen_db: baseConDatos(), almacen_mec_db: baseConDatos() };
+    const alertas = [], alAntes = ctx.alert;
+    ctx.alert = m => { alertas.push(String(m)); };
+    try {
+      await conLimpieza(bases, async ({ ls, avisos }) => {
+        const base = ctx.indexedDB;
+        if (modo === 'abrir lanza') ctx.indexedDB = { open() { throw new Error('modo privado'); } };
+        if (modo === 'una sola base falla') ctx.indexedDB = { open(n, v) { if (n === 'almacen_mec_db') throw new Error('bloqueada'); return base.open(n, v); } };
+        const parar = modo === 'borrarDatosLocales lanza';
+        if (parar) ev("var __bdl=borrarDatosLocales;borrarDatosLocales=async()=>{throw new Error('boom')}");
+        try { await ev('logout()'); } finally { if (parar) ev('borrarDatosLocales=__bdl'); }
+        assert.strictEqual(ls[FLAG], '1', modo + ': la marca sigue para reintentar al arrancar: ' + avisos.join('|') + ' / ' + evj('__orden'));
+        assert.ok(evj('__orden').includes('signOut'), modo + ': la sesión se cerró');
+        assert.ok(ev('__toasts').some(m => m.includes('No se pudieron borrar')), modo + ': ' + ev('__toasts').join('|'));
+        assert.ok(alertas.some(m => m.includes('No se pudieron borrar')), modo + ': alert visible antes de recargar');
+        assert.strictEqual(ctx.__rl, 1, modo + ': se recarga igualmente');
+        if (modo === 'una sola base falla') assert.ok(vacia(bases.almacen_db), 'la base que sí se pudo vaciar queda vacía');
+      });
+    } finally { ctx.alert = alAntes; }
+  }
+});
+
+test('R6 W-1: un vaciado o un signOut colgados no bloquean el cierre (tiempo límite) y la marca sigue puesta', async () => {
+  const bases = { almacen_db: baseConDatos() };
+  const v0 = ev('VACIAR_MS'), s0 = ev('SIGNOUT_MS');
+  const alertas = [], alAntes = ctx.alert;
+  ctx.alert = m => { alertas.push(String(m)); };
+  try {
+    await conLimpieza(bases, async ({ ls }) => {
+      ev('VACIAR_MS=50;SIGNOUT_MS=50');
+      ctx.indexedDB = { open() { return {}; } }; // nunca responde (ni onsuccess ni onerror)
+      ev("sb.auth.signOut=()=>new Promise(()=>{})"); // tampoco responde
+      const t0 = Date.now();
+      await Promise.race([ev('logout()'), esperar(2500)]); // la carrera hace que, si se cuelga, el fallo sea una aserción y no un bloqueo de toda la suite
+      assert.ok(Date.now() - t0 < 2000, 'no se queda esperando para siempre: ' + (Date.now() - t0) + ' ms');
+      assert.strictEqual(ctx.__rl, 1, 'se recarga');
+      assert.strictEqual(ls[FLAG], '1', 'el vaciado no se pudo confirmar: se reintenta al arrancar');
+      assert.ok(alertas.some(m => m.includes('No se pudieron borrar')));
+      assert.ok(!Object.keys(ls).some(k => /^sb-.*-auth-token/.test(k)), 'aunque el signOut no responda se quita el token guardado');
+    });
+  } finally { ctx.alert = alAntes; ev('VACIAR_MS=' + v0 + ';SIGNOUT_MS=' + s0); }
+});
+
+test('R6 W-1: si la página no llega a recargarse, _cerrando no se queda en true para siempre', async () => {
+  const bases = { almacen_db: baseConDatos() };
+  await conLimpieza(bases, async () => {
+    ctx.location.reload = () => { throw new Error('recarga bloqueada'); };
+    await assert.rejects(async () => { await ev('logout(true)'); }, /recarga bloqueada/);
+    assert.strictEqual(ev('_cerrando'), false, 'sin recarga la app puede volver a sincronizar');
+    assert.strictEqual(ev('_saliendo'), false);
+  });
+});
+
+test('R6 W-1: cerrar sesión borra también los restos del acceso antiguo (almacen_auth_cache, almacen_login) y un fallo al borrar el historial de búsqueda NO se traga', async () => {
+  const bases = { almacen_db: baseConDatos() };
+  await conLimpieza(bases, async ({ ls, avisos }) => {
+    ls.almacen_auth_cache = '{"hash":"x"}'; ls.almacen_login = 'ana';
+    const orig = ctx.localStorage;
+    // fachada: lista las mismas claves, pero borrar el historial del almacén eléctrico lanza (el objetivo del Proxy es un {} para no chocar con las invariantes de Proxy)
+    ctx.localStorage = new Proxy({}, {
+      get: (_, p) => (p === 'removeItem' ? k => { if (k === 'almacen_search_history_electrico') throw new Error('almacenamiento bloqueado'); return orig.removeItem(k); } : orig[p]),
+      ownKeys: () => Object.keys(orig),
+      getOwnPropertyDescriptor: (_, p) => (Object.keys(orig).includes(p) ? { value: orig[p], enumerable: true, configurable: true, writable: true } : undefined),
+    });
+    try { await ev('logout()'); } finally { ctx.localStorage = orig; }
+    assert.strictEqual(ls.almacen_auth_cache, undefined, 'huellas de contraseñas antiguas fuera: ' + avisos.join('|'));
+    assert.strictEqual(ls.almacen_login, undefined);
+    assert.ok(ls.almacen_search_history_electrico !== undefined, 'este es el que no se pudo borrar');
+    assert.strictEqual(ls.almacen_search_history_mecanico, undefined, 'los demás sí');
+    assert.strictEqual(ctx.__rl, 1);
+    assert.ok(avisos.some(a => a.includes('almacen_search_history_electrico') && a.includes('almacenamiento bloqueado')), 'queda constancia en consola: ' + avisos.join('|'));
+  });
+});
+
+test('R6 W-1: una recarga del service worker no puede ocurrir con el cierre de sesión en curso (_swPuedeRecargar)', async () => {
+  const cerrando0 = ev('_cerrando');
+  ctx.document.querySelector = () => null;
+  try {
+    await conR2({}, async () => {
+      ev('_stockBusy=false;_syncing=false;_saliendo=false;_cerrando=false;mapEditing=false');
+      assert.strictEqual(ev('_swPuedeRecargar()'), true);
+      ev('_cerrando=true');
+      assert.strictEqual(ev('_swPuedeRecargar()'), false, 'vaciando la base no se recarga');
+    });
+  } finally { delete ctx.document.querySelector; ctx.__c = cerrando0; ev('_cerrando=__c'); }
+});
+
+test('R6 W-1: una sincronización en vuelo deja de escribir en el móvil en cuanto empieza el cierre (no reescribe lo vaciado)', async () => {
+  const cerrando0 = ev('_cerrando');
+  try {
+    await conR2({}, async () => {
+      ev(`items=[];dirtyIds=new Set();__rep=0;__cfgW=[];_cerrando=false;
+        pushPendingMovements=async()=>{};flushDirty=async()=>{};setCloudStatus=()=>{};
+        cloudGetMeta=async()=>{_cerrando=true;return [];};  // la orden de cerrar llega mientras se leía la nube
+        dbReplaceAll=async()=>{__rep++};cloudCfgGetMany=async()=>({categories:['X'],shelves:[{id:'01',baldas:2}]});
+        cfgPut=async(k)=>{__cfgW.push(k)};`);
+      await ev('_syncFromCloud(false)');
+      assert.strictEqual(ev('__rep'), 0, 'no se reescriben los artículos');
+      assert.deepStrictEqual(evj('__cfgW'), [], 'ni la configuración');
+      // la orden llega justo al leer la configuración
+      ev(`_cerrando=false;cloudGetMeta=async()=>[];cloudCfgGetMany=async()=>{_cerrando=true;return {categories:['X'],shelves:[{id:'01',baldas:2}],aisles:[{label:'P'}],providers:['Q'],printedIds:['I1'],modifiedIds:['I2'],mapSize:{w:20,h:20}};};`);
+      await ev('_syncFromCloud(false)');
+      assert.deepStrictEqual(evj('__cfgW'), [], 'tampoco la configuración leída tarde');
+      assert.strictEqual(ev('__rep'), 1, 'sin cierre en curso al escribir artículos sí se escribe (control)');
+    });
+  } finally { ctx.__c = cerrando0; ev('_cerrando=__c'); }
+});
+
+// Arranque en un contexto APARTE (el handler de DOMContentLoaded se captura) con localStorage espiado y IndexedDB simulada
+function arranqueAparte({ ls: datos = {}, bases = {}, idb } = {}) {
+  const log = [], handlers = {}, cuerpo = [];
+  const ls = Object.assign({}, datos);
+  for (const [k, f] of Object.entries({ getItem: k => { log.push('get:' + k); return k in ls ? ls[k] : null; }, setItem: (k, v) => { ls[k] = String(v); }, removeItem: k => { delete ls[k]; } })) Object.defineProperty(ls, k, { value: f, enumerable: false });
+  const { indexedDB } = idbFalsa(bases, log);
+  const c2 = vm.createContext({
+    console, setTimeout, clearTimeout, Date, JSON, Math, Promise,
+    document: { addEventListener: (t, f) => { handlers[t] = f; }, getElementById: () => el, querySelectorAll: () => [], createElement: () => ({ style: {} }), body: { appendChild: x => cuerpo.push(x) } },
+    window: {}, navigator: {}, location: { reload: noop }, localStorage: ls, sessionStorage: { getItem: () => null, setItem: noop, removeItem: noop },
+    indexedDB: idb || indexedDB, crypto: {}, fetch: async () => ({ ok: false }), alert: noop, confirm: () => true,
+    Intl, URL, Blob: function () {}, FileReader: function () {}, Image: function () {},
+  });
+  vm.runInContext("var WAREHOUSE_CONFIG={key:'electrico',name:'Almacén Eléctrico',icon:'E',db:'almacen_db',useSupabaseAuth:true};var WAREHOUSE_OTHER_CONFIG={key:'mecanico',name:'Almacén Mecánico',icon:'M',db:'almacen_mec_db'};\n" + src, c2);
+  return { handlers, log, ls, cuerpo };
+}
+
+test('R6 W-1: al arrancar con la marca puesta se vacía ANTES de mirar la sesión o abrir la base, y después se quita la marca y se continúa', async () => {
+  const bases = { almacen_db: baseConDatos(true), almacen_mec_db: baseConDatos(true) };
+  const a = arranqueAparte({ ls: { [FLAG]: '1', almacen_search_history_electrico: '["x"]', almacen_auth_cache: 'h' }, bases });
+  assert.ok(a.handlers.DOMContentLoaded, 'el arranque se engancha a DOMContentLoaded');
+  await a.handlers.DOMContentLoaded();
+  assert.ok(vacia(bases.almacen_db) && vacia(bases.almacen_mec_db), 'quedaba la base de la persona anterior: se vacía (las dos)');
+  assert.strictEqual(a.ls[FLAG], undefined, 'marca quitada');
+  assert.strictEqual(a.ls.almacen_search_history_electrico, undefined);
+  assert.strictEqual(a.ls.almacen_auth_cache, undefined);
+  const iSesion = a.log.indexOf('get:almacen_sesion_sb');
+  assert.ok(iSesion > ultimo(a.log, 'clear:'), 'primero se vacía y solo después se comprueba la sesión: ' + a.log.join());
+  assert.strictEqual(a.cuerpo.length, 0, 'sin aviso de bloqueo');
+});
+
+test('R6 W-1: si al arrancar no se puede vaciar, aparece un aviso visible que bloquea el arranque y la marca se conserva', async () => {
+  const rec = recogerAvisos();
+  try {
+    const a = arranqueAparte({ ls: { [FLAG]: '1' }, idb: { open() { throw new Error('modo privado'); } } });
+    await a.handlers.DOMContentLoaded();
+    assert.strictEqual(a.ls[FLAG], '1', 'se reintentará en el siguiente arranque');
+    assert.ok(!a.log.includes('get:almacen_sesion_sb'), 'no se sigue con el arranque (no se mira la sesión ni se abre la base)');
+    assert.strictEqual(a.cuerpo.length, 1, 'un aviso en pantalla');
+    assert.ok(a.cuerpo[0].textContent.includes('No se pudieron borrar los datos del usuario anterior, cierra la app y vuelve a abrirla'), a.cuerpo[0].textContent);
+  } finally { rec.restaurar(); }
+});
+
+test('R6 W-1: sin marca el arranque no vacía nada ni cambia su orden habitual', async () => {
+  const bases = { almacen_db: baseConDatos(true) };
+  const a = arranqueAparte({ bases });
+  await a.handlers.DOMContentLoaded();
+  assert.strictEqual(bases.almacen_db.items.length, 1, 'no se toca la base');
+  assert.ok(!a.log.some(x => x.startsWith('clear:')));
+  assert.ok(a.log.includes('get:almacen_sesion_sb'));
+  assert.strictEqual(a.cuerpo.length, 0);
+});
+
+// ---- W-2: los pendientes del OTRO almacén también cuentan
+test('R6 W-2: contarPendientesDetalle suma por separado este almacén y el otro (contarPendientes = total); si el otro no se puede leer cuenta 0 y lo dice en consola', async () => {
+  const bases = { almacen_db: baseConDatos(), almacen_mec_db: baseConDatos(true) };
+  await conLimpieza(bases, async ({ avisos }) => {
+    assert.deepStrictEqual(norm(await ev('contarPendientesDetalle()')), { actual: 3, otro: 2 });
+    assert.strictEqual(await ev('contarPendientes()'), 5);
+    ctx.indexedDB = { open() { throw new Error('bloqueada'); } };
+    assert.deepStrictEqual(norm(await ev('contarPendientesDetalle()')), { actual: 3, otro: 0 });
+    assert.ok(avisos.some(a => /otro almac[eé]n/i.test(a)), avisos.join('|'));
+  });
+});
+
+// ---- W-3: los límites no recortan en silencio lo legítimo ni suben nunca lo recortado a la nube
+const SHELF_GRANDE = () => ({ id: '01', name: 'E1', baldas: 5, layout: {
+  1: Array.from({ length: 40 }, (_, i) => ({ id: 'h' + i, k: 'h', n: 3 })),
+  2: [{ id: 'g1', k: 'g', rows: 12, cols: 12, name: 'Gavetero' }] } });
+const subidasConfig = () => evj('__calls').filter(c => c[0] === 'upsert' && c[1] === 'config');
+
+test('R6 W-3: una balda con 40 bloques y un gavetero de 144 cajones sobrevive a la sincronización intacta, sin avisos ni escrituras a la nube', async () => {
+  ctx.__ra = ev('_recorteAviso');
+  const rec = recogerAvisos();
+  try {
+    await conR2({}, async () => {
+      ctx.__sh = [SHELF_GRANDE()];
+      ev(`_recorteAviso=false;items=[];dirtyIds=new Set();
+        pushPendingMovements=async()=>{};flushDirty=async()=>{};cloudGetMeta=async()=>[];dbReplaceAll=async()=>{};setCloudStatus=()=>{};
+        cloudCfgGetMany=async()=>({shelves:__sh});`);
+      await ev('_syncFromCloud(false)');
+      assert.deepStrictEqual(evj('shelves[0].layout'), SHELF_GRANDE().layout, 'la distribución llega entera');
+      assert.deepStrictEqual(evj('__cfg.shelves[0].layout'), SHELF_GRANDE().layout, 'y se guarda entera en el móvil');
+      assert.strictEqual(subidasConfig().length, 0, 'nada se escribe en la nube al sincronizar');
+      assert.ok(!ev('__toasts').some(m => m.includes('recortado')), 'sin aviso de recorte');
+    });
+  } finally { rec.restaurar(); ev('_recorteAviso=__ra'); }
+  assert.ok(!rec.avisos.some(a => /recortad/i.test(a)), rec.avisos.join('|'));
+});
+
+test('R6 W-3: lo que sí supera los límites se recorta al sincronizar con UN aviso por sesión (y consola), sin escribir nada en la nube', async () => {
+  ctx.__ra = ev('_recorteAviso');
+  const rec = recogerAvisos();
+  try {
+    await conR2({}, async () => {
+      ctx.__muchas = Array.from({ length: 700 }, (_, i) => 'C' + i);
+      ctx.__sh = Array.from({ length: 600 }, (_, i) => ({ id: 'S' + i, baldas: 5 }));
+      ctx.__sh[0].layout = { 1: Array.from({ length: 50 }, (_, i) => ({ id: 'h' + i, k: 'h', n: 3 })) };
+      ev(`_recorteAviso=false;items=[];dirtyIds=new Set();
+        pushPendingMovements=async()=>{};flushDirty=async()=>{};cloudGetMeta=async()=>[];dbReplaceAll=async()=>{};setCloudStatus=()=>{};
+        cloudCfgGetMany=async()=>({categories:__muchas,shelves:__sh});`);
+      await ev('_syncFromCloud(false)');
+      assert.strictEqual(ev('categories.length'), 500);
+      assert.strictEqual(ev('shelves.length'), 500);
+      assert.strictEqual(ev("shelves[0].layout['1'].length"), 40);
+      assert.strictEqual(ev('__toasts').filter(m => m.includes('Se han recortado datos de configuración demasiado grandes; revisa estanterías/categorías')).length, 1);
+      await ev('_syncFromCloud(false)');
+      assert.strictEqual(ev('__toasts').filter(m => m.includes('recortado')).length, 1, 'el aviso sale una sola vez por sesión');
+      assert.strictEqual(subidasConfig().length, 0, 'lo recortado jamás se sube a la nube desde la carga o la sincronización');
+    });
+  } finally { rec.restaurar(); ev('_recorteAviso=__ra'); }
+  const w = rec.avisos.filter(a => /recortad/i.test(a));
+  assert.strictEqual(w.length, 2, 'una advertencia en consola por cada lectura: ' + rec.avisos.join('|'));
+  assert.ok(w[0].includes('200 categorías') && w[0].includes('100 estanterías') && w[0].includes('10 bloques'), w[0]);
+});
+
+test('R6 W-3: al cargar la configuración guardada en el móvil (init) también se avisa una vez y no se escribe en la nube', async () => {
+  ctx.__ra = ev('_recorteAviso');
+  const rec = recogerAvisos();
+  try {
+    await conR2({}, async () => {
+      await conStubs(['openDB', 'initSupabase', 'renderHomeMovements', 'syncFromCloud', 'appReady', 'items'], async () => {
+        ctx.__muchas = Array.from({ length: 700 }, (_, i) => 'C' + i);
+        ctx.__sh = Array.from({ length: 600 }, (_, i) => ({ id: 'S' + i, baldas: 5 }));
+        ev(`_recorteAviso=false;__cfg.categories=__muchas;__cfg.shelves=__sh;
+          openDB=async()=>{};initSupabase=()=>true;renderHomeMovements=()=>{};syncFromCloud=async()=>{};`);
+        await ev('init()');
+        assert.strictEqual(ev('categories.length'), 500);
+        assert.strictEqual(ev('shelves.length'), 500);
+        assert.strictEqual(ev('__toasts').filter(m => m.includes('recortado')).length, 1);
+        assert.strictEqual(subidasConfig().length, 0);
+      });
+    });
+  } finally { rec.restaurar(); ev('_recorteAviso=__ra'); }
+  assert.ok(rec.avisos.some(a => /recortad/i.test(a) && a.includes('100 estanterías')), rec.avisos.join('|'));
+});
+
+test('R6 W-3: ni init ni la sincronización llaman a cloudCfgPut con lo limpiado (solo la siembra de estanterías cuando la nube no tiene ninguna)', () => {
+  const ini = src.slice(src.indexOf('async function init()'), src.indexOf('// Trae todo desde Supabase'));
+  assert.ok(!ini.includes('cloudCfgPut'), 'init no sube nada');
+  const sync = src.slice(src.indexOf('async function _syncFromCloud'), src.indexOf('// ===== FOTOS BAJO DEMANDA'));
+  const usos = sync.match(/cloudCfgPut\(/g) || [];
+  assert.strictEqual(usos.length, 1, 'un único uso en la sincronización');
+  assert.ok(/else if\(cShelves!==undefined\)\{await cloudCfgPut\('shelves',shelves\);\}/.test(sync), 'es la siembra de estanterías (la nube no tenía ninguna)');
+});
+
+// ---- W-4: restaurar una copia dice exactamente qué se recortará
+test('R6 W-4: la confirmación de importar una copia enumera lo que se recortará (estanterías, categorías, bloques, cajones, etiquetas) y no dice nada si no se recorta nada', async () => {
+  await conR2({}, async () => {
+    vm.runInContext('globalThis.WAREHOUSE_CONFIG=' + ELE_R2 + ';globalThis.WAREHOUSE_OTHER_CONFIG=' + MEC_R2, ctx);
+    try {
+      const shelves = Array.from({ length: 600 }, (_, i) => ({ id: 'S' + i, baldas: 5 }));
+      shelves[0].layout = { 1: Array.from({ length: 50 }, (_, i) => ({ id: 'h' + i, k: 'h', n: 3 })) };
+      shelves[1].layout = { 2: [{ id: 'g', k: 'g', rows: 40, cols: 40 }] };
+      const grande = { version: 4, warehouse: 'electrico', items: [{ id: 'I1', name: 'A', stock: 2 }], categories: Array.from({ length: 600 }, (_, i) => 'C' + i), shelves, printedIds: ['I1', '<mal>'] };
+      await importarTexto(JSON.stringify(grande));
+      let msg = ev("document.getElementById('confirm-msg').textContent");
+      assert.ok(msg.includes('Se recortarán: '), msg);
+      for (const parte of ['100 categorías', '100 estanterías', '10 bloques', '1480 cajones', '1 etiqueta impresa']) assert.ok(msg.includes(parte), parte + ' en: ' + msg);
+      assert.strictEqual(ev('__calls.length'), 0, 'hasta confirmar no se toca nada');
+      // una copia normal no menciona recortes
+      await importarTexto(JSON.stringify({ version: 4, warehouse: 'electrico', items: [{ id: 'I1', name: 'A', stock: 2 }], categories: ['A', 'B'], shelves: [SHELF_GRANDE()], printedIds: ['I1'] }));
+      msg = ev("document.getElementById('confirm-msg').textContent");
+      assert.ok(!msg.includes('recortar'), msg);
+      // las dos almacenes: se dice de cuál es cada recorte
+      await importarTexto(JSON.stringify({ version: 4, warehouses: { electrico: { items: [{ id: 'I1' }], shelves }, mecanico: { items: [{ id: 'M1' }], categories: ['x'] } } }));
+      msg = ev("document.getElementById('confirm-msg').textContent");
+      assert.ok(msg.includes('Se recortarán: ') && msg.includes('Almacén Eléctrico') && msg.includes('100 estanterías') && !msg.includes('Almacén Mecánico'), msg);
+    } finally {
+      vm.runInContext('globalThis.WAREHOUSE_CONFIG=undefined;globalThis.WAREHOUSE_OTHER_CONFIG=undefined', ctx);
+    }
+  });
+});
+
+// ---- W-5: categorías nuevas cortadas a 60, con tope de 500 y el artículo conserva el mismo nombre
+test('R6 W-5: cleanItem corta la categoría a 60 como la lista de categorías, para que el artículo siga coincidiendo', () => {
+  const larga = 'Categoría '.repeat(20);
+  assert.strictEqual(t.cleanItem({ id: 'I1', cat: larga }).cat, larga.slice(0, 60));
+  assert.strictEqual(t.cleanItem({ id: 'I1', cat: 'a<b>c' }).cat, 'abc', 'el resto de la limpieza sigue igual');
+  assert.strictEqual(ev('cleanNames(["' + larga + '"])[0]'), larga.slice(0, 60));
+  assert.strictEqual(t.cleanItem({ id: 'I1', name: larga }).name, larga.replace(/[<>]/g, ''), 'solo la categoría se corta');
+});
+
+test('R6 W-5: al crear una categoría nueva se corta a 60 y con 500 ya creadas se rechaza con aviso sin guardar nada', async () => {
+  const form = o => Object.assign({ 'f-name': { value: 'Tornillo' }, 'f-cat': { value: '__new__' }, 'f-newcat': { value: 'Z'.repeat(100) }, 'f-shelf': { value: '01' }, 'f-balda': { value: '1' }, 'f-stock': { value: '0' }, 'f-min': { value: '2' }, 'f-precio': { value: '' }, 'f-precio-group': { style: { display: '' } } }, o);
+  const cp = ev('cloudPut'); ctx.__cp0 = cp;
+  try {
+    await conR2({ dom: form() }, async () => {
+      ev("categories=['A'];selectedExtraCats=new Set();_invCreateIdx=null;pendingPhoto=null;photoRemoved=false;_formStock0=0;_invoiceAfterSave=async()=>{};cloudPut=async it=>{__calls.push(['put',it]);return true;};items=[];editingId=null");
+      await ev('_saveItem()');
+      const cats = evj('categories');
+      assert.strictEqual(cats.length, 2);
+      assert.strictEqual(cats[1], 'Z'.repeat(60), 'la categoría nueva se corta a 60 al crearla');
+      assert.strictEqual(evj('__cfg.categories')[1], 'Z'.repeat(60));
+      assert.strictEqual(evj('__calls').find(c => c[0] === 'put')[1].cat, 'Z'.repeat(60), 'el artículo lleva el mismo nombre');
+    });
+    await conR2({ dom: form() }, async () => {
+      ctx.__500 = Array.from({ length: 500 }, (_, i) => 'C' + i);
+      ev("categories=__500.slice();selectedExtraCats=new Set();_invCreateIdx=null;pendingPhoto=null;photoRemoved=false;_formStock0=0;_invoiceAfterSave=async()=>{};cloudPut=async it=>{__calls.push(['put',it]);return true;};items=[];editingId=null");
+      await ev('_saveItem()');
+      assert.strictEqual(ev('categories.length'), 500, 'no se añade la 501');
+      assert.ok(ev('__toasts').some(m => m.includes('500') && /categor/i.test(m)), ev('__toasts').join('|'));
+      assert.strictEqual(evj('__calls').length, 0, 'ni artículo ni configuración en la nube');
+      assert.strictEqual(ev('__cfg.categories'), undefined, 'ni en el móvil');
+    });
+    // con 500 una categoría que ya existe sigue funcionando
+    await conR2({ dom: form({ 'f-cat': { value: 'C7' } }) }, async () => {
+      ctx.__500 = Array.from({ length: 500 }, (_, i) => 'C' + i);
+      ev("categories=__500.slice();selectedExtraCats=new Set();_invCreateIdx=null;pendingPhoto=null;photoRemoved=false;_formStock0=0;_invoiceAfterSave=async()=>{};cloudPut=async it=>{__calls.push(['put',it]);return true;};items=[];editingId=null");
+      await ev('_saveItem()');
+      assert.strictEqual(evj('__calls').filter(c => c[0] === 'put').length, 1);
+    });
+  } finally { ctx.__cp0 = cp; ev('cloudPut=__cp0'); }
+});
+
+test('R6 W-5: el campo "Nueva categoría" de los dos almacenes tiene maxlength=60', () => {
+  for (const w of ['almacen-electrico', 'almacen-mecanico']) {
+    const h = fs.readFileSync(path.join(__dirname, '..', w, 'index.html'), 'utf8');
+    const m = h.match(/<input[^>]*id="f-newcat"[^>]*>/);
+    assert.ok(m, w + ': falta el campo');
+    assert.ok(/maxlength="60"/.test(m[0]), w + ': ' + m[0]);
+  }
+});
+
+// ---- W-7: service worker, señales útiles cuando falla la precarga
+for (const carpeta of ['almacen-electrico', 'almacen-mecanico']) {
+  test('R6 W-7 (' + carpeta + '): el aviso de precarga dice el MOTIVO de cada fallo (red, huella distinta, lectura), no solo la URL', async () => {
+    let sw = cargarSW(carpeta, { fallan: [LIB_EXCELJS, './icons/icon-192.png'] });
+    await sw.instalar();
+    const a = sw.avisos.find(x => x.includes('exceljs') && x.includes('icon-192'));
+    assert.ok(a, sw.avisos.join('|'));
+    assert.ok(a.includes('sin red: ' + LIB_EXCELJS) && a.includes('no disponible: ./icons/icon-192.png'), 'cada URL con su motivo: ' + a);
+    sw = cargarSW(carpeta, { malaHuella: [LIB_EXCELJS] });
+    await sw.instalar();
+    assert.ok(sw.avisos.some(x => x.includes('exceljs') && x.includes('hash distinto')), sw.avisos.join('|'));
+    sw = cargarSW(carpeta, { lecturaFalla: true });
+    await sw.instalar(); // las librerías no se pueden leer, pero index.html y app.js sí se guardaron: la instalación sigue
+    assert.ok(sw.avisos.some(x => x.includes('lectura rota') && x.includes('error de lectura')), sw.avisos.join('|'));
+  });
+
+  test('R6 W-7 (' + carpeta + '): un fallo transitorio de la precarga se reintenta hasta 2 veces; si sigue fallando se avisa; lo crítico sigue siendo solo index.html y app.js', async () => {
+    let sw = cargarSW(carpeta, { transitorios: { [LIB_EXCELJS]: 2, './icons/icon-192.png': 1 } });
+    await sw.instalar();
+    assert.ok(sw.puestos.includes(LIB_EXCELJS), 'a la tercera se guardó');
+    assert.strictEqual(sw.intentos[LIB_EXCELJS], 3);
+    assert.strictEqual(sw.intentos['./icons/icon-192.png'], 2);
+    assert.deepStrictEqual(sw.avisos, [], 'sin avisos si al final se pudo');
+    sw = cargarSW(carpeta, { transitorios: { [LIB_EXCELJS]: 99 } });
+    await sw.instalar();
+    assert.ok(!sw.puestos.includes(LIB_EXCELJS));
+    assert.strictEqual(sw.intentos[LIB_EXCELJS], 3, 'tres intentos en total (1 + 2 reintentos), no más');
+    assert.ok(sw.avisos.some(x => x.includes('exceljs') && x.includes('red intermitente')), sw.avisos.join('|'));
+    // un fallo de lo crítico (también transitorio) se reintenta; si no se recupera, la instalación falla como antes
+    sw = cargarSW(carpeta, { transitorios: { './index.html': 1 } });
+    await sw.instalar();
+    assert.strictEqual(sw.intentos['./index.html'], 2);
+    sw = cargarSW(carpeta, { transitorios: { '../shared/app.js': 99 } });
+    await assert.rejects(sw.instalar, /imprescindibles.*app\.js/);
+    sw = cargarSW(carpeta, { fallan: [LIB_EXCELJS, LIB_SUPABASE] });
+    await sw.instalar(); // lo secundario no impide instalar
+  });
+
+  test('R6 W-7 (' + carpeta + '): en uso normal se avisa en consola cuando una huella conocida NO coincide ("hash distinto") o no se pudo leer ("error de lectura"); una URL sin huella no avisa', async () => {
+    let sw = cargarSW(carpeta, { malaHuella: [LIB_EXCELJS] });
+    let r = await sw.pedir(LIB_EXCELJS);
+    assert.strictEqual(r.ok, true, 'se entrega igualmente (la página aplica su SRI)');
+    assert.deepStrictEqual(sw.puestos, [], 'y no se guarda');
+    assert.ok(sw.avisos.some(a => a.includes('hash distinto') && a.includes('exceljs')), sw.avisos.join('|'));
+    assert.ok(!sw.avisos.some(a => a.includes('error de lectura')));
+    sw = cargarSW(carpeta, { lecturaFalla: true });
+    r = await sw.pedir(LIB_EXCELJS);
+    assert.strictEqual(r.ok, true);
+    assert.deepStrictEqual(sw.puestos, []);
+    assert.ok(sw.avisos.some(a => a.includes('error de lectura') && a.includes('lectura rota') && a.includes('exceljs')), sw.avisos.join('|'));
+    assert.ok(!sw.avisos.some(a => a.includes('hash distinto')), 'no se confunde un fallo de lectura con una huella distinta');
+    sw = cargarSW(carpeta);
+    await sw.pedir('https://cdnjs.cloudflare.com/ajax/libs/otra/1.0/x.js');
+    assert.deepStrictEqual(sw.avisos, [], 'sin huella conocida no hay nada que comparar');
+    sw = cargarSW(carpeta);
+    await sw.pedir(LIB_EXCELJS);
+    assert.deepStrictEqual(sw.avisos, [], 'huella buena: sin avisos');
+  });
+}
+
+test('R6 W-2: un cambio de ESTE almacén hecho mientras se cierra la sesión se recuenta justo antes de vaciar y se avisa de que se descartó', async () => {
+  const bases = { almacen_db: baseConDatos(), almacen_mec_db: baseConDatos() };
+  const alertas = [], alAntes = ctx.alert;
+  ctx.alert = m => { alertas.push(String(m)); };
+  try {
+    await conLimpieza(bases, async () => {
+      ev("sb.auth.signOut=async()=>{__orden.push('signOut');__log.push('signOut');__pend=[{synced:false}];return {error:null};}"); // alguien registra un movimiento durante el cierre
+      await ev('logout()');
+      assert.ok(vacia(bases.almacen_db));
+      assert.ok(alertas.some(m => m.includes('Se descartaron 1 cambio(s) sin subir de este almacén')), alertas.join('|'));
+      assert.ok(ev('__toasts').some(m => m.includes('Se descartaron 1 cambio(s)')));
+      assert.strictEqual(ctx.__rl, 1);
+    });
+  } finally { ctx.alert = alAntes; }
+});
+
+// ---- W-8: la guarda _cerrando
+test('R6 W-8: dos logout(true) simultáneos cierran la sesión, vacían y recargan UNA sola vez (guarda _cerrando)', async () => {
+  const bases = { almacen_db: baseConDatos(), almacen_mec_db: baseConDatos() };
+  await conLimpieza(bases, async ({ log }) => {
+    const p1 = ev('logout(true)'), p2 = ev('logout(true)');
+    await Promise.all([p1, p2]);
+    assert.strictEqual(evj('__orden').filter(x => x === 'signOut').length, 1, 'un solo signOut');
+    assert.strictEqual(log.filter(x => x === 'clear:almacen_db:items').length, 1, 'un solo vaciado');
+    assert.strictEqual(log.filter(x => x === 'reload').length, 1, 'una sola recarga');
+    assert.strictEqual(ctx.__rl, 1);
+    assert.ok(vacia(bases.almacen_db) && vacia(bases.almacen_mec_db));
+  });
 });
