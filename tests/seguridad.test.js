@@ -1024,7 +1024,8 @@ test('config: flushDirtyCfg sube el valor local, y la sincronización lo hace AN
       __ups=(t,o)=>{__orden.push('subir:'+o.key);return {error:{message:'red'}};};`);
     await ev('_syncFromCloud(false)');
     // la subida de lo pendiente ocurre antes de leer la config de la nube; al fallar no se pisa lo local ni se siembra
-    assert.deepStrictEqual(evj('__orden'), ['subir:shelves', 'subir:printedIds', 'leer']);
+    // (el primer fallo de red corta el bucle: no se intenta printedIds, que sigue pendiente)
+    assert.deepStrictEqual(evj('__orden'), ['subir:shelves', 'leer']);
     assert.deepStrictEqual(evj('shelves.map(s=>s.id)'), ['LOCAL']);
     assert.deepStrictEqual(evj('[...printedIds]'), ['I1']);
     assert.deepStrictEqual(evj('categories'), ['B'], 'una clave que no está pendiente sí se actualiza desde la nube');
@@ -1181,7 +1182,7 @@ function sbExport(tablas, cfgs, opts = {}) {
         const q = {
           order: () => q,
           range: async (a, b) => { rangos.push([tbl, a, b]); if (opts.pageError) return { data: null, error: { message: 'timeout' } }; return { data: (tablas[tbl] || []).slice(a, b + 1), error: null }; },
-          limit: async () => ({ error: null }),
+          limit: async () => { rangos.push([tbl, 'sonda']); return opts.probeError ? { data: null, error: { message: 'rls' } } : opts.probeRows ? { data: [{ key: 'categories' }], error: null } : { error: null }; },
           in: async () => ({ data: [], error: null }),
           eq: (c, k) => ({ maybeSingle: async () => { if (opts.cfgError) return { data: null, error: { message: 'x' } }; const c2 = (cfgs || {})[tbl] || {}; return { data: k in c2 ? { value: c2[k] } : null, error: null }; } }),
         };
@@ -1235,10 +1236,7 @@ test('copias: cualquier fallo de lectura del otro almacén lanza error (nunca un
 });
 
 test('copias: exportBoth aborta con un mensaje claro si no puede leer un almacén y no descarga nada', async () => {
-  const blobAntes = ctx.Blob, urlAntes = ctx.URL;
-  ctx.__blobs = [];
-  ctx.Blob = function (partes) { ctx.__blobs.push(partes[0]); };
-  ctx.URL = { createObjectURL: () => 'blob:x' };
+  const restaurar = descargaSimulada();
   try {
     await conR2({}, async () => {
       vm.runInContext('globalThis.WAREHOUSE_CONFIG=' + ELE_R2 + ';globalThis.WAREHOUSE_OTHER_CONFIG=' + MEC_R2, ctx);
@@ -1265,16 +1263,13 @@ test('copias: exportBoth aborta con un mensaje claro si no puede leer un almacé
       assert.ok(ev('__toasts.pop()').includes('movimientos'));
     });
   } finally {
-    ctx.Blob = blobAntes; ctx.URL = urlAntes;
+    restaurar();
     vm.runInContext('globalThis.WAREHOUSE_CONFIG=undefined;globalThis.WAREHOUSE_OTHER_CONFIG=undefined', ctx);
   }
 });
 
 test('copias: exportData etiqueta el almacén (v4), incluye historial y config y avisa si no puede', async () => {
-  const blobAntes = ctx.Blob, urlAntes = ctx.URL;
-  ctx.__blobs = [];
-  ctx.Blob = function (partes) { ctx.__blobs.push(partes[0]); };
-  ctx.URL = { createObjectURL: () => 'blob:x' };
+  const restaurar = descargaSimulada();
   try {
     await conR2({}, async () => {
       ev("items=[{id:'I1',name:'A',stock:1,photo:'" + FOTO_R2 + "'}];dbGetAll=async()=>items;categories=['X'];shelves=[{id:'01'}];aisles=[{label:'P'}];mapSize={w:12,h:9};providers=['P'];printedIds=new Set(['I1']);modifiedIds=new Set(['I1'])");
@@ -1304,7 +1299,7 @@ test('copias: exportData etiqueta el almacén (v4), incluye historial y config y
       assert.ok(ev('__toasts.pop()').includes('Sin conexión: no incluye movimientos'));
     });
   } finally {
-    ctx.Blob = blobAntes; ctx.URL = urlAntes;
+    restaurar();
   }
 });
 
@@ -1328,6 +1323,17 @@ test('fotos de copias y Excel: el aviso dice la causa real (sin conexión / fall
   });
   ev('noPhotoIds.clear()');
 });
+
+// Descargas simuladas: Blob junta los trozos, URL registra create/revoke y el temporizador de 60 s se captura (no se espera de verdad)
+// Devuelve la función que restaura los globales.
+function descargaSimulada() {
+  const blobAntes = ctx.Blob, urlAntes = ctx.URL, stAntes = ctx.setTimeout;
+  ctx.__blobs = []; ctx.__partes = []; ctx.__revocadas = []; ctx.__t60 = [];
+  ctx.Blob = function (partes) { ctx.__partes.push(partes); ctx.__blobs.push(partes.join('')); };
+  ctx.URL = { createObjectURL: () => 'blob:x', revokeObjectURL: u => { ctx.__revocadas.push(u); } };
+  ctx.setTimeout = (f, ms, ...a) => { if (ms === 60000) { ctx.__t60.push(f); return 0; } return stAntes(f, ms, ...a); };
+  return () => { ctx.Blob = blobAntes; ctx.URL = urlAntes; ctx.setTimeout = stAntes; };
+}
 
 // Fichero de copia simulado: importData lee el texto con FileReader
 async function importarTexto(texto) {
@@ -2212,4 +2218,258 @@ test('diagnóstico de movimientos: solo lee la columna ts (DB-LOW6)', async () =
       assert.ok(String(ev('__info')).includes('7'));
     });
   });
+});
+
+// ===== Arreglos de la revisión ECC (bloque R2b) =====
+test('config M1: dos escrituras solapadas de la misma clave no pierden la marca de pendiente si la última falla', async () => {
+  await conR2({}, async () => {
+    ev('__pend=[];__ups=(t,o)=>new Promise(r=>__pend.push(r));');
+    // A y B en vuelo; A termina bien: B sigue sin subir, la clave sigue pendiente; B falla: sigue pendiente
+    const pA = ev("cloudCfgPut('shelves',[{id:'A'}])");
+    const pB = ev("cloudCfgPut('shelves',[{id:'B'}])");
+    assert.strictEqual(ev('__pend.length'), 2);
+    ev('__pend[0]({error:null})');
+    assert.strictEqual(await pA, true);
+    assert.strictEqual(ev("dirtyCfg.has('shelves')"), true, 'el éxito de A no limpia lo que B aún no ha subido');
+    ev("__pend[1]({error:{message:'red'}})");
+    assert.strictEqual(await pB, false);
+    assert.strictEqual(ev("dirtyCfg.has('shelves')"), true);
+    assert.deepStrictEqual(evj('__cfg.dirtyCfg'), ['shelves']);
+    // B termina bien antes que A y A falla después: la clave vuelve a quedar pendiente (el valor local es el más nuevo)
+    ev('dirtyCfg=new Set();__pend=[]');
+    const pA2 = ev("cloudCfgPut('shelves',[{id:'A'}])");
+    const pB2 = ev("cloudCfgPut('shelves',[{id:'B'}])");
+    ev('__pend[1]({error:null})');
+    assert.strictEqual(await pB2, true);
+    assert.strictEqual(ev("dirtyCfg.has('shelves')"), false, 'la última escritura subió bien y limpia');
+    ev("__pend[0]({error:{message:'red'}})");
+    assert.strictEqual(await pA2, false);
+    assert.strictEqual(ev("dirtyCfg.has('shelves')"), true, 'un fallo siempre deja la clave pendiente');
+    // las dos bien: solo la última limpia, y queda limpia
+    ev('dirtyCfg=new Set();__pend=[]');
+    const pA3 = ev("cloudCfgPut('shelves',[{id:'A'}])");
+    const pB3 = ev("cloudCfgPut('shelves',[{id:'B'}])");
+    ev('__pend[0]({error:null})');
+    await pA3;
+    assert.strictEqual(ev("dirtyCfg.has('shelves')"), true);
+    ev('__pend[1]({error:null})');
+    await pB3;
+    assert.strictEqual(ev('dirtyCfg.size'), 0);
+    // la sincronización sube A, el usuario guarda B a mitad y B falla: lo local (B) sigue pendiente y no se pisa con A
+    ev("dirtyCfg=new Set(['shelves']);__pend=[];__cfg.shelves=[{id:'A'}]");
+    const pF = ev('flushDirtyCfg()');
+    await new Promise(r => setTimeout(r, 5));
+    assert.strictEqual(ev('__pend.length'), 1, 'sube A');
+    ev("__cfg.shelves=[{id:'B'}]");
+    const pB4 = ev("cloudCfgPut('shelves',[{id:'B'}])");
+    ev('__pend[0]({error:null})');
+    await pF;
+    assert.strictEqual(ev("dirtyCfg.has('shelves')"), true, 'A terminó bien pero B está en vuelo');
+    ev("__pend[1]({error:{message:'red'}})");
+    await pB4;
+    assert.strictEqual(ev("dirtyCfg.has('shelves')"), true);
+  });
+});
+
+test('config M2: un 42501 solo es definitivo en adminPass y loginCfg; en el resto la config local sigue pendiente', async () => {
+  await conR2({}, async () => {
+    ev("__ups=()=>({error:{code:'42501',message:'rls'}})");
+    for (const k of ['shelves', 'categories', 'aisles', 'mapSize', 'providers', 'printedIds']) {
+      assert.strictEqual(await ev("cloudCfgPut('" + k + "',[1])"), false);
+      assert.strictEqual(ev("dirtyCfg.has('" + k + "')"), true, k + ' sigue pendiente (sesión caducada, no falta de permiso)');
+    }
+    assert.deepStrictEqual(evj('[...dirtyCfg].sort()'), ['aisles', 'categories', 'mapSize', 'printedIds', 'providers', 'shelves']);
+    for (const k of ['adminPass', 'loginCfg']) {
+      assert.strictEqual(await ev("cloudCfgPut('" + k + "','x')"), false);
+      assert.strictEqual(ev("dirtyCfg.has('" + k + "')"), false, k + ': reintentar no serviría (solo administradores)');
+    }
+    assert.deepStrictEqual(evj('__cfg.dirtyCfg').sort(), ['aisles', 'categories', 'mapSize', 'printedIds', 'providers', 'shelves']);
+  });
+});
+
+test('config L1: la sincronización no pisa una clave guardada mientras leía la nube (contador por clave), aunque ya haya subido', async () => {
+  await conR2({}, async () => {
+    ev(`items=[];dirtyIds=new Set();categories=['ANTES'];providers=['P0'];
+      pushPendingMovements=async()=>{};flushDirty=async()=>{};cloudGetMeta=async()=>[];dbReplaceAll=async()=>{};setCloudStatus=()=>{};
+      cloudCfgGetMany=async()=>{categories=['LOCAL2'];await cloudCfgPut('categories',['LOCAL2']);return {categories:['NUBE'],providers:['P1']};};`);
+    await ev('_syncFromCloud(false)');
+    assert.strictEqual(ev("dirtyCfg.has('categories')"), false, 'la subida terminó bien: ya no está pendiente, pero cambió durante la lectura');
+    assert.deepStrictEqual(evj('categories'), ['LOCAL2'], 'no se pisa con el valor leído antes del cambio');
+    assert.deepStrictEqual(evj('providers'), ['P1'], 'una clave que no cambió sí se actualiza desde la nube');
+  });
+});
+
+test('config L2: flushDirtyCfg corta tras el primer fallo de red o de tiempo y sigue tras un error del servidor', async () => {
+  await conR2({}, async () => {
+    const preparar = () => ev("dirtyCfg=new Set(['shelves','categories','aisles']);__cfg.shelves=[1];__cfg.categories=[2];__cfg.aisles=[3];__calls=[]");
+    const subidas = () => ev("__calls.filter(c=>c[0]==='upsert').length");
+    preparar();
+    ev("__ups=()=>({error:{message:'TypeError: Failed to fetch'}})");
+    await ev('flushDirtyCfg()');
+    assert.strictEqual(subidas(), 1, 'sin red: no insiste con las demás');
+    assert.strictEqual(ev('dirtyCfg.size'), 3);
+    preparar();
+    ev("__ups=()=>{throw new Error('Tiempo agotado: config')}");
+    await ev('flushDirtyCfg()');
+    assert.strictEqual(subidas(), 1, 'tiempo agotado: tampoco');
+    preparar();
+    ev("__ups=()=>({error:{code:'23505',message:'duplicado'}})");
+    await ev('flushDirtyCfg()');
+    assert.strictEqual(subidas(), 3, 'un error del servidor de una clave no bloquea las demás');
+    preparar();
+    ev("__ups=()=>({error:null})");
+    await ev('flushDirtyCfg()');
+    assert.strictEqual(subidas(), 3);
+    assert.strictEqual(ev('dirtyCfg.size'), 0);
+  });
+});
+
+test('copias M3: con el cliente creado pero sin red, exportData exporta lo local rápido (sin esperar 20 s) y con aviso; sin fotos no genera', async () => {
+  const restaurar = descargaSimulada();
+  try {
+    await conR2({}, async () => {
+      ev("items=[{id:'I1',name:'A',stock:1,photo:'" + FOTO_R2 + "'}];dbGetAll=async()=>items;categories=['X'];shelves=[{id:'01'}];aisles=[];providers=['P'];printedIds=new Set(['I1']);modifiedIds=new Set()");
+      const s = sbExport({ movements: [{ ts: 5, itemId: 'I1' }], price_history: [] }, {});
+      ctx.__sbx = s; ev('sb=__sbx');
+      // la comprobación de red agota su tiempo (simulado: sin esperas reales)
+      ev("withTimeout=(p,ms,l)=>l==='ping'?Promise.reject(new Error('Tiempo agotado: ping')):__o2.withTimeout(p,ms,l)");
+      try {
+        const t0 = Date.now();
+        await ev('exportData()');
+        assert.ok(Date.now() - t0 < 2000, 'no espera a las lecturas de la nube');
+        const j = JSON.parse(ctx.__blobs.pop());
+        assert.strictEqual(j.items.length, 1);
+        assert.deepStrictEqual(j.categories, ['X']);
+        assert.deepStrictEqual(j.shelves, [{ id: '01' }]);
+        assert.deepStrictEqual(j.providers, ['P']);
+        assert.ok(!('movements' in j) && !('price_history' in j), 'local: sin movimientos ni precios');
+        assert.ok(ev('__toasts.pop()').includes('Sin conexión: no incluye movimientos'));
+        assert.strictEqual(s.rangos.filter(x => x[1] !== 'sonda').length, 0, 'no se leyó ninguna tabla de la nube');
+        // una foto que falta sigue bloqueando la copia (no se genera incompleta)
+        ev("items=[{id:'I1',name:'A',stock:1,photo:null}]");
+        await ev('exportData()');
+        assert.strictEqual(ctx.__blobs.length, 0);
+        assert.ok(ev('__toasts.pop()').includes('No se pudieron descargar 1 foto'));
+        assert.strictEqual(s.rangos.filter(x => x[1] !== 'sonda').length, 0, 'tampoco se intentó bajar la foto (20 s por lote)');
+      } finally { ev('withTimeout=__o2.withTimeout'); }
+    });
+  } finally { restaurar(); }
+});
+
+test('copias M4: un almacén realmente vacío no bloquea la copia (el actual se lee de IndexedDB; el otro, con sonda de lectura)', async () => {
+  const restaurar = descargaSimulada();
+  vm.runInContext('globalThis.WAREHOUSE_CONFIG=' + ELE_R2 + ';globalThis.WAREHOUSE_OTHER_CONFIG=' + MEC_R2, ctx);
+  try {
+    await conR2({}, async () => {
+      ev("items=[];dbGetAll=async()=>items;categories=[];shelves=[];aisles=[];providers=[];printedIds=new Set();modifiedIds=new Set()");
+      const vacias = { items: [], movements: [], price_history: [], items_mec: [], movements_mec: [], price_history_mec: [] };
+      // el otro almacén vacío pero legible (la sonda devuelve filas): se acepta
+      ctx.__sbx = sbExport(vacias, {}, { probeRows: true }); ev('sb=__sbx');
+      const r = JSON.parse(JSON.stringify(await ev('collectWarehouse(' + MEC_R2 + ')')));
+      assert.deepStrictEqual(r.items, []);
+      assert.deepStrictEqual(r.movements, []);
+      // el actual vacío tampoco lanza
+      const a = JSON.parse(JSON.stringify(await ev('collectWarehouse(' + ELE_R2 + ')')));
+      assert.deepStrictEqual(a.items, []);
+      // exportBoth genera la copia con los dos vacíos y el JSON es válido
+      await ev('exportBoth()');
+      assert.strictEqual(ctx.__blobs.length, 1);
+      const j = JSON.parse(ctx.__blobs[0]);
+      assert.deepStrictEqual(Object.keys(j.warehouses).sort(), ['electrico', 'mecanico']);
+      assert.deepStrictEqual(j.warehouses.mecanico.items, []);
+      assert.ok(ev('__toasts.pop()').startsWith('✓ Copia de los dos almacenes (0 eléctrico, 0 mecánico)'));
+      // la sonda falla (error de lectura): sigue sin generarse
+      for (const o of [{ probeError: true }, {}]) {
+        ctx.__blobs.length = 0;
+        ctx.__sbx = sbExport(vacias, {}, o); ev('sb=__sbx');
+        let err = null;
+        try { await ev('collectWarehouse(' + MEC_R2 + ')'); } catch (e) { err = e; }
+        assert.ok(err, 'sonda sin filas o con error: ilegible, no se acepta');
+        await ev('exportBoth()');
+        assert.strictEqual(ctx.__blobs.length, 0);
+        assert.ok(ev('__toasts.pop()').includes('No se ha generado la copia'));
+      }
+    });
+  } finally {
+    restaurar();
+    vm.runInContext('globalThis.WAREHOUSE_CONFIG=undefined;globalThis.WAREHOUSE_OTHER_CONFIG=undefined', ctx);
+  }
+});
+
+test('copias L10: la descarga se construye por trozos, es JSON válido y libera la URL a los 60 s', async () => {
+  const restaurar = descargaSimulada();
+  try {
+    await conR2({}, async () => {
+      const lista = Array.from({ length: 450 }, (_, i) => ({ id: 'I' + i, name: 'n' + i, stock: i, photo: FOTO_R2 }));
+      ctx.__lista = lista;
+      ev("items=__lista;dbGetAll=async()=>items;categories=['X'];shelves=[];aisles=[];providers=[];printedIds=new Set();modifiedIds=new Set();mapSize=null");
+      ctx.__sbx = sbExport({ movements: [{ ts: 1, itemId: 'I1' }], price_history: [] }, {}); ev('sb=__sbx');
+      await ev('exportData()');
+      assert.strictEqual(ctx.__blobs.length, 1);
+      assert.ok(ctx.__partes[0].length > 5, 'varios trozos y no una sola cadena');
+      const j = JSON.parse(ctx.__blobs[0]);
+      assert.strictEqual(j.items.length, 450);
+      assert.deepStrictEqual(j.items[449], lista[449]);
+      assert.deepStrictEqual(j.movements, [{ ts: 1, itemId: 'I1' }]);
+      assert.strictEqual(j.mapSize, null);
+      assert.strictEqual(ctx.__t60.length, 1, 'un temporizador de 60 s');
+      assert.deepStrictEqual(ctx.__revocadas, [], 'aún no se libera');
+      ctx.__t60[0]();
+      assert.deepStrictEqual(ctx.__revocadas, ['blob:x']);
+    });
+  } finally { restaurar(); }
+});
+
+test('importar L5/L6/L7: limpia el borrado pendiente, conserva la foto local y comprueba el administrador antes de leer el archivo', async () => {
+  await conR2({}, async () => {
+    vm.runInContext('globalThis.WAREHOUSE_CONFIG=' + ELE_R2, ctx);
+    try {
+      ev(`items=[{id:'I1',name:'viejo',stock:1,photo:'${FOTO_R2}'},{id:'I2',name:'dos',stock:1,photo:null}];dbGetAll=async()=>items;
+        __dbObjs=[];dbPut=async it=>{__dbObjs.push(it)};dirtyDel=new Set(['I1','I3']);`);
+      const copia = { version: 4, warehouse: 'electrico', items: [{ id: 'I1', name: 'A', stock: 2 }, { id: 'I2', name: 'B', stock: 3, photo: 'data:image/png;base64,BBBB' }] };
+      await importarTexto(JSON.stringify(copia));
+      await ev("document.getElementById('confirm-ok').onclick()");
+      assert.ok(ev('__toasts.pop()').startsWith('✓ Importados 2 artículos'));
+      assert.deepStrictEqual(evj('[...dirtyDel]'), ['I3'], 'I1 se acaba de importar: ya no se borra; I3 no tiene que ver');
+      const objs = evj('__dbObjs');
+      assert.strictEqual(objs[0].photo, FOTO_R2, 'la copia no trae foto: se conserva la del dispositivo');
+      assert.strictEqual(objs[1].photo, 'data:image/png;base64,BBBB', 'si la copia trae foto, manda la de la copia');
+      const subidas = evj("__calls.filter(c=>c[1]==='items').map(c=>c[2])");
+      assert.ok(!('photo' in subidas[0]), 'a la nube no se envía una foto que la copia no trae');
+      // un artículo cuya subida falla NO limpia su borrado pendiente por la vía de éxito (queda como alta pendiente)
+      ev("dirtyDel=new Set(['I1']);__ups=()=>({error:{message:'red'}})");
+      await importarTexto(JSON.stringify({ version: 4, warehouse: 'electrico', items: [{ id: 'I1', name: 'A', stock: 2 }] }));
+      await ev("document.getElementById('confirm-ok').onclick()");
+      assert.strictEqual(ev("dirtyIds.has('I1')"), true);
+      // sin modo administrador: se rechaza ANTES de leer el archivo y de pedir confirmación
+      ev("adminUnlocked=false;__toasts=[];__opened=[]");
+      ctx.__toco = false;
+      ctx.__ev = { target: { get files() { ctx.__toco = true; return []; } } };
+      await ev('importData(__ev)'); // envuelta por el guardián de conexión (async)
+      assert.strictEqual(ctx.__toco, false, 'no se llega a mirar el archivo');
+      assert.ok(ev('__toasts.pop()').includes('Solo un administrador'));
+      assert.ok(!ev('__opened').includes('modal-confirm'));
+    } finally {
+      vm.runInContext('globalThis.WAREHOUSE_CONFIG=undefined', ctx);
+    }
+  });
+});
+
+test('avisos L11: la duración crece con el texto (2,5 s + 40 ms por carácter, máximo 12 s) y los cortos duran 2,5 s', () => {
+  assert.strictEqual(ev("_toastMs('a'.repeat(80))"), 2500);
+  assert.strictEqual(ev("_toastMs('a'.repeat(81))"), 2500 + 81 * 40);
+  assert.strictEqual(ev("_toastMs('a'.repeat(200))"), 10500);
+  assert.strictEqual(ev("_toastMs('a'.repeat(240))"), 12000);
+  assert.strictEqual(ev("_toastMs('a'.repeat(5000))"), 12000);
+  assert.strictEqual(ev('_toastMs(12345)'), 2500);
+  // toast() real usa esa duración
+  const getAntes = ctx.document.getElementById, stAntes = ctx.setTimeout;
+  const esperas = [];
+  ctx.document.getElementById = () => ({ classList: { add() {}, remove() {} }, textContent: '' });
+  ctx.setTimeout = (f, ms) => { esperas.push(ms); return 0; };
+  try {
+    ev("toast('b'.repeat(100))");
+    ev("toast('corto')");
+  } finally { ctx.document.getElementById = getAntes; ctx.setTimeout = stAntes; }
+  assert.deepStrictEqual(esperas, [2500 + 100 * 40, 2500]);
 });

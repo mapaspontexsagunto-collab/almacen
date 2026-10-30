@@ -52,8 +52,11 @@ Un corte momentáneo (cambio de repetidor wifi) se reintenta una vez antes de av
   artículo podrían pisarse. Editar el formulario de un artículo guarda también el stock que tenía al abrirlo.
 - Copias de seguridad: el plan gratuito de Supabase no permite recuperar un punto anterior. Exporta desde Ajustes de vez en cuando.
   - La copia (versión 4) lleva la etiqueta del almacén, artículos con fotos, categorías, estanterías, plano, proveedores, estado de
-    etiquetas, movimientos e historial de precios. La lectura es estricta: si no se puede leer algo entero (o un almacén sale vacío),
-    no se genera la copia. Sin conexión solo se exporta lo local (sin movimientos ni historial de precios) y el aviso lo dice.
+    etiquetas, movimientos e historial de precios. La lectura es estricta: si no se puede leer algo entero, no se genera la copia.
+    Un almacén vacío de verdad sí se exporta (el actual se lee del dispositivo; el otro, tras una sonda que confirma que la sesión puede leer).
+    Si no se llega a la nube (una comprobación de 5 s, sin esperar a las lecturas) solo se exporta lo local (artículos, categorías,
+    estanterías y configuración, sin movimientos ni historial de precios) y el aviso lo dice; si falta alguna foto en el dispositivo, no se genera.
+    Si la nube responde pero falla la lectura del historial, no se genera la copia.
   - Importar solo lo puede hacer un administrador y **fusiona** con la nube: crea o actualiza cada artículo por su código (también su stock)
     y NO borra los que no estén en el archivo. La configuración que traiga la copia sustituye a la actual; lo que no traiga (o traiga vacío)
     no se toca. NO restaura movimientos ni historial de precios (el trigger de movimientos pondría como autor a quien importa).
@@ -62,6 +65,10 @@ Un corte momentáneo (cambio de repetidor wifi) se reintenta una vez antes de av
 - La configuración (categorías, estanterías, plano, proveedores, etiquetas impresas) que no llega a la nube queda en una cola local
   (dirtyCfg) que se reintenta al sincronizar y no se pisa con el valor de la nube mientras esté pendiente; la app avisa de que
   "solo se guardó en este dispositivo". Si dos dispositivos cambian la misma clave sin conexión, gana el último que sincroniza.
+  Un contador por clave evita que una subida antigua limpie la marca de pendiente de un valor más nuevo, y la sincronización no pisa
+  una clave que se guardó mientras leía la nube. Un error de permisos (42501) solo se da por definitivo en `adminPass` y `loginCfg`
+  (los únicos que la base de datos reserva a administradores); en las demás claves el valor local sigue pendiente. Importar una copia
+  exige modo administrador desde el principio (antes de leer el archivo) y conserva la foto del dispositivo si la copia no trae una.
 - Historial e informes: el Excel de movimientos, los costes del mes y su PDF leen la nube de forma estricta; si no se puede leer
   el historial se aborta con "No se pudo leer el historial de la nube" (nunca salen informes parciales). Inicio sí muestra lo local
   pero con un aviso visible. Solo se consulta la ventana necesaria (6 meses en Inicio, el mes en Costes, el rango pedido al exportar).

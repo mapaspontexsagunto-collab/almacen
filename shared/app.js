@@ -304,13 +304,22 @@ let dirtyCfg=new Set();
 function persistDirtyCfg(){return cfgPut('dirtyCfg',[...dirtyCfg]).catch(e=>console.warn('dirtyCfg no persistido',e));}
 function markDirtyCfg(key){dirtyCfg.add(key);persistDirtyCfg();}
 function clearDirtyCfg(key){if(dirtyCfg.delete(key))persistDirtyCfg();}
+// Contador por clave: sube con CADA subida (cloudCfgPut). Una subida solo limpia la marca de pendiente si, al terminar, nadie más
+// ha escrito esa clave mientras tanto (si no, un valor más nuevo seguiría sin subir). La sincronización lo usa para no pisar claves cambiadas durante la lectura.
+let _cfgSeq=Object.create(null);
+let _cfgFalloRed=false; // el último fallo de cloudCfgPut fue de red / tiempo agotado (lo usa flushDirtyCfg para dejar de insistir)
+function _esFalloRed(e){return !!e&&(!e.code||/Tiempo agotado|fetch|network|Load failed/i.test(String(e.message||e)));} // un error de Postgres lleva código; el de red no
 async function flushDirtyCfg(){
   if(!sb)return;
   for(const k of [...dirtyCfg]){
+    const s0=_cfgSeq[k]||0;
     let v=null;
     try{v=await cfgGet(k);}catch(e){console.warn('flushDirtyCfg: lectura local',k,e);continue;}
+    if((_cfgSeq[k]||0)!==s0)continue; // alguien guardó esta clave mientras se leía: ese guardado ya se sube por su cuenta
     if(v==null){clearDirtyCfg(k);continue;} // sin valor local: nada que subir
-    await cloudCfgPut(k,v); // si falla vuelve a quedar en la cola
+    _cfgFalloRed=false;
+    const ok=await cloudCfgPut(k,v); // si falla vuelve a quedar en la cola
+    if(!ok&&_cfgFalloRed)break; // sin red / tiempo agotado: no se espera a que fallen también las demás (esto retiene _syncing)
   }
 }
 // Anota columnas que no se pudieron subir (se fusionan con lo que ya hubiera). Si el artículo ya está pendiente entero, no hace falta.
@@ -544,12 +553,21 @@ async function cloudGetPhotos(ids){
 // Devuelve true si se guardó en la nube; false si no (sin conexión, error o tiempo agotado): la clave queda en la cola
 // dirtyCfg y se reintenta al sincronizar (el valor a subir es la copia local, que el llamante ya guardó con cfgPut).
 async function cloudCfgPut(key,value){
+  const seq=_cfgSeq[key]=(_cfgSeq[key]||0)+1; // esta subida es la más reciente de la clave hasta que otra la supere
   markDirtyCfg(key); // se anota ANTES de subir: si la app se cierra o una sincronización lee la nube a mitad, no se pierde lo local
   if(!sb)return false;
-  try{const{error}=await withTimeout(sb.from(WH.tblCfg).upsert({key,value},{onConflict:'key'}),15000,'config');if(error)throw error;clearDirtyCfg(key);return true;}
-  catch(e){
+  try{
+    const{error}=await withTimeout(sb.from(WH.tblCfg).upsert({key,value},{onConflict:'key'}),15000,'config');if(error)throw error;
+    if(_cfgSeq[key]===seq)clearDirtyCfg(key); // si otra escritura de la misma clave empezó mientras tanto, sigue pendiente (su valor es más nuevo)
+    return true;
+  }catch(e){
     console.warn('cloudCfgPut error',key,e);
-    if(e&&e.code==='42501')clearDirtyCfg(key); // sin permisos (RLS): reintentar no serviría
+    _cfgFalloRed=_esFalloRed(e);
+    // La RLS solo restringe adminPass y loginCfg (solo administradores): ahí un 42501 es definitivo y reintentar no serviría.
+    // En las demás claves (estanterías, categorías...) un 42501 significa sesión caducada o anónima: se conserva lo local pendiente
+    // (compromiso: si de verdad no hubiera permiso, se reintentaría en cada sincronización y el aviso de pendientes seguiría saliendo).
+    if(e&&e.code==='42501'&&(key==='adminPass'||key==='loginCfg')){if(_cfgSeq[key]===seq)clearDirtyCfg(key);return false;}
+    markDirtyCfg(key); // un fallo nunca deja la clave limpia: pudo limpiarla una subida anterior que terminó bien mientras esta fallaba
     return false;
   }
 }
@@ -781,9 +799,10 @@ async function _syncFromCloud(refrescarTodasFotos){
 
   // Config desde la nube
   // Toda la configuración de la nube en una sola petición (antes eran nueve seguidas)
+  const _s0={..._cfgSeq}; // contadores antes de leer: una clave guardada durante la lectura (aunque ya haya subido) no se pisa con lo leído
   const _cfg=await cloudCfgGetMany(['categories','providers','shelves','aisles','mapSize','printedIds','modifiedIds','adminPass','loginCfg']);
-  // undefined = falló o la clave sigue pendiente de subir (manda lo local: no se pisa ni se siembra), null = no hay fila
-  const g=k=>(_cfg===undefined||dirtyCfg.has(k))?undefined:(k in _cfg?_cfg[k]:null);
+  // undefined = falló, la clave sigue pendiente de subir o cambió durante la lectura (manda lo local: no se pisa ni se siembra), null = no hay fila
+  const g=k=>(_cfg===undefined||dirtyCfg.has(k)||(_cfgSeq[k]||0)!==(_s0[k]||0))?undefined:(k in _cfg?_cfg[k]:null);
   const cCats=g('categories');
   const cProviders=g('providers');
   const cShelves=g('shelves');
@@ -2886,6 +2905,8 @@ async function cloudCfgPutTo(tbl,key,value){
 }
 // Lectura ESTRICTA de una tabla entera: cuenta las filas, lee por páginas pequeñas (con tiempo límite) y lanza un error si
 // algo falla o si faltan filas. Nunca devuelve una lectura parcial.
+// NOTA: price_history no tiene un índice único conocido sobre (ts,item_id) y desde aquí no se puede saber si existe una columna id para
+// desempatar; por eso, además del orden, se compara el número de filas leídas con el recuento (más abajo): una lectura con menos filas falla.
 async function leerTablaEstricta(tbl,orden,pageSize,timeoutMs){
   const{count,error:ce}=await withTimeout(sb.from(tbl).select('*',{count:'exact',head:true}),20000,'recuento de '+tbl);
   if(ce)throw ce;
@@ -2903,6 +2924,35 @@ async function leerHistorialNube(wh){
   return o;
 }
 const CFG_BACKUP_KEYS=['categories','shelves','aisles','mapSize','providers','printedIds','modifiedIds'];
+// Un almacén que se lee con 0 artículos puede estar de verdad vacío o ser ilegible (RLS devuelve 0 filas sin error). Se distingue con una
+// sonda: si la tabla de configuración devuelve alguna fila sin error, la sesión puede leer y el almacén está vacío. Si no, lanza un error.
+async function comprobarLecturaVacia(wh){
+  let r;
+  try{r=await withTimeout(sb.from(wh.tblCfg).select('key').limit(1),15000,'config');}
+  catch(e){throw new Error('0 artículos y no se pudo comprobar el permiso de lectura ('+_errMsg(e)+')');}
+  if(!r||r.error||!r.data||!r.data.length)throw new Error('0 artículos (almacén vacío o sin permiso de lectura)');
+}
+// Descarga un fichero JSON a partir de una lista de trozos de texto (no se concatena todo en una sola cadena gigante) y libera la URL al minuto
+function _descargarPartes(partes,nombre){
+  const blob=new Blob(partes,{type:'application/json'});
+  const a=document.createElement('a');const url=URL.createObjectURL(blob);a.href=url;a.download=nombre;a.click();
+  setTimeout(()=>{try{URL.revokeObjectURL(url);}catch(e){}},60000);
+}
+// JSON de un objeto en trozos: una parte por clave y las listas largas en lotes de 200 elementos
+function _jsonEnPartes(obj){
+  const p=['{'];let primero=true;
+  for(const k of Object.keys(obj)){
+    const v=obj[k];if(v===undefined)continue;
+    p.push((primero?'':',')+JSON.stringify(k)+':');primero=false;
+    if(Array.isArray(v)){
+      p.push('[');
+      for(let i=0;i<v.length;i+=200){const s=JSON.stringify(v.slice(i,i+200));p.push((i?',':'')+s.slice(1,-1));}
+      p.push(']');
+    }else p.push(JSON.stringify(v));
+  }
+  p.push('}');
+  return p;
+}
 // Reúne todos los datos de un almacén. Lanza un error (nunca devuelve un almacén vacío por un fallo de lectura).
 async function collectWarehouse(wh){
   const esActual=!!(WH&&wh.key===WH.key);
@@ -2916,6 +2966,7 @@ async function collectWarehouse(wh){
     // Otro almacén: desde la nube (fuente compartida)
     if(!sb)throw new Error('sin conexión a la nube');
     const rows=await leerTablaEstricta(wh.tblItems,['id'],50,60000); // con fotos: páginas pequeñas
+    if(!rows.length)await comprobarLecturaVacia(wh); // vacío de verdad (se acepta) o ilegible (lanza error)
     o.items=rows.map(r=>{const x={...r};x.cats=x.categories||[];delete x.categories;return x;});
     for(const k of CFG_BACKUP_KEYS){
       const v=await cloudCfgGetFrom(wh.tblCfg,k);
@@ -2923,7 +2974,7 @@ async function collectWarehouse(wh){
       o[k]=v==null?(k==='mapSize'?null:[]):v;
     }
   }
-  if(!o.items.length)throw new Error('0 artículos (almacén vacío o sin permiso de lectura)');
+  // El almacén actual sale de IndexedDB: un almacén vacío es una copia válida (el otro se comprobó con la sonda de arriba)
   return Object.assign(o,await leerHistorialNube(wh));
 }
 async function exportBoth(){
@@ -2940,9 +2991,10 @@ async function exportBoth(){
   const ks=Object.keys(out.warehouses);
   if(ks.length<2){toast('⚠ Faltan datos de uno de los almacenes: no se ha generado la copia');return;}
   const e=out.warehouses.electrico?out.warehouses.electrico.items.length:0, m=out.warehouses.mecanico?out.warehouses.mecanico.items.length:0;
-  const blob=new Blob([JSON.stringify(out)],{type:'application/json'});
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-  a.download='almacen_backup_AMBOS_'+new Date().toISOString().slice(0,10)+'.json';a.click();
+  const partes=['{"version":'+JSON.stringify(out.version)+',"exported":'+JSON.stringify(out.exported)+',"warehouses":{'];
+  ks.forEach((k,i)=>{partes.push((i?',':'')+JSON.stringify(k)+':');_jsonEnPartes(out.warehouses[k]).forEach(x=>partes.push(x));});
+  partes.push('}}');
+  _descargarPartes(partes,'almacen_backup_AMBOS_'+new Date().toISOString().slice(0,10)+'.json');
   toast('✓ Copia de los dos almacenes ('+e+' eléctrico, '+m+' mecánico), con movimientos e historial de precios');
 }
 // Claves de configuración que trae una copia (solo las que tienen contenido: NUNCA se escribe una lista vacía sobre la nube)
@@ -2969,10 +3021,12 @@ async function importarAlmacen(wh,wd,limpios,res){
   const esActual=!!(WH&&wh.key===WH.key);
   let seguidos=0,cortado=false;
   for(const it of limpios){
-    if(esActual)await dbPut(it);
+    // Si la copia no trae foto se conserva la que ya hay en el dispositivo (solo en local: a la nube no se envía una foto que no trae)
+    if(esActual)await dbPut(it.photo?it:{...it,photo:(items.find(x=>x.id===it.id)||{}).photo||null});
     let ok=false;
     if(!cortado){
       ok=esActual?await cloudPut(it):await cloudPutTo(wh.tblItems,it);
+      if(ok&&esActual)clearDirtyDel(it.id); // un borrado pendiente de este artículo borraría justo lo que se acaba de importar
       seguidos=ok?0:seguidos+1;
       if(seguidos>=3)cortado=true;
     }else if(esActual){markDirty(it.id);}
@@ -3049,21 +3103,25 @@ async function importBoth(data){
 async function exportData(){
   // Una copia de seguridad debe llevar TODAS las fotos: se descargan las que falten y, si no se puede, no se genera incompleta
   noPhotoIds.clear(); // por si alguien ha añadido fotos desde la última comprobación
-  await asegurarFotos(items.map(i=>i.id));
+  // Comprobación corta (5 s) de que se llega a la nube: con el cliente creado pero sin red, las lecturas esperarían ~20 s cada una antes de rendirse.
+  // Sin llegar a la nube se exporta SOLO lo local (sin movimientos ni historial) y se avisa; las fotos que falten siguen bloqueando la copia.
+  const enLinea=!!(sb&&WH)&&await pingCloud(5000);
+  if(enLinea)await asegurarFotos(items.map(i=>i.id));
   const _fal=fotosSinDescargar();
   if(_fal){toast(msgFotosFaltan(_fal));return;}
   // Con conexión la copia lleva también los movimientos y el historial de precios (lectura estricta: si falla, no se genera)
   let hist=null;
-  if(sb&&WH){
+  if(enLinea){
     try{hist=await leerHistorialNube(WH);}
     catch(err){console.warn('exportData historial',err);toast('⚠ No se pudo leer el historial de la nube ('+_errMsg(err)+'). No se ha generado la copia; inténtalo de nuevo.');return;}
   }
   const data={version:BACKUP_VERSION,warehouse:WH?WH.key:null,exported:new Date().toISOString(),categories,shelves,aisles,mapSize,providers,printedIds:[...printedIds],modifiedIds:[...modifiedIds],items:completarFotos(await dbGetAll())};
   if(hist){data.movements=hist.movements;data.price_history=hist.price_history;}
-  const blob=new Blob([JSON.stringify(data)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='almacen_backup_'+(WH?WH.key+'_':'')+new Date().toISOString().slice(0,10)+'.json';a.click();
+  _descargarPartes(_jsonEnPartes(data),'almacen_backup_'+(WH?WH.key+'_':'')+new Date().toISOString().slice(0,10)+'.json');
   toast(hist?'✓ Copia descargada ('+data.items.length+' artículos, '+hist.movements.length+' movimientos, '+hist.price_history.length+' precios)':'✓ Copia descargada ('+data.items.length+' artículos). Sin conexión: no incluye movimientos ni historial de precios');
 }
 function importData(e){
+  if(!adminUnlocked){toast('⚠ Solo un administrador puede importar una copia');return;} // antes de leer el archivo y de pedir confirmación
   const file=e.target.files[0];if(!file)return;
   const reader=new FileReader();
   reader.onload=async ev=>{
@@ -3670,7 +3728,8 @@ document.addEventListener('keydown',function(e){
   },{passive:true});
 })();
 let _toastT=null;
-function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(_toastT);_toastT=setTimeout(()=>t.classList.remove('show'),String(msg).length>80?6000:2500);} // los avisos largos (fallos de guardado) tardan más en leerse
+function _toastMs(msg){const n=String(msg).length;return n>80?Math.min(12000,2500+n*40):2500;}
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(_toastT);_toastT=setTimeout(()=>t.classList.remove('show'),_toastMs(msg));} // los avisos largos (fallos de guardado) tardan más en leerse: 2,5 s + 40 ms por carácter, máximo 12 s
 // Las ventanas NO se cierran al tocar fuera: solo se cierran con su botón,
 // para que no se cierren por accidente mientras consultas o añades.
 // (Antes un toque en el fondo oscuro cerraba el modal.)
