@@ -20,7 +20,7 @@ const ctx = vm.createContext({
   Intl, URL, Blob: function () {}, FileReader: function () {}, Image: function () {},
 });
 // Las declaraciones `let/const` de nivel superior no cuelgan del contexto: las exponemos con una función
-vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid,quienMov,whBarHtml,sesStorageKey,logout,isAdminRole,ensureOnline,GUARDED_FUNCS,asegurarFotos,noPhotoIds,pedirFoto,parseNumES,_invSanitize,_invValidate,assignInvoiceLine,_invoiceAfterSave};', ctx);
+vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid,quienMov,whBarHtml,sesStorageKey,logout,isAdminRole,ensureOnline,GUARDED_FUNCS,asegurarFotos,noPhotoIds,pedirFoto,parseNumES,_invSanitize,_invValidate,assignInvoiceLine,_invoiceAfterSave,_invCleanProvider,invoiceSetProvider};', ctx);
 const t = ctx.__t;
 
 test('ids: solo letras, números, guion y guion bajo', () => {
@@ -358,6 +358,8 @@ test('escáner: registrar una línea suma el stock UNA vez, valida, exige admin 
     assert.strictEqual(vm.runInContext('__movs.length', ctx), 1);
     assert.strictEqual(vm.runInContext('__precios.length', ctx), 1);
     assert.strictEqual(vm.runInContext('__movs[0][2]', ctx), 'Compra');
+    assert.strictEqual(vm.runInContext('__movs[0][4]', ctx), 'ACME', 'el movimiento lleva el proveedor');
+    assert.strictEqual(vm.runInContext('__precios[0].provider', ctx), 'ACME', 'y el histórico de precios también');
     // dos pulsaciones a la vez: solo una entrada
     vm.runInContext("_invLines=[{desc:'z',qty:2,price:null,status:'pending',itemId:null}];items[0].stock=8;__nube=8;__movs=[];", ctx);
     await Promise.all([t.assignInvoiceLine(0, 'I1'), t.assignInvoiceLine(0, 'I1')]);
@@ -445,6 +447,24 @@ test('escáner: un artículo nuevo con stock 0 no registra la compra y la línea
     ctx.__g2 = guardar;
     vm.runInContext('registrarMovimiento=__g2.rm;cloudPriceAdd=__g2.pa;addProvider=__g2.ap;renderInvoiceModal=__g2.rv;toast=__g2.ts;adminUnlocked=false;_invLines=[];items=[];_invProvider="";', ctx);
   }
+});
+
+test('escáner: el proveedor se puede editar, se limpia y se recorta', () => {
+  assert.strictEqual(t._invCleanProvider('  ACME   S.L.  '), 'ACME S.L.');
+  assert.ok(!/[<>]/.test(t._invCleanProvider('<img src=x onerror=1>ACME')));
+  assert.strictEqual(t._invCleanProvider('x'.repeat(200)).length, 80);
+  assert.strictEqual(t._invCleanProvider(null), '');
+  const el = { value: '  Suministros   Pérez  ' };
+  t.invoiceSetProvider(el, true);
+  assert.strictEqual(vm.runInContext('_invProvider', ctx), 'Suministros Pérez');
+  assert.strictEqual(el.value, 'Suministros Pérez', 'al terminar de escribir se muestra limpio');
+  const el2 = { value: 'Acme ' };
+  t.invoiceSetProvider(el2, false);
+  assert.strictEqual(el2.value, 'Acme ', 'mientras se escribe no se toca el campo');
+  assert.strictEqual(vm.runInContext('_invProvider', ctx), 'Acme');
+  t.invoiceSetProvider({ value: '' }, false);
+  assert.strictEqual(vm.runInContext('_invProvider', ctx), '');
+  vm.runInContext('_invProvider=""', ctx);
 });
 
 test('no quedan contraseñas por defecto en el código', () => {

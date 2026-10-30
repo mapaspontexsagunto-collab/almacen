@@ -783,6 +783,11 @@
     <div id="inv-loading" style="display:none;justify-content:center;align-items:center;padding:40px 0;flex-direction:column;gap:12px;"><div class="spinner"></div><span style="font-size:13px;color:var(--text2);">Analizando factura…</span></div>
     <div id="inv-body">
       <p style="font-size:12px;color:var(--text2);margin-bottom:4px;" id="inv-summary"></p>
+      <div class="inv-prov" id="inv-prov-row" style="display:none;">
+        <label for="inv-prov">Proveedor (puedes corregirlo o elegir uno de la lista)</label>
+        <input type="text" id="inv-prov" class="inv-prov-in" maxlength="80" list="inv-prov-list" autocomplete="off" placeholder="Nombre de la empresa" oninput="invoiceSetProvider(this)" onchange="invoiceSetProvider(this,true)">
+        <datalist id="inv-prov-list"></datalist>
+      </div>
       <div class="inv-lines-list" id="inv-lines"></div>
     </div>
     <button class="btn btn-block" style="margin-top:14px;" onclick="closeModal('modal-invoice')">Cerrar</button>

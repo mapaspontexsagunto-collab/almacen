@@ -4650,8 +4650,28 @@ function _invErrMsg(err){
   return (err&&err.message)||String(err);
 }
 
+// Proveedor de la factura: se puede corregir o elegir uno ya conocido antes de registrar
+function _invCleanProvider(v){
+  let s=String(v==null?'':v);
+  s=s.split('').map(c=>(c==='<'||c==='>'||c.charCodeAt(0)<32)?' ':c).join(''); // sin < > ni caracteres de control
+  return s.split(' ').filter(Boolean).join(' ').slice(0,80);                  // espacios simples y máximo 80
+}
+function invoiceSetProvider(el,terminado){
+  _invProvider=_invCleanProvider(el.value);
+  if(terminado)el.value=_invProvider; // al terminar de escribir se muestra ya limpio
+}
+function _invRenderProvider(){
+  const row=document.getElementById('inv-prov-row');
+  if(!row)return;
+  row.style.display=_invLines.length?'':'none';
+  const inp=document.getElementById('inv-prov');
+  if(inp)inp.value=_invProvider;
+  const dl=document.getElementById('inv-prov-list');
+  if(dl)dl.innerHTML=(Array.isArray(providers)?providers:[]).slice(0,200).map(n=>'<option value="'+esc(n)+'"></option>').join('');
+}
 function renderInvoiceModal(){
   renderInvoiceLines();
+  _invRenderProvider();
   openModal('modal-invoice');
 }
 
