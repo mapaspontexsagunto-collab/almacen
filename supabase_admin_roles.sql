@@ -3,8 +3,10 @@
 --   1) Fusionar y desplegar la versión de la app con el candado "Admin".
 --   2) Marcar a los administradores (PASO A, más abajo) y que cierren sesión y vuelvan a entrar.
 --   3) Ejecutar el PASO B (el resto de este fichero).
--- Si se ejecuta el PASO B antes de marcar al menos a un administrador, nadie podrá borrar artículos
--- ni líneas del historial (se arregla ejecutando el PASO A).
+-- Si se ejecuta el PASO B antes de marcar al menos a un administrador, aborta con una excepción y NO
+-- cambia nada (ejecuta primero el PASO A). El riesgo real es marcar a un administrador que todavía no
+-- ha cerrado sesión y vuelto a entrar: mientras su sesión no lleve el rol, no podrá borrar ni modificar
+-- lo protegido. Después de este fichero, ejecuta supabase_endurecimiento.sql (ver SEGURIDAD.md).
 -- Es seguro repetirlo.
 
 -- ============ PASO A: marcar administradores (cambia los correos) ============

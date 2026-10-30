@@ -3048,10 +3048,11 @@ test('R6 ECC F-M3: prompt acotado para quien no es administrador (foto) y holgur
   assert.ok(mx, 'existe MAX_PROMPT_FOTO');
   const MAX_FOTO = Number(mx[1].replace(/_/g, ''));
   // Los prompts de foto reales de shared/app.js (con 40 categorias de 15 caracteres) deben caber con un 30 % de holgura
-  const plantillas = [...src.matchAll(/const prompt=`([\s\S]*?)`;/g)].map(m => m[1].replace(/\r\n/g, '\n'));
+  const plantillas = ['aiPromptFicha', 'aiPromptBusqueda']; // los constructores reales de shared/app.js (con la lista de categorías ya acotada)
   assert.strictEqual(plantillas.length, 2, 'los dos prompts de foto del cliente');
   for (const p of plantillas) {
-    const real = new Function('expertoEn', 'cats', 'return `' + p + '`')('material mecánico industrial', Array(40).fill('Categoria-12345')).length;
+    ctx.__c40 = Array(40).fill('Categoria-12345');
+    const real = ev(p + '(__c40)').length;
     assert.ok(real * 1.3 <= MAX_FOTO, 'prompt real de ' + real + ' caracteres con un 30 % de holgura cabe en ' + MAX_FOTO);
   }
   assert.ok(MAX_FOTO <= 2500, 'el tope sigue siendo corto (no un prompt libre)');
@@ -5030,4 +5031,209 @@ test('R6 W-8: dos logout(true) simultáneos cierran la sesión, vacían y recarg
     assert.strictEqual(ctx.__rl, 1);
     assert.ok(vacia(bases.almacen_db) && vacia(bases.almacen_mec_db));
   });
+});
+
+// ===== Pulido final (bloque R7) =====
+const leerRepo = (...p) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+const ALMACENES = ['almacen-electrico', 'almacen-mecanico'];
+
+// ---- C-1: la lista de categorías de los prompts de foto tiene tope (la función solo admite 2200 caracteres a quien no es administrador)
+test('R7 C-1: con 500 categorías de 60 caracteres los dos prompts de foto quedan por debajo del límite de la función (2200) con holgura, en los dos almacenes', () => {
+  const cats = Array.from({ length: 500 }, (_, i) => ('Cat' + i + '-').padEnd(60, 'x'));
+  ctx.__cats = cats;
+  const wh0 = ev('WH');
+  try {
+    for (const whKey of ['electrico', 'mecanico']) {
+      ev("WH={key:'" + whKey + "'}");
+      for (const f of ['aiPromptFicha', 'aiPromptBusqueda']) {
+        const p = ev(f + '(__cats)');
+        assert.ok(p.length <= 2200 - 150, f + ' (' + whKey + ') mide ' + p.length + ': debe dejar al menos 150 caracteres de holgura');
+        assert.ok(p.includes('Cat0-'), 'sigue llevando las primeras categorías');
+        assert.ok(!p.includes('Cat499-'), 'y no la lista entera');
+        assert.ok(p.includes(whKey === 'mecanico' ? 'mecánico' : 'eléctrico'));
+      }
+    }
+  } finally { ctx.__w = wh0; ev('WH=__w'); }
+});
+
+test('R7 C-1: aiCatList corta en una coma (nunca a mitad de nombre), no toca listas cortas y tolera entradas raras', () => {
+  const cats = Array.from({ length: 500 }, (_, i) => ('Cat' + i + '-').padEnd(60, 'x'));
+  ctx.__cats = cats;
+  const lista = ev('aiCatList(__cats)');
+  assert.ok(lista.length <= 1000 && lista.length > 900, 'longitud ' + lista.length);
+  lista.split(', ').forEach(n => assert.ok(cats.includes(n), 'nombre completo: ' + n));
+  assert.strictEqual(ev("aiCatList(['A','B'])"), 'A, B');
+  assert.strictEqual(ev('aiCatList([])'), '');
+  assert.strictEqual(ev('aiCatList(null)'), '');
+  assert.strictEqual(ev('aiCatList(undefined)'), '');
+  assert.strictEqual(ev("aiCatList(['x'.repeat(2000)])").length, 1000, 'un único nombre sin comas se corta en el tope');
+  assert.ok(ev('aiPromptFicha([])').includes('almacén: ninguna') && ev('aiPromptBusqueda([])').includes('almacén: ninguna'), 'sin categorías: "ninguna"');
+});
+
+test('R7 C-1: runAISearch envía a la IA el prompt con tope (no la lista completa) y aiFillFromPhoto usa el mismo constructor', async () => {
+  const el = { innerHTML: '', style: {}, classList: { add() {}, remove() {} } };
+  const getAntes = ctx.document.getElementById;
+  ctx.document.getElementById = () => el;
+  const items0 = ev('items');
+  try {
+    await conStubs(['aiBuscar'], async () => {
+      ctx.__items = Array.from({ length: 500 }, (_, i) => ({ id: 'I' + i, cat: ('Cat' + i + '-').padEnd(60, 'x') }));
+      ev("items=__items;__p=null;aiBuscar=async(b,p)=>{__p=p;throw Object.assign(new Error('x'),{status:413})}");
+      await ev("runAISearch('data:image/jpeg;base64,AAAA')");
+      const p = ev('__p');
+      assert.ok(typeof p === 'string' && p.length <= 2200 - 150, 'prompt de ' + (p && p.length));
+      assert.ok(el.innerHTML.includes('demasiado grande'), 'un 413 sigue dando un mensaje claro');
+    });
+  } finally { ctx.document.getElementById = getAntes; ctx.__i = items0; ev('items=__i'); }
+  assert.ok(ev('aiFillFromPhoto.toString()').includes('aiPromptFicha('), 'aiFillFromPhoto construye el prompt con aiPromptFicha');
+  assert.ok(!/cats\.join/.test(ev('aiFillFromPhoto.toString()') + ev('runAISearch.toString()')), 'ya no se concatena la lista entera');
+});
+
+// ---- C-2: el aviso de límite de búsquedas habla de hora/día, no de mes
+test('R7 C-2: si Brave responde 429 el aviso habla del límite por hora/día (no "de este mes")', async () => {
+  const el = { innerHTML: '', style: {}, classList: { add() {}, remove() {} }, disabled: false };
+  const getAntes = ctx.document.getElementById;
+  ctx.document.getElementById = () => el;
+  try {
+    await conStubs(['braveSearch', 'buildWebBase'], async () => {
+      ev("buildWebBase=()=>'rodamiento 6204';braveSearch=async()=>({error:true,status:429})");
+      await ev('runWebSearch()');
+      assert.ok(el.innerHTML.includes('por hora/día'), el.innerHTML);
+      assert.ok(!/este mes/.test(el.innerHTML), el.innerHTML);
+    });
+  } finally { ctx.document.getElementById = getAntes; }
+});
+
+// ---- C-3: ventanas muertas eliminadas
+test('R7 C-3: modal-pass y modal-mov-del ya no existen en ningún almacén, nada las abría y el texto del desbloqueo se pone al abrir', () => {
+  const app = leerRepo('shared', 'app.js');
+  for (const id of ['modal-pass', 'modal-mov-del', 'checkWipePass', 'mov-del-pass', 'pass-input']) assert.ok(!app.includes(id), id + ' no se usa en app.js');
+  for (const a of ALMACENES) {
+    const html = leerRepo(a, 'index.html');
+    for (const id of ['modal-pass', 'modal-mov-del', 'checkWipePass', 'mov-del-pass', 'pass-input']) assert.ok(!html.includes(id), a + ': sobra ' + id);
+    assert.ok(!html.includes('Introduce la contraseña de Ajustes'), a + ': texto por defecto obsoleto');
+    assert.ok(/id="unlock-msg"><\/div>/.test(html), a + ': el texto lo pone showRoleUnlock');
+    // todo openModal('modal-...') literal de app.js tiene su ventana en el HTML
+    for (const m of app.matchAll(/openModal\('(modal-[\w-]+)'\)/g)) assert.ok(html.includes('id="' + m[1] + '"'), a + ': falta ' + m[1]);
+    assert.ok(html.includes('id="modal-confirm"') && html.includes('id="modal-unlock"'), a + ': siguen las que sí se usan');
+  }
+});
+
+// ---- C-4: con la sesión cerrándose no se escribe en la base local que se va a vaciar
+async function contarEscrituras(fn) {
+  const dbAntes = ev('db'), rec = recogerAvisos();
+  ctx.__tx = 0;
+  ev("db={transaction(){__tx++;throw new Error('escritura')}}");
+  try { return await fn(); } finally { ctx.__db0 = dbAntes; ev('db=__db0'); rec.restaurar(); }
+}
+test('R7 C-4: con _cerrando, cfgPut / movUpdate / persistDirty / persistDirtyCfg no tocan la base local; sin _cerrando sí escriben', async () => {
+  try {
+    await contarEscrituras(async () => {
+      ev('_cerrando=true');
+      await ev("cfgPut('k',1)"); await ev("movUpdate({id:1,synced:true})"); await ev('persistDirty()'); await ev('persistDirtyCfg()');
+      assert.strictEqual(ev('__tx'), 0, 'durante el cierre no se abre ninguna transacción de escritura');
+      ev('_cerrando=false;__tx=0');
+      await assert.rejects(ev("cfgPut('k',1)"), /escritura/);
+      await assert.rejects(ev("movUpdate({id:1,synced:true})"), /escritura/);
+      assert.strictEqual(ev('__tx'), 2, 'fuera del cierre los dos intentan escribir');
+      ev('__tx=0'); await ev('persistDirty()');
+      assert.strictEqual(ev('__tx'), 3, 'persistDirty guarda sus tres colas');
+      ev('__tx=0'); await ev('persistDirtyCfg()');
+      assert.strictEqual(ev('__tx'), 1);
+    });
+  } finally { ev('_cerrando=false'); }
+});
+
+test('R7 C-4: la subida que hace logout ANTES de cerrar corre sin _cerrando; en cuanto empieza el cierre (_cerrando) una sincronización tardía ya no escribe', async () => {
+  await conSalida(async () => {
+    ev(`__cer=[];__tarde=null;
+      pushPendingMovements=async()=>{__orden.push('push');__cer.push(_cerrando);__pend=[];};
+      flushDirty=async()=>{__orden.push('flush');__cer.push(_cerrando);dirtyIds=new Set();};
+      flushDirtyCfg=async()=>{__orden.push('cfg');__cer.push(_cerrando);dirtyCfg=new Set();};
+      sb.auth.signOut=async()=>{__orden.push('signOut');__cer.push(_cerrando);return {error:null};};`);
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), ['push', 'flush', 'cfg', 'signOut']);
+    assert.deepStrictEqual(evj('__cer'), [false, false, false, true], 'la subida va antes de _cerrando; el signOut ya con _cerrando');
+    assert.strictEqual(ev('_cerrando'), true, 'hasta la recarga sigue cerrándose');
+  });
+});
+
+// ---- C-5: 23514 (límite de tamaño de la base de datos) en las listas de etiquetas
+async function conNubeCfg(codigo, fn) {
+  const rec = recogerAvisos();
+  ctx.__toastsC5 = [];
+  await conStubs(['toast', 'cfgPut', 'withTimeout'], async () => {
+    const wh0 = ev('WH'), sb0 = ev('sb'), dc0 = ev('dirtyCfg');
+    try {
+      ev(`WH={tblCfg:'config'};dirtyCfg=new Set();_cfgSoloLocal.clear();_cfgGrandeAviso=false;
+        toast=m=>{__toastsC5.push(m)};cfgPut=async()=>{};withTimeout=(p)=>p;
+        sb={from:()=>({upsert:async()=>({error:__codigoC5===null?null:{code:__codigoC5,message:'fallo'}})})}`);
+      ctx.__codigoC5 = codigo;
+      await fn();
+    } finally {
+      ctx.__w = wh0; ctx.__s = sb0; ctx.__d = dc0;
+      ev('WH=__w;sb=__s;dirtyCfg=__d;_cfgSoloLocal.clear();_cfgGrandeAviso=false'); rec.restaurar();
+    }
+  });
+}
+test('R7 C-5: 23514 en printedIds / modifiedIds es un fallo definitivo: se limpia la marca de pendiente y se avisa UNA sola vez', async () => {
+  await conNubeCfg('23514', async () => {
+    assert.strictEqual(await ev("cloudCfgPut('printedIds',[1,2])"), false);
+    assert.ok(!ev("dirtyCfg.has('printedIds')"), 'ya no queda pendiente para siempre');
+    assert.strictEqual(await ev("cloudCfgPut('modifiedIds',[1])"), false);
+    assert.ok(!ev("dirtyCfg.has('modifiedIds')"));
+    assert.strictEqual(await ev("cloudCfgPut('printedIds',[1,2,3])"), false);
+    const av = evj('__toastsC5');
+    assert.strictEqual(av.length, 1, 'un solo aviso: ' + av.join('|'));
+    assert.ok(av[0].includes('Lista demasiado grande para la nube; se mantiene solo en este móvil'), av[0]);
+    assert.ok(ev("_cfgSoloLocal.has('printedIds') && _cfgSoloLocal.has('modifiedIds')"), 'esta sesión no se pisa con la copia antigua de la nube');
+    assert.strictEqual(ev('hayPendientes()'), false, 'cerrar sesión ya no pide confirmación por esto');
+  });
+});
+test('R7 C-5: 23514 en cualquier otra clave, o otro error en las listas de etiquetas, sigue como pendiente y sin aviso', async () => {
+  await conNubeCfg('23514', async () => {
+    assert.strictEqual(await ev("cloudCfgPut('categories',['a'])"), false);
+    assert.ok(ev("dirtyCfg.has('categories')"), 'otras claves se mantienen pendientes');
+    assert.deepStrictEqual(evj('__toastsC5'), []);
+    assert.ok(!ev("_cfgSoloLocal.has('categories')"));
+  });
+  await conNubeCfg('57014', async () => {
+    assert.strictEqual(await ev("cloudCfgPut('printedIds',[1])"), false);
+    assert.ok(ev("dirtyCfg.has('printedIds')"), 'un error transitorio no es definitivo');
+    assert.deepStrictEqual(evj('__toastsC5'), []);
+  });
+  await conNubeCfg(null, async () => {
+    assert.strictEqual(await ev("cloudCfgPut('printedIds',[1])"), true);
+    assert.ok(!ev("dirtyCfg.has('printedIds')"));
+  });
+});
+
+// ---- C-6: sin useSupabaseAuth:true no hay acceso ni con una marca de sesión reciente; comentarios de límites y de config.js
+test('R7 C-6: authSessionOk devuelve false si useSupabaseAuth no es true (aunque haya marca de sesión reciente) y true con Supabase Auth y sesión', async () => {
+  const wh0 = ev('WH'), sb0 = ev('sb');
+  try {
+    ev("WH={sesKey:'se_r7'}");
+    store.se_r7 = String(Date.now()); store.almacen_sesion_sb = String(Date.now());
+    for (const cfg of ['{key:"electrico",sesKey:"se_r7",useSupabaseAuth:false}', '{key:"electrico",sesKey:"se_r7"}']) {
+      ev('var WAREHOUSE_CONFIG=' + cfg + ';sb={auth:{getSession:async()=>({data:{session:{user:{}}}})}}');
+      assert.ok(ev('sessionValid()'), 'la marca de sesión es reciente');
+      assert.strictEqual(await ev('authSessionOk()'), false, cfg);
+    }
+    ev('var WAREHOUSE_CONFIG={key:"electrico",useSupabaseAuth:true};sb={auth:{getSession:async()=>({data:{session:{user:{}}}})}}');
+    assert.strictEqual(await ev('authSessionOk()'), true, 'con Supabase Auth y sesión sigue entrando');
+  } finally {
+    delete store.se_r7; delete store.almacen_sesion_sb;
+    ctx.__w = wh0; ctx.__s = sb0; ev('WH=__w;sb=__s;WAREHOUSE_CONFIG=undefined; delete globalThis.WAREHOUSE_CONFIG');
+  }
+});
+test('R7 C-6: config.js de los dos almacenes dice que useSupabaseAuth debe ser true (el acceso antiguo ya no existe) y los límites del plano se describen como son', () => {
+  for (const a of ALMACENES) {
+    const c = leerRepo(a, 'config.js');
+    assert.ok(c.includes('Debe ser true. El acceso antiguo se eliminó; no usar false'), a);
+    assert.ok(!/false = acceso antiguo/.test(c), a);
+    assert.ok(/useSupabaseAuth: true/.test(c), a);
+  }
+  const app = leerRepo('shared', 'app.js');
+  assert.ok(/MAX_ESTANTERIAS y MAX_PASILLOS se aplican SOLO al leer/.test(app));
+  assert.ok(/el editor solo lo impone con las categorías/.test(app));
 });

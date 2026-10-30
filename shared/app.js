@@ -42,10 +42,12 @@ function dbClear(){return idbRun(STORE,'readwrite',s=>s.clear()).then(()=>{});}
 // Sustituye TODO el contenido en una única transacción (si falla, no queda a medias)
 function dbReplaceAll(list){return new Promise((res,rej)=>{try{const tx=db.transaction(STORE,'readwrite');const s=tx.objectStore(STORE);s.clear();list.forEach(it=>s.put(it));tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error||new Error('IndexedDB error'));tx.onabort=()=>rej(tx.error||new Error('IndexedDB abortado'));}catch(e){rej(e);}});}
 function cfgGet(key){return idbRun(CFG,'readonly',s=>s.get(key)).then(r=>r?r.value:null);}
-function cfgPut(key,value){return idbRun(CFG,'readwrite',s=>s.put({key,value})).then(()=>{});}
+// Con la sesión cerrándose (_cerrando) no se escribe en la base local que se va a vaciar: una sincronización que sobrevivió a la espera de 3 s no debe repoblarla.
+// (El envío de pendientes que hace logout va ANTES de poner _cerrando, así que no se ve afectado.)
+function cfgPut(key,value){if(_cerrando)return Promise.resolve();return idbRun(CFG,'readwrite',s=>s.put({key,value})).then(()=>{});}
 // Movimientos de stock
 function movPut(mov){return idbRun(MOV,'readwrite',s=>s.add(mov));}
-function movUpdate(mov){return idbRun(MOV,'readwrite',s=>s.put(mov)).then(()=>{});}
+function movUpdate(mov){if(_cerrando)return Promise.resolve();return idbRun(MOV,'readwrite',s=>s.put(mov)).then(()=>{});} // idem cfgPut: no reescribe una base que se está vaciando
 function movGetAll(){return idbRun(MOV,'readonly',s=>s.getAll()).then(r=>r||[]);}
 function movClear(){return idbRun(MOV,'readwrite',s=>s.clear()).then(()=>{});}
 // Borra del store local todas las líneas que coincidan en ts e itemId
@@ -159,10 +161,12 @@ function cleanText(s){return String(s==null?'':s).replace(/[<>"'&`\\]/g,'');}
 function cleanNum(v,min,max,def){v=Number(v);return Number.isFinite(v)?Math.max(min,Math.min(max,v)):def;}
 // Listas de texto que llegan de la nube o de una copia: con tope de cantidad y de longitud (una lista gigante congelaría la app en todos los móviles)
 function strArr(v,max=20000,len=200){return Array.isArray(v)?v.filter(x=>x!=null).map(x=>String(x).slice(0,len)).slice(0,max):[];}
-// Nombres (categorías, proveedores, familias de un artículo): máximo 500 de 60 caracteres, sin repetidos
+// Nombres (categorías, proveedores, familias de un artículo): máximo 500 de 60 caracteres, sin repetidos.
+// Este tope se aplica AL LEER (nube, copia, móvil); el editor solo lo impone con las categorías (ver 'Ya hay ... categorías'), no con los proveedores.
 function cleanNames(v){return [...new Set(strArr(v,Infinity,60))].slice(0,MAX_NOMBRES);}
 // Límites del plano: estanterías y pasillos, bloques por balda y cajones (filas x columnas) de un gavetero.
-// Son lo que el editor deja crear de verdad (40 bloques por balda; 12 x 12 = 144 cajones): un límite menor recortaría datos legítimos en silencio.
+// MAX_ESTANTERIAS y MAX_PASILLOS se aplican SOLO al leer (cleanShelves / cleanAisles): el editor no impide crear más y el sobrante se recortaría al recargar.
+// MAX_BLOQUES (40 por balda) y MAX_CAJONES (12 x 12 = 144) sí los impone también el editor: un límite menor recortaría datos legítimos en silencio.
 const MAX_ESTANTERIAS=500,MAX_PASILLOS=500,MAX_BLOQUES=40,MAX_CAJONES=144,MAX_NOMBRES=500;
 function cleanItem(it,fast){
   if(!it||!isSafeId(String(it.id)))return null;
@@ -285,7 +289,7 @@ const DIRTY_COLS=['stock','precio','loc','pos'];
 let _dirtyAviso=false;
 function _dirtyFallo(e,que){console.warn('Cola de pendientes ('+que+')',e);if(!_dirtyAviso){_dirtyAviso=true;try{toast('⚠ No se pudo '+que+' la lista de cambios pendientes en este móvil: si cierras la app antes de que se suban, podrían perderse');}catch(_){}}}
 // Devuelve una promesa que NUNCA rechaza (quien necesite esperar a que se guarde puede usar await)
-function persistDirty(){return Promise.all([['dirtyIds',()=>[...dirtyIds]],['dirtyDel',()=>[...dirtyDel]],['dirtyFields',()=>({...dirtyFields})]].map(([k,v])=>{
+function persistDirty(){if(_cerrando)return Promise.resolve([]);return Promise.all([['dirtyIds',()=>[...dirtyIds]],['dirtyDel',()=>[...dirtyDel]],['dirtyFields',()=>({...dirtyFields})]].map(([k,v])=>{
   try{return Promise.resolve(cfgPut(k,v())).catch(e=>_dirtyFallo(e,'guardar'));}catch(e){_dirtyFallo(e,'guardar');return Promise.resolve();}
 }));}
 function markDirty(id){dirtyIds.add(id);dirtyDel.delete(id);persistDirty();}
@@ -295,12 +299,14 @@ function clearDirtyDel(id){if(dirtyDel.delete(id))persistDirty();}
 // Claves de configuración (categorías, estanterías, plano...) cuyo último valor local aún no está en la nube.
 // Se persiste en cfg como dirtyIds; el valor a subir es siempre la copia local (cfgGet). Una clave sucia no se pisa al sincronizar.
 let dirtyCfg=new Set();
-function persistDirtyCfg(){return cfgPut('dirtyCfg',[...dirtyCfg]).catch(e=>console.warn('dirtyCfg no persistido',e));}
+function persistDirtyCfg(){if(_cerrando)return Promise.resolve();return cfgPut('dirtyCfg',[...dirtyCfg]).catch(e=>console.warn('dirtyCfg no persistido',e));}
 function markDirtyCfg(key){dirtyCfg.add(key);persistDirtyCfg();}
 function clearDirtyCfg(key){if(dirtyCfg.delete(key))persistDirtyCfg();}
 // Contador por clave: sube con CADA subida (cloudCfgPut). Una subida solo limpia la marca de pendiente si, al terminar, nadie más
 // ha escrito esa clave mientras tanto (si no, un valor más nuevo seguiría sin subir). La sincronización lo usa para no pisar claves cambiadas durante la lectura.
 let _cfgSeq=Object.create(null);
+let _cfgGrandeAviso=false; // el aviso de "lista demasiado grande para la nube" sale una sola vez por sesión
+const _cfgSoloLocal=new Set(); // claves cuya subida rechazó la base de datos por tamaño (23514): en esta sesión mandan los valores locales
 let _cfgFalloRed=false; // el último fallo de cloudCfgPut fue de red / tiempo agotado (lo usa flushDirtyCfg para dejar de insistir)
 function _esFalloRed(e){return !!e&&(!e.code||/Tiempo agotado|fetch|network|Load failed/i.test(String(e.message||e)));} // un error de Postgres lleva código; el de red no
 async function flushDirtyCfg(){
@@ -563,6 +569,14 @@ async function cloudCfgPut(key,value){
     // En las demás claves (estanterías, categorías...) un 42501 significa sesión caducada o anónima: se conserva lo local pendiente
     // (compromiso: si de verdad no hubiera permiso, se reintentaría en cada sincronización y el aviso de pendientes seguiría saliendo).
     if(e&&e.code==='42501'&&(key==='adminPass'||key==='loginCfg')){if(_cfgSeq[key]===seq)clearDirtyCfg(key);return false;}
+    // 23514 = la fila supera el límite de tamaño de la base de datos (200000 bytes). Solo las listas de etiquetas (printedIds / modifiedIds) no tienen tope de cantidad:
+    // reintentar no serviría nunca (la clave seguiría pendiente para siempre y cerrar sesión pediría confirmación siempre). Es un fallo definitivo: se deja solo en este móvil.
+    if(e&&e.code==='23514'&&(key==='printedIds'||key==='modifiedIds')){
+      if(_cfgSeq[key]===seq)clearDirtyCfg(key);
+      _cfgSoloLocal.add(key); // y las sincronizaciones de esta sesión no la pisan con la versión antigua de la nube
+      if(!_cfgGrandeAviso){_cfgGrandeAviso=true;try{toast('⚠ Lista demasiado grande para la nube; se mantiene solo en este móvil');}catch(_){}}
+      return false;
+    }
     markDirtyCfg(key); // un fallo nunca deja la clave limpia: pudo limpiarla una subida anterior que terminó bien mientras esta fallaba
     return false;
   }
@@ -829,7 +843,7 @@ async function _syncFromCloud(refrescarTodasFotos){
   const _s0={..._cfgSeq}; // contadores antes de leer: una clave guardada durante la lectura (aunque ya haya subido) no se pisa con lo leído
   const _cfg=await cloudCfgGetMany(['categories','providers','shelves','aisles','mapSize','printedIds','modifiedIds']);
   // undefined = falló, la clave sigue pendiente de subir o cambió durante la lectura (manda lo local: no se pisa ni se siembra), null = no hay fila
-  const g=k=>(_cfg===undefined||dirtyCfg.has(k)||(_cfgSeq[k]||0)!==(_s0[k]||0))?undefined:(k in _cfg?_cfg[k]:null);
+  const g=k=>(_cfg===undefined||dirtyCfg.has(k)||_cfgSoloLocal.has(k)||(_cfgSeq[k]||0)!==(_s0[k]||0))?undefined:(k in _cfg?_cfg[k]:null);
   const cCats=g('categories');
   const cProviders=g('providers');
   const cShelves=g('shelves');
@@ -1951,23 +1965,7 @@ async function aiFillFromPhoto(e){
   status.textContent='⏳ Analizando la foto y rellenando los datos...';
 
   const cats=[...new Set([...categories,...items.map(i=>i.cat)])].filter(Boolean);
-  const expertoEn = (WH && WH.key==='mecanico') ? 'material mecánico industrial' : 'material eléctrico industrial';
-  const prompt=`Eres un experto en ${expertoEn}. Te paso la foto de la etiqueta/referencia de un artículo de almacén. Extrae sus datos para rellenar una ficha.
-
-Categorías ya existentes en el almacén: ${cats.join(', ')||'ninguna'}
-
-Devuelve SOLO un objeto JSON (sin texto adicional, sin markdown) con esta estructura exacta:
-{
-  "nombre": "nombre claro y descriptivo del artículo (tipo + marca + modelo si se ve)",
-  "categoria": "elige la categoría MÁS adecuada DE LA LISTA de existentes; si ninguna encaja, propón un nombre corto de categoría nueva",
-  "referencia": "código/referencia del fabricante si se ve; si no, cadena vacía",
-  "marca": "marca/fabricante si se ve; si no, cadena vacía",
-  "equipo": "",
-  "notas": "características técnicas visibles: voltaje, amperios, polos, etc. (breve)"
-}
-
-Rellena solo lo que puedas deducir de la foto. Si un dato no se ve, deja la cadena vacía. No inventes referencias.`;
-
+  const prompt=aiPromptFicha(cats);
   try{
     const data=await aiBuscar(b64, prompt);
     let text=(data.text||'').trim().replace(/```json|```/g,'').trim();
@@ -1980,6 +1978,37 @@ Rellena solo lo que puedas deducir de la foto. Si un dato no se ve, deja la cade
   }finally{
     btn.disabled=false;btn.style.opacity='';
   }
+}
+
+// Prompt de "rellenar ficha desde foto". La lista de categorías se recorta (aiCatList): la función solo admite 2200 caracteres a quien no es administrador
+function aiPromptFicha(cats){
+  const expertoEn = (WH && WH.key==='mecanico') ? 'material mecánico industrial' : 'material eléctrico industrial';
+  return `Eres un experto en ${expertoEn}. Te paso la foto de la etiqueta/referencia de un artículo de almacén. Extrae sus datos para rellenar una ficha.
+
+Categorías ya existentes en el almacén: ${aiCatList(cats)||'ninguna'}
+
+Devuelve SOLO un objeto JSON (sin texto adicional, sin markdown) con esta estructura exacta:
+{
+  "nombre": "nombre claro y descriptivo del artículo (tipo + marca + modelo si se ve)",
+  "categoria": "elige la categoría MÁS adecuada DE LA LISTA de existentes; si ninguna encaja, propón un nombre corto de categoría nueva",
+  "referencia": "código/referencia del fabricante si se ve; si no, cadena vacía",
+  "marca": "marca/fabricante si se ve; si no, cadena vacía",
+  "equipo": "",
+  "notas": "características técnicas visibles: voltaje, amperios, polos, etc. (breve)"
+}
+
+Rellena solo lo que puedas deducir de la foto. Si un dato no se ve, deja la cadena vacía. No inventes referencias.`;
+}
+
+// Lista de categorías para los prompts de foto: como mucho ~1000 caracteres, cortada en una coma (nunca a mitad de nombre).
+// Sin este tope, 500 categorías de 60 caracteres superarían el límite de 2200 de la función (413 "payload_too_large").
+const AI_CATS_MAX=1000;
+function aiCatList(cats){
+  const s=(Array.isArray(cats)?cats:[]).map(c=>String(c)).join(', ');
+  if(s.length<=AI_CATS_MAX)return s;
+  const corte=s.slice(0,AI_CATS_MAX);
+  const i=corte.lastIndexOf(',');
+  return i>0?corte.slice(0,i):corte;
 }
 
 function applyAiFill(r){
@@ -3244,10 +3273,27 @@ async function runAISearch(dataUrl){
 
   const b64=dataUrl.split(',')[1];
   const cats=[...new Set(items.map(i=>i.cat))].filter(Boolean);
-  const expertoEn = (WH && WH.key==='mecanico') ? 'material mec\u00e1nico industrial' : 'material el\u00e9ctrico industrial';
-  const prompt=`Eres un experto en ${expertoEn}. Identifica el componente de la foto.
+  const prompt=aiPromptBusqueda(cats);
 
-Categor\u00edas existentes en el almac\u00e9n: ${cats.join(', ')||'ninguna'}
+  try{
+    const data=await aiBuscar(b64, prompt);
+    let text=(data.text||'').trim().replace(/```json|```/g,'').trim();
+    let r;
+    try{r=JSON.parse(text);}catch(e){throw new Error('Respuesta no v\u00e1lida');}
+    lastAIIdent=r;   // guardamos la identificaci\u00f3n cruda para la b\u00fasqueda en internet
+    renderAIResult(buildAIMatches(r));   // la app busca las coincidencias en el inventario local
+  }catch(err){
+    console.error(err);
+    document.getElementById('ai-result').innerHTML='<div class="empty"><p>'+esc(aiErrorMsg(err))+'</p></div>';
+  }
+}
+
+// Prompt de "buscar por foto". La lista de categor\u00edas se recorta (aiCatList): la funci\u00f3n solo admite 2200 caracteres a quien no es administrador
+function aiPromptBusqueda(cats){
+  const expertoEn = (WH && WH.key==='mecanico') ? 'material mec\u00e1nico industrial' : 'material el\u00e9ctrico industrial';
+  return `Eres un experto en ${expertoEn}. Identifica el componente de la foto.
+
+Categor\u00edas existentes en el almac\u00e9n: ${aiCatList(cats)||'ninguna'}
 
 Devuelve SOLO un objeto JSON (sin texto adicional, sin markdown):
 {
@@ -3260,18 +3306,6 @@ Devuelve SOLO un objeto JSON (sin texto adicional, sin markdown):
   "busqueda_sugerida": "los mejores t\u00e9rminos para buscar la ficha t\u00e9cnica de este componente en internet (marca + referencia + tipo si los tienes)",
   "fabricante_web": "dominio oficial del fabricante si lo conoces con seguridad (p.ej. 'siemens.com', 'lovatoelectric.es'); si no, vac\u00edo. SOLO el dominio, sin https"
 }`;
-
-  try{
-    const data=await aiBuscar(b64, prompt);
-    let text=(data.text||'').trim().replace(/```json|```/g,'').trim();
-    let r;
-    try{r=JSON.parse(text);}catch(e){throw new Error('Respuesta no válida');}
-    lastAIIdent=r;   // guardamos la identificaci\u00f3n cruda para la b\u00fasqueda en internet
-    renderAIResult(buildAIMatches(r));   // la app busca las coincidencias en el inventario local
-  }catch(err){
-    console.error(err);
-    document.getElementById('ai-result').innerHTML='<div class="empty"><p>'+esc(aiErrorMsg(err))+'</p></div>';
-  }
 }
 
 // Normaliza texto para comparar (min\u00fasculas, sin acentos ni signos)
@@ -3453,7 +3487,7 @@ async function runWebSearch(){
 
   if(!huboAlgo){
     let msg='No se encontraron resultados en internet.';
-    if(huboLimite)msg='Se ha alcanzado el l\u00edmite de b\u00fasquedas en internet de este mes. Int\u00e9ntalo m\u00e1s adelante.';
+    if(huboLimite)msg='Has alcanzado el l\u00edmite de b\u00fasquedas por hora/d\u00eda; int\u00e9ntalo m\u00e1s tarde.';
     cont.innerHTML='<div style="font-size:13px;color:var(--text2);">'+esc(msg)+'</div>';
     return;
   }
@@ -3904,7 +3938,7 @@ async function authSessionOk(){
       return hayToken;
     }catch(e){return hayToken;}
   }
-  return true;
+  return false; // sin useSupabaseAuth:true no hay acceso: una marca de sesión reciente no basta (doLogin también lo rechaza)
 }
 // Distingue por qué falla el inicio de sesión: credenciales erróneas (400 / invalid_credentials), problema de red
 // (sin respuesta: status 0 o ausente, AuthRetryableFetchError, 5xx o excepción), demasiados intentos (429) u otro error.

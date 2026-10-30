@@ -1,24 +1,27 @@
 -- ============================================================================
--- ENDURECIMIENTO DE LA BASE DE DATOS (bloque R6 de la auditoría final)
+-- ENDURECIMIENTO DE LA BASE DE DATOS
 -- ============================================================================
 -- Ejecutar en Supabase -> SQL Editor, DESPUÉS de supabase_admin_roles.sql,
--- supabase_usuario_movimientos.sql y supabase_movimientos_unicos.sql.
+-- supabase_usuario_movimientos.sql y supabase_movimientos_unicos.sql: es SIEMPRE el último
+-- (orden completo en SEGURIDAD.md, "Puesta en marcha").
 -- Es seguro repetirlo (idempotente) y NO borra ni modifica filas: no hay DROP TABLE,
 -- DELETE ni TRUNCATE. No toca las políticas de RLS (esas son las de supabase_admin_roles.sql).
 --
 -- Qué hace (cada paso lleva su explicación más abajo):
---   1) Corrige el disparador que anota quién hizo cada movimiento (DB-M2).
---   2) Crea índices para el histórico de precios (DB-LOW3).
---   3) Quita permisos que sobran en las tablas del almacén y en las funciones auxiliares (DB-LOW4).
---   4) Cierra las tablas heredadas de contraseñas (app_auth) (DB-M1).
---   5) Añade límites de tamaño a artículos y configuración, sin bloquear filas existentes (SEC-M1).
+--   1) Corrige el disparador que anota quién hizo cada movimiento.
+--   2) Crea índices para el histórico de precios.
+--   3) Quita permisos que sobran en las tablas del almacén y en las funciones auxiliares.
+--   4) Cierra las tablas heredadas de contraseñas (app_auth).
+--   5) Añade límites de tamaño a artículos y configuración, sin bloquear filas existentes.
 --   6) Comprobación final: UNA sola tabla de resultados con OK / REVISAR en cada fila.
 --
 -- IMPORTANTE:
 --   · Todo el script se ejecuta de una vez; si algo falla se corta y no se aplica nada más
 --     (vuelve a ejecutarlo tras corregir el aviso).
---   · Si algún día vuelves a ejecutar supabase_usuario_movimientos.sql, ese fichero reinstala la
+--   · Si vuelves a ejecutar supabase_usuario_movimientos.sql, ese fichero reinstala la
 --     versión ANTIGUA de la función del apartado 1: vuelve a ejecutar este fichero después.
+--     Por regla general, tras repetir cualquiera de los dos ficheros anteriores (usuario_movimientos
+--     o movimientos_unicos), termina siempre repitiendo este.
 --   · El apartado 3 NO toca los permisos de lectura/escritura de los usuarios con sesión
 --     (SELECT, INSERT, UPDATE, DELETE): siguen mandando las políticas de RLS. Un usuario normal
 --     sigue pudiendo ver y crear artículos y movimientos.
@@ -36,12 +39,13 @@ BEGIN
   END IF;
 END $$;
 
--- ============ 1) Disparador de "usuario" del movimiento (DB-M2) ============
--- Antes: en TODO insert se escribía auth.jwt()->>'email'. Sin sesión (SQL Editor, restauraciones
--- con pg_restore, COPY) eso da NULL y se perdía quién hizo cada movimiento.
--- Ahora: en un UPDATE el usuario no cambia nunca; en un INSERT solo se sobrescribe con el correo
--- de la sesión si el rol es 'authenticated' (la app). Con cualquier otro rol (SQL Editor, servicio)
--- se respeta el valor que traiga la fila.
+-- ============ 1) Disparador de "usuario" del movimiento ============
+-- La versión de supabase_usuario_movimientos.sql escribe auth.jwt()->>'email' en TODO insert. Sin
+-- sesión (SQL Editor, restauraciones con pg_restore, COPY) eso da NULL y se perdería quién hizo
+-- cada movimiento.
+-- Esta versión: en un UPDATE el usuario no cambia nunca; en un INSERT solo se sobrescribe con el
+-- correo de la sesión si el rol es 'authenticated' (la app). Con cualquier otro rol (SQL Editor,
+-- servicio) se respeta el valor que traiga la fila.
 CREATE OR REPLACE FUNCTION public.set_movimiento_usuario() RETURNS trigger
 LANGUAGE plpgsql SET search_path = '' AS $$
 BEGIN
@@ -53,7 +57,7 @@ BEGIN
   RETURN NEW;
 END $$;
 
--- ============ 2) Índices del histórico de precios (DB-LOW3) ============
+-- ============ 2) Índices del histórico de precios ============
 -- La app pide el histórico de un artículo ordenado por fecha (item_id, ts DESC) y el listado
 -- completo por fecha (ts DESC). Sin índices cada consulta recorre toda la tabla.
 -- CREATE INDEX IF NOT EXISTS: no falla si ya existen. Bloquea las escrituras de esa tabla
@@ -81,7 +85,7 @@ END $$;
 --                       'public.items_mec'::regclass, 'public.config_mec'::regclass)
 --      AND contype IN ('p', 'u');
 
--- ============ 3) Permisos que sobran (DB-LOW4) ============
+-- ============ 3) Permisos que sobran ============
 -- Supabase concede por defecto TODOS los permisos de tabla a anon y authenticated; lo único que
 -- protege es RLS. Se quitan los que la app nunca usa, SOLO en las 8 tablas del almacén (no es global:
 -- el proyecto puede compartirse con otras apps).
@@ -120,10 +124,10 @@ BEGIN
   END IF;
 END $$;
 
--- ============ 4) Tablas heredadas de contraseñas (DB-M1) ============
--- app_auth (y app_auth_antigua, si existe) solo servían al acceso antiguo (useSupabaseAuth:false).
--- Ambos almacenes usan ya Supabase Auth, así que se cierran del todo: RLS activada y ningún permiso
--- para anon ni authenticated. (Si algún día volvieras al acceso antiguo, habría que reabrirlas.)
+-- ============ 4) Tablas heredadas de contraseñas ============
+-- app_auth (y app_auth_antigua, si existe) solo servían al acceso antiguo por contraseña propia, que
+-- la app ya no admite (solo Supabase Auth). Se cierran del todo: RLS activada y ningún permiso
+-- para anon ni authenticated.
 DO $$
 DECLARE t text;
 BEGIN
@@ -137,7 +141,7 @@ END $$;
 --   SELECT policyname, tablename FROM pg_policies WHERE schemaname='public' AND tablename IN ('app_auth','app_auth_antigua');
 --   DROP POLICY "nombre de la política" ON public.app_auth;
 
--- ============ 5) Límites de tamaño (SEC-M1) ============
+-- ============ 5) Límites de tamaño ============
 -- Evitan que una sesión (o un fallo) meta filas enormes que llenen la base o ralenticen la app:
 --   · config.value        < 200000 bytes de TEXTO del valor, sin comprimir: octet_length(value::text)
 --                         (vale para jsonb y para text). Es el tamaño que envía la app, no el que ocupa
@@ -195,6 +199,9 @@ RESET lock_timeout;
 -- necesariamente un fallo del almacén; la fila 11 es la que comprueba solo las tablas del almacén).
 -- Fila 60: espera 3 restricciones por cada tabla items que exista (foto, notas y, en su tabla config
 -- hermana, el tamaño del valor): 3 con un almacén, 6 con los dos.
+-- Qué hacer con un REVISAR: fila 10 = hay una tabla pública sin RLS, quizá de otra aplicación que comparte
+-- el proyecto (usa la consulta del final). Fila 60 = una fila existente incumple un límite de tamaño (o falta
+-- la columna), así que esa restricción no se creó: localiza la fila con las consultas del apartado 5.
 WITH tablas AS (        -- las tablas del almacén que existen
   SELECT c.oid, c.relname
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace

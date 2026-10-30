@@ -564,32 +564,6 @@
   </div>
 </div>
 
-<!-- CONTRASEÑA PARA BORRAR -->
-<div class="modal-bg center" id="modal-pass">
-  <div class="modal small">
-    <h2>Contraseña requerida</h2>
-    <div class="msub">Introduce la contraseña para borrar todo el inventario.</div>
-    <div class="fg"><input type="password" class="fi" id="pass-input" placeholder="Contraseña" onkeydown="if(event.key==='Enter')checkWipePass()"></div>
-    <div class="fr">
-      <button class="btn" onclick="closeModal('modal-pass')">Cancelar</button>
-      <button class="btn btn-primary" onclick="checkWipePass()">Continuar</button>
-    </div>
-  </div>
-</div>
-
-<!-- CONTRASEÑA PARA BORRAR LÍNEA DE MOVIMIENTO -->
-<div class="modal-bg center" id="modal-mov-del">
-  <div class="modal small">
-    <h2>Borrar línea</h2>
-    <div class="msub" id="mov-del-msg">Introduce la contraseña para borrar esta línea de movimiento.</div>
-    <div class="fg"><input type="password" class="fi" id="mov-del-pass" placeholder="Contraseña" onkeydown="if(event.key==='Enter')confirmDeleteMov()"></div>
-    <div class="fr">
-      <button class="btn" onclick="closeModal('modal-mov-del')">Cancelar</button>
-      <button class="btn btn-danger" onclick="confirmDeleteMov()">Borrar línea</button>
-    </div>
-  </div>
-</div>
-
 <!-- INFO / RESULTADO DIAGNÓSTICO -->
 <div class="modal-bg center" id="modal-info">
   <div class="modal small">
@@ -618,7 +592,7 @@
 <div class="modal-bg center" id="modal-unlock">
   <div class="modal small">
     <h2>🔒 Acción protegida</h2>
-    <div class="msub" id="unlock-msg">Introduce la contraseña de Ajustes para continuar. Una vez desbloqueado, no te la volverá a pedir mientras tengas la app abierta.</div>
+    <div class="msub" id="unlock-msg"></div>
     <div class="fg"><input type="password" class="fi" id="unlock-pass" placeholder="Contraseña" onkeydown="if(event.key==='Enter')submitUnlock()"></div>
     <div class="fr">
       <button class="btn" onclick="closeModal('modal-unlock');pendingAdminAction=null;">Cancelar</button>
