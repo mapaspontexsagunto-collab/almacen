@@ -4391,7 +4391,9 @@ function validateAddForm(){
 }
 
 // ===== ESCÁNER DE FACTURAS =====
-let _invLines=[];       // [{desc,qty,price,unit,status:'pending'|'assigned'|'ignored',itemId}]
+let _invLines=[];       // [{desc,ref,qty,price,unit,status:'pending'|'assigned'|'ignored',itemId}]
+let _invProvider='';    // proveedor extraído del encabezado
+let _invFecha='';       // fecha extraída del encabezado
 let _invCreateIdx=null; // índice de línea que está creando un artículo nuevo
 
 async function _pdfToB64(file){
@@ -4463,9 +4465,18 @@ async function aiFillFromInvoice(){
     document.getElementById('inv-loading').style.display='flex';
     document.getElementById('inv-body').style.display='none';
     try{
-      const prompt=`Eres un asistente de almacén. Analiza esta factura y devuelve SOLO JSON sin texto extra, con este formato exacto:
-{"lines":[{"desc":"nombre artículo","qty":1,"price":0.00,"unit":"ud"}]}
-Extrae cada línea de producto. qty=cantidad, price=precio unitario sin IVA o con IVA si no hay dato sin IVA, unit=unidad (ud/m/kg/l/etc). Si no hay precio pon null.`;
+      const prompt=`Eres un experto en facturas, albaranes y ofertas de material industrial. Analiza el documento y devuelve SOLO JSON sin texto extra, con este formato exacto:
+{"proveedor":"nombre empresa emisora","fecha":"DD/MM/YYYY o vacío","lines":[{"desc":"descripción del artículo","ref":"referencia fabricante","qty":1.0,"price":0.00,"unit":"ud"}]}
+
+Reglas para extraer cada campo:
+- proveedor: nombre de la empresa que emite el documento (encabezado)
+- fecha: fecha del documento en formato DD/MM/YYYY; vacío si no se ve
+- desc: nombre/descripción del artículo. Si la línea empieza con un código numérico de proveedor (ej: "73528 SOPORTE..."), incluye solo la descripción ("SOPORTE...") o toda la línea si no hay separación clara
+- ref: referencia del fabricante o código técnico. Busca patrones como "REF-XXX", "Ref:", "Ref. ", códigos alfanuméricos con guiones (ej: BMY3-016). Si no hay, cadena vacía
+- qty: cantidad numérica (número, no texto)
+- price: precio UNITARIO. Si el precio mostrado ya es neto/con descuento aplicado, usa ese. Si no hay precio, null
+- unit: unidad de medida (ud/m/kg/l/etc.). Si no se indica, "ud"
+Extrae TODAS las líneas de producto visibles.`;
       const data=await aiBuscar(b64,prompt);
       let parsed={lines:[]};
       try{
@@ -4473,6 +4484,8 @@ Extrae cada línea de producto. qty=cantidad, price=precio unitario sin IVA o co
         if(m)parsed=JSON.parse(m[0]);
       }catch(_){}
       _invLines=(parsed.lines||[]).map(l=>({...l,status:'pending',itemId:null}));
+      _invProvider=parsed.proveedor||'';
+      _invFecha=parsed.fecha||'';
       _invCreateIdx=null;
       renderInvoiceModal();
     }catch(err){
@@ -4512,7 +4525,7 @@ function renderInvoiceLines(){
     }
     return `<div class="inv-line${l.status!=='pending'?' done':''}" id="inv-line-${i}">
       <div class="inv-line-desc">${esc(l.desc||'Sin descripción')}</div>
-      <div class="inv-line-info">${esc(qtyStr)} &nbsp; ${esc(priceStr)}</div>
+      <div class="inv-line-info">${l.ref?`<span style="font-family:'DM Mono',monospace;background:var(--surface2);border-radius:4px;padding:1px 5px;margin-right:6px;">${esc(l.ref)}</span>`:''}${esc(qtyStr)} &nbsp; ${esc(priceStr)}</div>
       ${badgeHtml}
       <div class="inv-line-acts">${actsHtml}</div>
     </div>`;
@@ -4526,8 +4539,8 @@ function openInvoiceSearch(idx){
   _invCreateIdx=null;
   const line=_invLines[idx];
   document.getElementById('inv-srch-idx').value=idx;
-  document.getElementById('inv-srch-q').value=line.desc||'';
-  document.getElementById('inv-srch-line-desc').textContent=line.desc||'';
+  document.getElementById('inv-srch-q').value=line.ref||line.desc||'';
+  document.getElementById('inv-srch-line-desc').textContent=(line.ref?line.ref+' — ':'')+( line.desc||'');
   doInvoiceSearch(idx);
   openModal('modal-inv-search');
 }
@@ -4560,9 +4573,9 @@ async function assignInvoiceLine(idx,itemId){
   const newStock=prevStock+qty;
   it.stock=newStock;
   try{
-    await registrarMovimiento(it,prevStock,newStock,'Compra',coste,null);
+    await registrarMovimiento(it,prevStock,newStock,'Compra',coste,_invProvider||null);
     await dbPut(it);await cloudPut(it,{photo:false});
-    if(price!=null){await cloudPriceAdd({itemId:it.id,price:+price,ts:Date.now(),provider:''});}
+    if(price!=null){await cloudPriceAdd({itemId:it.id,price:+price,ts:Date.now(),provider:_invProvider||''});}
     items=await dbGetAll();
   }catch(e){
     it.stock=prevStock;toast('⚠ Error al registrar: '+(e.message||e));return;
@@ -4582,6 +4595,7 @@ function openInvoiceCreate(idx){
   // Pre-fill name and price from invoice line
   setTimeout(()=>{
     const nEl=document.getElementById('f-name');if(nEl&&line.desc)nEl.value=line.desc;
+    const rEl=document.getElementById('f-ref');if(rEl&&line.ref)rEl.value=line.ref;
     const pEl=document.getElementById('f-precio');
     if(pEl&&line.price!=null){pEl.value=(+line.price).toFixed(2);}
     const sEl=document.getElementById('f-stock');if(sEl&&line.qty!=null)sEl.value=line.qty;
