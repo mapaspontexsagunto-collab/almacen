@@ -4535,7 +4535,10 @@ function _loadPdfJs(){
 // PDF → una imagen (base64 JPEG) por página (máx. 3 páginas), cada una con buena resolución
 async function _pdfToB64(file){
   await _loadPdfJs();
-  const pdf=await withTimeout(window.pdfjsLib.getDocument({data:await file.arrayBuffer(),isEvalSupported:false,enableXfa:false,maxImageSize:16777216}).promise,60000,'pdf');
+  const tarea=window.pdfjsLib.getDocument({data:await file.arrayBuffer(),isEvalSupported:false,enableXfa:false,maxImageSize:16777216});
+  let pdf;
+  try{pdf=await withTimeout(tarea.promise,60000,'pdf');}
+  catch(e){try{tarea.destroy();}catch(_){}throw e;} // si se agota el tiempo, se libera la tarea
   try{
     const out=[];
     const nPages=Math.min(pdf.numPages,3);
@@ -4547,9 +4550,10 @@ async function _pdfToB64(file){
       if(area>4e6)sc*=Math.sqrt(4e6/area);                  // y como máximo ~4 millones de píxeles
       const vp=page.getViewport({scale:sc});
       const cv=document.createElement('canvas');cv.width=Math.round(vp.width);cv.height=Math.round(vp.height);
-      await withTimeout(page.render({canvasContext:cv.getContext('2d'),viewport:vp}).promise,60000,'pdf');
-      out.push(cv.toDataURL('image/jpeg',0.88).split(',')[1]);
-      cv.width=0;cv.height=0; // libera la memoria del lienzo
+      try{
+        await withTimeout(page.render({canvasContext:cv.getContext('2d'),viewport:vp}).promise,60000,'pdf');
+        out.push(cv.toDataURL('image/jpeg',0.88).split(',')[1]);
+      }finally{cv.width=0;cv.height=0;} // libera la memoria del lienzo aunque falle
     }
     return out;
   }finally{try{pdf.destroy();}catch(_){}}
@@ -4622,6 +4626,7 @@ async function handleInvoiceFile(e){
       todas=todas.concat(limpio.lines);
       if(todas.length>=INV_MAX_LINES)break;
     }
+    if(!vigente())return; // también tras una página que falló: si se cerró o se bloqueó, se descarta
     _invUnreadable=todas.length===0&&_invPagesBad>0;
     _invLines=todas.slice(0,INV_MAX_LINES);
     renderInvoiceModal();
@@ -4631,8 +4636,8 @@ async function handleInvoiceFile(e){
     toast('⚠ Error al analizar la factura: '+_invErrMsg(err));
     closeModal('modal-invoice');
   }finally{
-    if(gen===_invScanId){ // si se cerró la ventana o se bloqueó, closeModal ya lo restableció
-      _invScanning=false;
+    if(gen===_invScanId)_invScanning=false; // si se cerró la ventana o se bloqueó, closeModal ya lo restableció
+    if(!_invScanning){ // el indicador solo se quita si no hay otro escaneo más reciente en marcha
       document.getElementById('inv-loading').style.display='none';
       document.getElementById('inv-body').style.display='block';
     }
@@ -4671,7 +4676,7 @@ function renderInvoiceLines(){
       badgeHtml=`<span class="inv-badge pending">Pendiente</span>`;
       editHtml=`<div class="inv-line-edit">
         <label>Cant. <input type="text" inputmode="decimal" class="inv-in${l.qty==null?' bad':''}" value="${esc(l.qty==null?'':String(l.qty))}" onchange="invoiceEdit(${i},'qty',this)"></label>
-        <label>Precio € <input type="text" inputmode="decimal" class="inv-in${l.priceBad?' bad':''}" value="${esc(l.price==null?'':String(l.price))}" placeholder="—" onchange="invoiceEdit(${i},'price',this)"></label>
+        <label>Precio € <input type="text" inputmode="decimal" class="inv-in${l.priceBad?' bad':''}" value="${esc(l.price==null?'':String(l.price).replace('.',','))}" placeholder="—" onchange="invoiceEdit(${i},'price',this)"></label>
         <span style="font-size:12px;color:var(--text2);">/${esc(l.unit||'ud')}</span>
       </div>`;
       actsHtml=`<button class="btn btn-primary" onclick="openInvoiceSearch(${i})">Asignar artículo</button><button class="btn" onclick="openInvoiceCreate(${i})">Crear nuevo</button><button class="btn" onclick="invoiceIgnore(${i})">Ignorar</button>`;

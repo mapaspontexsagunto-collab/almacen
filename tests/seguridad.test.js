@@ -270,6 +270,7 @@ test('escáner: parseNumES entiende el formato español e inglés y rechaza lo q
   assert.strictEqual(t.parseNumES('1.500', { miles: true }), 1500);
   assert.strictEqual(t.parseNumES('12.500.000', { miles: true }), 12500000);
   assert.strictEqual(t.parseNumES('1,5'), 1.5);
+  assert.strictEqual(t.parseNumES('0,125'), 0.125, 'precio con 3 decimales con coma (así se muestra en el campo)');
   assert.ok(Number.isNaN(t.parseNumES('1e5')));
   assert.ok(Number.isNaN(t.parseNumES('0x10')));
 });

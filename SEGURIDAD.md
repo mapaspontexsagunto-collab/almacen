@@ -70,4 +70,5 @@ Un corte momentáneo (cambio de repetidor wifi) se reintenta una vez antes de av
 - La función `bright-worker` no está en este repositorio: hoy basta una sesión de usuario (no solo administradores) y debe limitar
   el tamaño de la imagen. Si se quiere que solo la usen administradores, hay que comprobar el rol dentro de la función.
 - La seguridad real de los datos es RLS y el rol de administrador en Supabase, no el candado de la pantalla: cualquier usuario con
-  sesión podría escribir artículos y movimientos llamando a la API; solo el histórico de precios es exclusivo de administradores.
+  sesión podría escribir artículos y movimientos llamando a la API; la base de datos reserva a los administradores el histórico de precios
+  y, además, borrar artículos y modificar o borrar movimientos.
