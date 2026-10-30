@@ -275,11 +275,14 @@ function cleanAisles(list){
 }
 
 // ---- Cola de cambios pendientes de subir (offline / fallos de red)
-let dirtyIds=new Set(), dirtyDel=new Set(), appReady=false;
-function persistDirty(){cfgPut('dirtyIds',[...dirtyIds]).catch(()=>{});cfgPut('dirtyDel',[...dirtyDel]).catch(()=>{});}
+// dirtyIds = artículos a subir ENTEROS (altas, ediciones del formulario); dirtyFields = cambios PARCIALES que fallaron
+// (id -> {columna:valor}, solo stock/precio/loc/pos): se suben con update y nunca recrean un artículo borrado.
+let dirtyIds=new Set(), dirtyDel=new Set(), dirtyFields=Object.create(null), appReady=false;
+const DIRTY_COLS=['stock','precio','loc','pos'];
+function persistDirty(){cfgPut('dirtyIds',[...dirtyIds]).catch(()=>{});cfgPut('dirtyDel',[...dirtyDel]).catch(()=>{});cfgPut('dirtyFields',{...dirtyFields}).catch(()=>{});}
 function markDirty(id){dirtyIds.add(id);dirtyDel.delete(id);persistDirty();}
-function clearDirty(id){if(dirtyIds.delete(id))persistDirty();}
-function markDirtyDel(id){dirtyDel.add(id);dirtyIds.delete(id);persistDirty();}
+function clearDirty(id){const f=id in dirtyFields;if(f)delete dirtyFields[id];if(dirtyIds.delete(id)||f)persistDirty();}
+function markDirtyDel(id){dirtyDel.add(id);dirtyIds.delete(id);delete dirtyFields[id];persistDirty();}
 function clearDirtyDel(id){if(dirtyDel.delete(id))persistDirty();}
 // Claves de configuración (categorías, estanterías, plano...) cuyo último valor local aún no está en la nube.
 // Se persiste en cfg como dirtyIds; el valor a subir es siempre la copia local (cfgGet). Una clave sucia no se pisa al sincronizar.
@@ -296,6 +299,49 @@ async function flushDirtyCfg(){
     await cloudCfgPut(k,v); // si falla vuelve a quedar en la cola
   }
 }
+// Anota columnas que no se pudieron subir (se fusionan con lo que ya hubiera). Si el artículo ya está pendiente entero, no hace falta.
+function markDirtyFields(id,fields){
+  if(dirtyDel.has(id)||dirtyIds.has(id))return;
+  const f={...(dirtyFields[id]||{})};
+  DIRTY_COLS.forEach(c=>{if(fields&&c in fields)f[c]=fields[c];});
+  if(!Object.keys(f).length)return;
+  dirtyFields[id]=f;persistDirty();
+}
+// Quita de la cola las columnas indicadas (o todas) de un artículo
+function clearDirtyFields(id,cols){
+  const f=dirtyFields[id];if(!f)return;
+  (cols||Object.keys(f)).forEach(c=>{delete f[c];});
+  if(!Object.keys(f).length)delete dirtyFields[id];
+  persistDirty();
+}
+// ¿Hay un stock local sin subir? (entonces manda el local y no se debe machacar con el de la nube)
+function stockPendiente(id){return dirtyIds.has(id)||!!(dirtyFields[id]&&'stock' in dirtyFields[id]);}
+// Cuenta TODA la cola local sin subir: artículos enteros, borrados, columnas sueltas y configuración (dirtyCfg).
+// La configuración pendiente también cuenta: si se cierra sesión sin subirla, la subiría quien entre después (o se
+// perdería si ese usuario no tiene permisos de escritura).
+function hayPendientes(){return dirtyIds.size>0||dirtyDel.size>0||Object.keys(dirtyFields).length>0||dirtyCfg.size>0;}
+// Carga las colas guardadas en el móvil (artículos y configuración; antes de la primera sincronización). Los valores se validan por tipo.
+async function loadDirty(){
+  try{dirtyIds=new Set((await cfgGet('dirtyIds'))||[]);dirtyDel=new Set((await cfgGet('dirtyDel'))||[]);}catch(e){}
+  try{dirtyCfg=new Set((await cfgGet('dirtyCfg'))||[]);}catch(e){console.warn('No se pudo leer la cola de configuración pendiente',e);}
+  dirtyFields=Object.create(null);
+  try{
+    const df=await cfgGet('dirtyFields');
+    if(df&&typeof df==='object')for(const id of Object.keys(df)){
+      const o=df[id];
+      if(!isSafeId(id)||!o||typeof o!=='object')continue;
+      const f={};
+      for(const c of DIRTY_COLS){
+        if(!(c in o))continue;
+        const v=o[c];
+        if(c==='stock'){if(typeof v==='number'&&Number.isFinite(v))f[c]=v;}
+        else if(c==='precio'){if(v===null||(typeof v==='number'&&Number.isFinite(v)))f[c]=v;}
+        else if(typeof v==='string')f[c]=v;
+      }
+      if(Object.keys(f).length)dirtyFields[id]=f;
+    }
+  }catch(e){}
+}
 // Sube a la nube lo que quedó pendiente (devuelve cuando termina)
 async function flushDirty(){
   if(!sb)return;
@@ -304,6 +350,15 @@ async function flushDirty(){
     const it=items.find(x=>x.id===id);
     if(!it){dirtyIds.delete(id);continue;}
     await cloudPut(it);
+  }
+  // Cambios parciales: solo esas columnas y solo si el artículo sigue existiendo (si lo borraron, no se recrea)
+  for(const id of Object.keys(dirtyFields)){
+    if(dirtyIds.has(id)||dirtyDel.has(id))continue; // los cubre el volcado entero / el borrado
+    const f=dirtyFields[id];
+    if(!f)continue;
+    if(!items.some(x=>x.id===id)){clearDirtyFields(id);continue;}
+    const r=await cloudUpdateFields(id,{...f});
+    if(r==='missing')await dropMissingItem(id); // confirmado con la prueba de lectura: ya no existe
   }
   persistDirty();
 }
@@ -344,19 +399,34 @@ async function cloudDelete(id){
 }
 // Actualiza SOLO algunas columnas de un artículo ya existente en la nube (ubicación, stock...), sin subir la fila
 // entera: no pisa el stock ni la foto con datos locales viejos y NUNCA recrea un artículo borrado por otra persona.
-// Devuelve true (guardado), false (error: queda en la cola de pendientes) o 'missing' (la fila ya no existe en la nube).
+// Devuelve true (guardado), false (error: las columnas quedan en la cola de pendientes, dirtyFields) o 'missing'
+// (la fila ya no existe en la nube: confirmado con cloudPuedeLeer, porque con la sesión caída la base de datos
+// también devuelve 0 filas SIN error).
 // Si el artículo ya estaba en la cola de pendientes (cambio local sin subir) se sube entero, como siempre.
 async function cloudUpdateFields(id,fields){
   const it=items.find(x=>x.id===id);
-  if(!sb){markDirty(id);return false;}
+  if(!sb){markDirtyFields(id,fields);return false;}
   if(dirtyIds.has(id)&&it)return cloudPut(it);
   try{
     const{data,error}=await withTimeout(sb.from(WH.tblItems).update(fields).eq('id',id).select('id'),15000,'guardar');
     if(error)throw error;
+    if(!data||data.length===0){ // 0 filas: ya no existe (no se recrea)... o la sesión no tiene acceso
+      if(await cloudPuedeLeer()){cloudOK=true;return 'missing';}
+      throw new Error('sin acceso de lectura a la nube');
+    }
     cloudOK=true;
-    if(!data||data.length===0)return 'missing'; // 0 filas: ya no existe (no se recrea)
+    clearDirtyFields(id,Object.keys(fields)); // estas columnas ya están subidas
     return true;
-  }catch(e){cloudOK=false;console.warn('cloudUpdateFields error',e);markDirty(id);return false;}
+  }catch(e){cloudOK=false;console.warn('cloudUpdateFields error',e);markDirtyFields(id,fields);return false;}
+}
+// Comprueba que la sesión actual puede leer de la nube: la tabla de configuración siempre tiene filas, así que
+// "sin error y con filas" = acceso correcto. Un 0 filas de RLS (sesión caducada/usuario retirado) no significa "borrado".
+async function cloudPuedeLeer(){
+  if(!sb)return false;
+  try{
+    const{data,error}=await withTimeout(sb.from(WH.tblCfg).select('key').limit(1),8000,'acceso');
+    return !error&&Array.isArray(data)&&data.length>0;
+  }catch(e){console.warn('cloudPuedeLeer',e);return false;}
 }
 // El artículo ya no existe en la nube (lo borró otra persona): se quita del móvil, se cierra su ficha y no se vuelve a subir
 async function dropMissingItem(id){
@@ -375,18 +445,19 @@ async function setItemLoc(it,loc,pos){
   try{await dbPut(it);}
   catch(e){it.loc=l0;it.pos=p0;console.error('setItemLoc',e);return 'local';}
   let r=false;
-  try{r=await cloudUpdateFields(it.id,{loc,pos});}catch(e){console.warn('setItemLoc nube',e);markDirty(it.id);}
+  try{r=await cloudUpdateFields(it.id,{loc,pos});}catch(e){console.warn('setItemLoc nube',e);markDirtyFields(it.id,{loc,pos});}
   if(r==='missing')await dropMissingItem(it.id);
   return r;
 }
 // Lee el stock actual de la nube (sin modificar nada). Devuelve {ok:true,stock} si lo leyó,
-// {missing:true} si la fila no existe (otra persona borró el artículo) o {error:true} si falló o se agotó el tiempo.
+// {missing:true} si la fila no existe (otra persona borró el artículo; confirmado con cloudPuedeLeer, porque con la
+// sesión caída la nube también devuelve "sin fila" sin error) o {error:true} si falló, se agotó el tiempo o no hay acceso.
 async function fetchCloudStock(id){
   if(!sb)return {error:true};
   try{
-    const{data,error}=await withTimeout(sb.from(WH.tblItems).select('stock').eq('id',id).maybeSingle(),5000,'stock');
+    const{data,error}=await withTimeout(sb.from(WH.tblItems).select('stock').eq('id',id).maybeSingle(),8000,'stock');
     if(error)throw error;
-    if(!data)return {missing:true};
+    if(!data)return (await cloudPuedeLeer())?{missing:true}:{error:true};
     if(typeof data.stock==='number'&&Number.isFinite(data.stock))return {ok:true,stock:data.stock};
   }catch(e){console.warn('fetchCloudStock',e);}
   return {error:true};
@@ -395,7 +466,7 @@ async function fetchCloudStock(id){
 // 'missing' (el artículo ya no existe en la nube) o 'error' (no se pudo comprobar).
 async function refreshStock(item){
   if(!sb||!item)return 'skip';
-  if(dirtyIds.has(item.id))return 'skip'; // hay un cambio local pendiente de subir: manda el valor local
+  if(stockPendiente(item.id))return 'skip'; // hay un cambio local pendiente de subir: manda el valor local
   const r=await fetchCloudStock(item.id);
   if(r.ok){item.stock=r.stock;return 'ok';}
   return r.missing?'missing':'error';
@@ -603,8 +674,7 @@ async function init(){
   if(adminUnlocked&&useSbAuth()&&!(await isAdminRole()))adminUnlocked=false;
   renderUserBar();
   items=await dbGetAll();
-  try{dirtyIds=new Set((await cfgGet('dirtyIds'))||[]);dirtyDel=new Set((await cfgGet('dirtyDel'))||[]);}catch(e){}
-  try{dirtyCfg=new Set((await cfgGet('dirtyCfg'))||[]);}catch(e){console.warn('No se pudo leer la cola de configuración pendiente',e);}
+  await loadDirty(); // colas pendientes (artículos, columnas sueltas y configuración) antes de la primera sincronización
   appReady=true;
   renderAll();
   renderHomeMovements();
@@ -629,7 +699,7 @@ async function syncFromCloud(refrescarTodasFotos=false){
   if(_syncing||_stockBusy)return; // evita dos sincronizaciones a la vez y pisar un cambio de stock en curso
   _syncing=true;
   try{await _syncFromCloud(refrescarTodasFotos);}
-  catch(e){console.warn('Error al sincronizar',e);try{updateSyncBadge('off');}catch(_){}}
+  catch(e){console.warn('Error al sincronizar',e);cloudOK=false;try{updateSyncBadge('off');}catch(_){}}
   finally{_syncing=false;}
 }
 async function _syncFromCloud(refrescarTodasFotos){
@@ -661,6 +731,7 @@ async function _syncFromCloud(refrescarTodasFotos){
     m.cats=Array.isArray(it.categories)?it.categories:[];
     delete m.categories;
     m.photo=fotosLocales[it.id]||null; // conservamos la foto local; si no hay, se baja luego
+    if(dirtyFields[it.id])Object.assign(m,dirtyFields[it.id]); // cambios parciales sin subir: mandan los valores locales
     merged.push(m);
   });
   items.forEach(i=>{if(dirtyIds.has(i.id)&&!seen.has(i.id))merged.push(i);}); // altas locales aún sin subir
@@ -867,12 +938,17 @@ async function pushToCloud(){
   if(!cloudOK){toast('⚠ No se pudo sincronizar con la nube antes de subir. Inténtalo de nuevo');return;}
   const n=items.length;
   document.getElementById('confirm-title').textContent='Subir este dispositivo a la nube';
-  document.getElementById('confirm-msg').textContent='Se van a subir '+n+' artículos de este dispositivo a la nube y se sobrescribirá lo que haya allí con estos datos (ya sincronizados ahora mismo). ¿Continuar?';
+  document.getElementById('confirm-msg').textContent='Se van a subir '+n+' artículos de este dispositivo a la nube y se sobrescribirá lo que haya allí con estos datos. Justo antes de subir se vuelve a sincronizar para no pisar cambios recientes de otras personas. ¿Continuar?';
   const ok=document.getElementById('confirm-ok');
   ok.onclick=async()=>{
     closeModal('modal-confirm');
     if(_stockBusy||_syncing){toast('Hay una operación en curso. Inténtalo en unos segundos');return;}
     if(!(await ensureOnline('subir los datos')))return;
+    // La ventana pudo estar abierta un buen rato: se sincroniza OTRA vez justo antes de subir (y debe salir bien)
+    if(_stockBusy||_syncing){toast('Hay una operación en curso. Inténtalo en unos segundos');return;} // pudo empezar durante la comprobación de red
+    await syncFromCloud();
+    if(_stockBusy||_syncing){toast('Hay una operación en curso. Inténtalo en unos segundos');return;}
+    if(!cloudOK){toast('⚠ No se pudo sincronizar con la nube antes de subir. Inténtalo de nuevo');return;}
     _stockBusy=true; // mientras se sube no se sincroniza ni se cambia stock
     try{await _pushToCloud();}finally{_stockBusy=false;}
   };
@@ -1254,9 +1330,9 @@ function updateDetailStockUI(){
   renderPending();
 }
 async function refreshDetailStock(id){
-  if(!sb||_stockBusy||dirtyIds.has(id))return;
+  if(!sb||_stockBusy||stockPendiente(id))return;
   const r=await fetchCloudStock(id);
-  if(!r.ok||_stockBusy||dirtyIds.has(id))return; // error/artículo borrado (se avisa al cambiar el stock) o llegó tarde: ya hay un movimiento en curso
+  if(!r.ok||_stockBusy||stockPendiente(id))return; // error/artículo borrado (se avisa al cambiar el stock) o llegó tarde: ya hay un movimiento en curso
   const v=r.stock;
   const it=items.find(x=>x.id===id);
   if(!it||it.stock===v)return;
@@ -1512,22 +1588,29 @@ function applyAdjust(){return withFreshStock(_applyAdjust,{abortIfChanged:true})
 function applyPurchase(){return withFreshStock(_applyPurchase);}
 // Guarda un cambio de stock (y de precio si va en extra): movimiento, copia local y SOLO esas columnas en la nube.
 // Si el movimiento falla se restaura el stock y no se guarda nada. Si falla lo local o la nube, el artículo queda
-// en la cola de pendientes y se avisa. Devuelve true (guardado) o false (revertido / el artículo ya no existe).
+// en la cola de pendientes (dirtyFields) y se avisa. Devuelve true (guardado y subido), 'pend' (guardado pero pendiente de
+// subir a la nube), 'local' (subido pero no se pudo guardar en el móvil) o false (revertido / el artículo ya no existe).
+// NO avisa de 'pend'/'local': lo hace quien llama añadiendo sufijoCommit() a su aviso de éxito (el aviso es un solo elemento
+// y un toast posterior taparía el de advertencia).
 async function _commitStock(it,anterior,nuevo,tipo,coste,extra,provider){
   const precioAnterior=it.precio;
   it.stock=nuevo;
   if(extra&&extra.precio!==undefined)it.precio=extra.precio;
   try{await registrarMovimiento(it,anterior,nuevo,tipo,coste,provider);}
   catch(e){it.stock=anterior;it.precio=precioAnterior;console.error('registrarMovimiento',e);toast('⚠ Error al registrar el movimiento');return false;}
+  let _local=true;
   try{await dbPut(it);}
-  catch(e){console.error('guardar stock (móvil)',e);markDirty(it.id);toast('⚠ El movimiento se registró pero no se pudo guardar en el móvil: sincroniza y revísalo');}
+  catch(e){console.error('guardar stock (móvil)',e);_local=false;}
+  const campos={stock:nuevo,...(extra||{})};
   let r=false;
-  try{r=await cloudUpdateFields(it.id,{stock:nuevo,...(extra||{})});}
-  catch(e){console.error('guardar stock (nube)',e);markDirty(it.id);}
+  try{r=await cloudUpdateFields(it.id,campos);}
+  catch(e){console.error('guardar stock (nube)',e);markDirtyFields(it.id,campos);}
   if(r==='missing'){await dropMissingItem(it.id);toast('⚠ El artículo fue eliminado por otra persona: el movimiento queda en el historial');return false;}
-  if(r!==true)toast('⚠ Movimiento registrado, pero el stock no se pudo subir: se reintentará al sincronizar');
-  return true;
+  if(r!==true)return 'pend';
+  return _local?true:'local';
 }
+// Sufijo de advertencia para el aviso de éxito según el resultado de _commitStock
+function sufijoCommit(r){return r==='pend'?' · ⚠ pendiente de subir':(r==='local'?' · ⚠ no guardado en el móvil: sincroniza y revísalo':'');}
 async function _confirmPending(){
   if(!currentItem||pendingDelta===0)return;
   const btn=document.getElementById('pending-confirm-btn');
@@ -1540,12 +1623,13 @@ async function _confirmPending(){
   const _txt=btn?btn.innerHTML:'';
   if(btn){btn.disabled=true;btn.innerHTML='Guardando…';}
   try{
-    if(!(await _commitStock(currentItem,anterior,nuevo,tipo,_coste)))return; // revertido o artículo borrado: ya se avisó
+    const _rc=await _commitStock(currentItem,anterior,nuevo,tipo,_coste);
+    if(!_rc)return; // revertido o artículo borrado: ya se avisó
     document.getElementById('detail-stock').textContent=currentItem.stock;
     adjustValue=currentItem.stock;
     const _av=document.getElementById('adjust-val'); if(_av)_av.textContent=adjustValue;
     renderAll();
-    toast((diff>0?'+':'−')+Math.abs(diff)+' ud'+(Math.abs(diff)===1?'':'s')+' · stock: '+nuevo);
+    toast((diff>0?'+':'−')+Math.abs(diff)+' ud'+(Math.abs(diff)===1?'':'s')+' · stock: '+nuevo+sufijoCommit(_rc));
   }finally{
     pendingDelta=0;
     if(btn){btn.disabled=false;btn.innerHTML=_txt;}
@@ -1553,7 +1637,7 @@ async function _confirmPending(){
   }
 }
 function stepAdjust(d){adjustValue=Math.max(0,adjustValue+d);document.getElementById('adjust-val').textContent=adjustValue;}
-async function _applyAdjust(){if(!currentItem)return;const anterior=currentItem.stock;const nuevo=adjustValue;if(anterior===nuevo){toast('Sin cambios');return;}const tipo=nuevo>anterior?'Entrada':'Salida';const _coste=(currentItem.precio!=null)?+(Math.abs(nuevo-anterior)*currentItem.precio).toFixed(2):null;if(!(await _commitStock(currentItem,anterior,nuevo,tipo,_coste)))return;document.getElementById('detail-stock').textContent=currentItem.stock;renderAll();toast('Stock actualizado: '+nuevo);}
+async function _applyAdjust(){if(!currentItem)return;const anterior=currentItem.stock;const nuevo=adjustValue;if(anterior===nuevo){toast('Sin cambios');return;}const tipo=nuevo>anterior?'Entrada':'Salida';const _coste=(currentItem.precio!=null)?+(Math.abs(nuevo-anterior)*currentItem.precio).toFixed(2):null;const _rc=await _commitStock(currentItem,anterior,nuevo,tipo,_coste);if(!_rc)return;document.getElementById('detail-stock').textContent=currentItem.stock;renderAll();toast('Stock actualizado: '+nuevo+sufijoCommit(_rc));}
 function fmtEur(n){return (Number(n)||0).toFixed(2).replace('.',',')+' €';}
 function calcPurNet(){
   const p=parseFloat(document.getElementById('pur-price').value)||0;
@@ -1596,7 +1680,8 @@ async function _applyPurchase(){
   const precioAnterior=currentItem.precio!=null?currentItem.precio:null;
   const _coste=price!=null?+(qty*price).toFixed(2):null;
   // Solo se suben el stock y el precio (no la fila entera ni la foto)
-  if(!(await _commitStock(currentItem,anterior,anterior+qty,'Compra',_coste,price!=null?{precio:price}:null,provider)))return;
+  const _rc=await _commitStock(currentItem,anterior,anterior+qty,'Compra',_coste,price!=null?{precio:price}:null,provider);
+  if(!_rc)return;
   if(price!=null){
     const now=new Date();
     const entry={item_id:currentItem.id, price, previous_price:precioAnterior, qty, provider:provider||null, fecha:now.toLocaleDateString('es-ES'), ts:now.getTime()};
@@ -1608,7 +1693,7 @@ async function _applyPurchase(){
   adjustValue=currentItem.stock;document.getElementById('adjust-val').textContent=adjustValue;
   renderAll();
   if(document.getElementById('modal-detail').classList.contains('open'))renderPriceHistory(currentItem.id);
-  toast('✓ Entrada de compra: +'+qty+(price!=null?(' a '+fmtEur(price)+'/u'):''));
+  toast('✓ Entrada de compra: +'+qty+(price!=null?(' a '+fmtEur(price)+'/u'):'')+sufijoCommit(_rc));
 }
 
 // DELETE con modal propio (confirm() fallaba en tablet)
@@ -1841,8 +1926,11 @@ async function _saveItem(){
     if(_r.missing){await dropMissingItem(item.id);closeModal('modal-form');toast('El artículo fue eliminado por otra persona: no se ha guardado');return;}
     // Sin poder comprobar el stock actual no se guarda (se subiría un stock local posiblemente viejo)
     if(!_r.ok){toast('⚠ No se pudo comprobar el stock actual. Inténtalo de nuevo');return;}
-    if(item.stock===_formStock0)item.stock=_r.stock;
-    _prevStockItem.stock=_r.stock;
+    // (si hay un stock local sin subir, manda el local: el de la nube es el anterior a ese movimiento)
+    if(!stockPendiente(item.id)){
+      if(item.stock===_formStock0)item.stock=_r.stock;
+      _prevStockItem.stock=_r.stock;
+    }
   }
   // ¿Es un artículo ya impreso cuya etiqueta ha cambiado?
   // La etiqueta muestra nombre, referencia y ubicación: si alguno cambia, conviene reimprimir.
@@ -2228,7 +2316,7 @@ async function saveEditShelf(){
 
   // Si cambia el código, actualizar los repuestos y guardarlos
   let movedItems=[];
-  let _locFallos=0;
+  let _locFallos=0,_locLocal=0; // _locFallos: no subidos a la nube; _locLocal: no guardados en este dispositivo
   if(newCode!==oldId){
     s.id=newCode;
     movedItems=items.filter(i=>i.loc&&i.loc.startsWith(oldId+'-'));
@@ -2237,7 +2325,7 @@ async function saveEditShelf(){
       const balda=it.loc.slice(oldId.length+1);
       // Solo se sube la ubicación (no el stock ni la foto, que pueden estar desfasados en este móvil)
       const r=await setItemLoc(it,newCode+'-'+balda,it.pos);
-      if(r===false||r==='local')_locFallos++;
+      if(r===false)_locFallos++;else if(r==='local')_locLocal++;
     }
     movedItems=movedItems.filter(i=>items.some(x=>x.id===i.id)); // los borrados por otra persona ya no cuentan
   }
@@ -2263,7 +2351,10 @@ async function saveEditShelf(){
   if(movedItems.length){
     items=await dbGetAll();
     renderAll();
-    toast((_locFallos?`⚠ Estantería actualizada, pero ${_locFallos} repuesto(s) no se pudieron guardar en la nube (se reintentará al sincronizar)`:`${_okNube?'✓':'⚠'} Estantería actualizada (${movedItems.length} repuesto(s) reubicados)`)+_aviso);
+    const _avisos=[];
+    if(_locFallos)_avisos.push(`${_locFallos} repuesto(s) no se pudieron guardar en la nube (se reintentará al sincronizar)`);
+    if(_locLocal)_avisos.push(`${_locLocal} repuesto(s) no se pudieron guardar en este dispositivo`);
+    toast((_avisos.length?`⚠ Estantería actualizada, pero ${_avisos.join(' y ')}`:`${_okNube?'✓':'⚠'} Estantería actualizada (${movedItems.length} repuesto(s) reubicados)`)+_aviso);
   }else{
     toast((_okNube?'✓ Estantería actualizada':'⚠ Estantería actualizada')+_aviso);
   }
@@ -3604,7 +3695,7 @@ async function askLogout(){
   let aviso='';
   try{
     const pend=(await movGetAll()).filter(m=>!m.synced).length;
-    if(pend||dirtyIds.size||dirtyDel.size)aviso=' Hay cambios sin sincronizar: espera a que se suban (indicador de sincronización) antes de salir; si no, se anotarán a nombre de quien entre después en este móvil.';
+    if(pend||hayPendientes())aviso=' Hay cambios sin sincronizar: espera a que se suban (indicador de sincronización) antes de salir; si no, se anotarán a nombre de quien entre después en este móvil.';
   }catch(e){}
   document.getElementById('confirm-title').textContent='Cerrar sesión';
   document.getElementById('confirm-msg').textContent=(_sessionName?('Vas a cerrar la sesión de '+_sessionName+' en los dos almacenes.'):'Vas a cerrar la sesión en los dos almacenes.')+aviso;
@@ -5163,14 +5254,16 @@ async function _assignInvoiceLine(idx,itemId){
     console.error('registrarMovimiento factura',e);toast('⚠ Error al registrar la entrada');return;
   }
   line.status='assigned';line.itemId=itemId; // desde aquí la entrada ya existe: no se puede repetir
+  let _res=true; // resultado como en _commitStock: el aviso de advertencia va en el toast final (no se tapa)
   try{await dbPut(it);}
-  catch(e){console.error('guardar stock factura (móvil)',e);markDirty(it.id);toast('⚠ La entrada se registró pero no se pudo guardar en el móvil: sincroniza y revísalo');}
+  catch(e){console.error('guardar stock factura (móvil)',e);_res='local';}
+  const _campos=price!=null?{stock:newStock,precio:price}:{stock:newStock};
   try{
     // Solo stock (y precio): no se sube la fila entera ni la foto, y nunca se recrea un artículo borrado
-    const subido=await cloudUpdateFields(it.id,price!=null?{stock:newStock,precio:price}:{stock:newStock});
+    const subido=await cloudUpdateFields(it.id,_campos);
     if(subido==='missing'){await dropMissingItem(it.id);toast('⚠ Entrada registrada, pero el artículo fue eliminado por otra persona');}
-    else if(subido!==true)toast('⚠ Entrada registrada, pero el stock no se pudo subir: se reintentará al sincronizar');
-  }catch(e){console.error('guardar stock factura (nube)',e);markDirty(it.id);toast('⚠ Entrada registrada, pero el stock no se pudo subir: se reintentará al sincronizar');}
+    else if(subido!==true)_res='pend';
+  }catch(e){console.error('guardar stock factura (nube)',e);markDirtyFields(it.id,_campos);_res='pend';}
   // Lo siguiente no es crítico: si falla no se deshace la entrada
   try{
     if(price!=null){
@@ -5182,7 +5275,7 @@ async function _assignInvoiceLine(idx,itemId){
   try{items=await dbGetAll();}catch(e){}
   closeModal('modal-inv-search');
   renderInvoiceLines();
-  if(items.some(x=>x.id===it.id))toast(`✓ ${it.name} · +${qty} ud`); // si el artículo ya no existe se conserva el aviso anterior
+  if(items.some(x=>x.id===it.id))toast(`✓ ${it.name} · +${qty} ud${sufijoCommit(_res)}`); // si el artículo ya no existe se conserva el aviso anterior
 }
 
 function openInvoiceCreate(idx){

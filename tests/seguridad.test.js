@@ -477,9 +477,9 @@ test('no quedan contraseñas por defecto en el código', () => {
 
 // ===== Integridad del stock (bloque R1) =====
 // Entorno simulado: nube (sb) configurable, base local y avisos registrados. Todo se restaura al terminar.
-const NOMBRES_R1 = 'registrarMovimiento,dbPut,dbDelete,dbGetAll,cfgPut,cloudCfgPut,closeModal,openModal,renderAll,renderItems,renderMap,refreshVisiblePage,updateOrganizeBanner,toast,syncFromCloud,_pushToCloud,_invoiceAfterSave,updateSyncBadge';
+const NOMBRES_R1 = 'registrarMovimiento,dbPut,dbDelete,dbGetAll,cfgPut,cloudCfgPut,closeModal,openModal,renderAll,renderItems,renderMap,refreshVisiblePage,updateOrganizeBanner,toast,syncFromCloud,_syncFromCloud,_pushToCloud,_invoiceAfterSave,updateSyncBadge,cfgGet,pushPendingMovements,cloudGetMeta,dbReplaceAll,cloudCfgGetMany,setCloudStatus';
 async function conNube(opciones, fn) {
-  const orig = vm.runInContext('({' + NOMBRES_R1.split(',').map(n => n + ':' + n).join(',') + ',sb:sb,WH:WH,items:items,cur:currentItem,pd:pendingDelta,di:dirtyIds,ok:cloudOK,ed:editingId,sbusy:_stockBusy})', ctx);
+  const orig = vm.runInContext('({' + NOMBRES_R1.split(',').map(n => n + ':' + n).join(',') + ',sb:sb,WH:WH,items:items,cur:currentItem,pd:pendingDelta,di:dirtyIds,dd:dirtyDel,df:dirtyFields,ok:cloudOK,ed:editingId,sbusy:_stockBusy,sync:_syncing,sh:shelves,av:adjustValue,cat:categories,aht:addHereTarget,ahs:[...addHereSel],mds:mapDraftShelves,esi:editShelfIdx})', ctx);
   const getAntes = ctx.document.getElementById;
   const dom = Object.assign({}, opciones.dom || {});
   const dummy = () => ({ classList: { add() {}, remove() {}, contains: () => false }, style: {}, textContent: '', innerHTML: '', value: '', onclick: null });
@@ -498,9 +498,11 @@ async function conNube(opciones, fn) {
       renderAll=()=>{};renderItems=()=>{};renderMap=()=>{};refreshVisiblePage=()=>{};updateOrganizeBanner=()=>{};updateSyncBadge=()=>{};
       toast=m=>{__toasts.push(String(m));};
       WH={tblCfg:'config',tblItems:'items'};
-      dirtyIds=new Set();pendingDelta=0;currentItem=null;cloudOK=true;_stockBusy=false;
+      __probe=()=>({data:[{key:'categories'}],error:null}); // prueba de lectura (tabla de configuración): la sesión puede leer
+      __cfg={};cfgPut=async(k,v)=>{__cfg[k]=JSON.parse(JSON.stringify(v));};
+      dirtyIds=new Set();dirtyDel=new Set();dirtyFields=Object.create(null);pendingDelta=0;currentItem=null;cloudOK=true;_stockBusy=false;_syncing=false;
       sb={from:()=>({
-        select:()=>({limit:async()=>({error:null}),eq:()=>({maybeSingle:async()=>__stock()})}),
+        select:()=>({limit:async()=>__probe(),eq:()=>({maybeSingle:async()=>__stock()})}),
         update:f=>({eq:(c,id)=>({select:async()=>{__calls.push(['update',f,id]);return __upd();}})}),
         upsert:async o=>{__calls.push(['upsert',o]);return {error:null};}
       })};
@@ -509,7 +511,7 @@ async function conNube(opciones, fn) {
   } finally {
     ctx.document.getElementById = getAntes;
     ctx.__o = orig;
-    vm.runInContext(NOMBRES_R1.split(',').map(n => n + '=__o.' + n).join(';') + ';sb=__o.sb;WH=__o.WH;items=__o.items;currentItem=__o.cur;pendingDelta=__o.pd;dirtyIds=__o.di;cloudOK=__o.ok;editingId=__o.ed;_stockBusy=__o.sbusy;', ctx);
+    vm.runInContext(NOMBRES_R1.split(',').map(n => n + '=__o.' + n).join(';') + ';sb=__o.sb;WH=__o.WH;items=__o.items;currentItem=__o.cur;pendingDelta=__o.pd;dirtyIds=__o.di;dirtyDel=__o.dd;dirtyFields=__o.df;cloudOK=__o.ok;editingId=__o.ed;_stockBusy=__o.sbusy;_syncing=__o.sync;shelves=__o.sh;adjustValue=__o.av;categories=__o.cat;addHereTarget=__o.aht;addHereSel.clear();__o.ahs.forEach(x=>addHereSel.add(x));mapDraftShelves=__o.mds;editShelfIdx=__o.esi;', ctx);
   }
 }
 const ev = s => vm.runInContext(s, ctx);
@@ -542,21 +544,74 @@ test('stock: cloudUpdateFields actualiza solo las columnas, nunca recrea y encol
     assert.strictEqual(await ev("cloudUpdateFields('I1',{stock:1})"), 'missing');
     assert.strictEqual(ev("__calls.filter(c=>c[0]==='upsert').length"), 0);
     assert.strictEqual(ev("dirtyIds.has('I1')"), false);
-    // error de red: false y queda en la cola de pendientes
+    // error de red: false y quedan en la cola de cambios PARCIALES (no como artículo entero)
     ev("__upd=()=>({data:null,error:{message:'red'}})");
     assert.strictEqual(await ev("cloudUpdateFields('I1',{stock:1})"), false);
-    assert.strictEqual(ev("dirtyIds.has('I1')"), true);
+    assert.deepStrictEqual(evj("dirtyFields"), { I1: { stock: 1 } });
+    assert.strictEqual(ev("dirtyIds.has('I1')"), false);
+    // un segundo fallo se fusiona con el primero (no lo pierde)
+    assert.strictEqual(await ev("cloudUpdateFields('I1',{loc:'01-3',pos:'g'})"), false);
+    assert.deepStrictEqual(evj("dirtyFields"), { I1: { stock: 1, loc: '01-3', pos: 'g' } });
+    // solo se guardan las columnas conocidas
+    await ev("cloudUpdateFields('I1',{name:'x',photo:'y',stock:2})");
+    assert.deepStrictEqual(evj("dirtyFields.I1"), { stock: 2, loc: '01-3', pos: 'g' });
+    // una subida correcta de esas columnas las quita de la cola
+    ev("__upd=()=>({data:[{id:'I1'}],error:null})");
+    assert.strictEqual(await ev("cloudUpdateFields('I1',{stock:4})"), true);
+    assert.deepStrictEqual(evj("dirtyFields.I1"), { loc: '01-3', pos: 'g' });
+    assert.strictEqual(await ev("cloudUpdateFields('I1',{loc:'01-3',pos:'g'})"), true);
+    assert.deepStrictEqual(evj("dirtyFields"), {}, 'sin columnas pendientes se quita la entrada');
     // artículo ya pendiente de subir (alta/cambio local): se sube entero como siempre (sin foto que no toque)
-    ev("__calls=[];__upd=()=>({data:[{id:'I1'}],error:null})");
+    ev("markDirty('I1');__calls=[]");
     assert.strictEqual(await ev("cloudUpdateFields('I1',{stock:1})"), true);
     const c = JSON.parse(ev("JSON.stringify(__calls)"));
     assert.strictEqual(c.length, 1);
     assert.strictEqual(c[0][0], 'upsert');
     assert.strictEqual(ev("dirtyIds.has('I1')"), false, 'el volcado entero limpia la cola');
-    // sin nube: cola
+    // sin nube: cola parcial
     ev("sb=null;dirtyIds=new Set()");
     assert.strictEqual(await ev("cloudUpdateFields('I1',{stock:1})"), false);
-    assert.strictEqual(ev("dirtyIds.has('I1')"), true);
+    assert.deepStrictEqual(evj("dirtyFields"), { I1: { stock: 1 } });
+    assert.strictEqual(ev("dirtyIds.has('I1')"), false);
+  });
+});
+
+test('stock: un "0 filas" con la sesión caída (RLS) NO se toma por artículo borrado', async () => {
+  await conNube({}, async () => {
+    ev("items=[{id:'I1',name:'A',stock:9},{id:'I2',name:'B',stock:1}];currentItem=items[0];pendingDelta=-1");
+    // la nube devuelve vacío SIN error y la prueba de lectura también (sesión caducada / usuario retirado)
+    ev("__stock=()=>({data:null,error:null});__upd=()=>({data:[],error:null});__probe=()=>({data:[],error:null})");
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(await ev('fetchCloudStock("I1")'))), { error: true });
+    assert.strictEqual(await ev('cloudPuedeLeer()'), false);
+    await ev('confirmPending()');
+    assert.deepStrictEqual(evj('items.map(i=>i.id)'), ['I1', 'I2'], 'no se quita nada');
+    assert.deepStrictEqual(evj('__dbDel'), []);
+    assert.strictEqual(ev('items[0].stock'), 9);
+    assert.strictEqual(ev('__movs.length'), 0);
+    assert.strictEqual(ev('__calls.length'), 0, 'ni update ni upsert');
+    assert.ok(ev('__toasts.pop()').includes('No se pudo comprobar el stock'));
+    assert.ok(!ev('__toasts').some(m => m.includes('eliminado')));
+    // el update (stock ya leído) devuelve 0 filas con la sesión caída: error, queda pendiente y no se borra
+    ev("__stock=()=>({data:{stock:9},error:null});__toasts=[];pendingDelta=-1");
+    await ev('confirmPending()');
+    assert.deepStrictEqual(evj('items.map(i=>i.id)'), ['I1', 'I2'], 'tampoco aquí se quita');
+    assert.deepStrictEqual(evj('__dbDel'), []);
+    assert.deepStrictEqual(evj('dirtyFields'), { I1: { stock: 8 } }, 'el cambio queda pendiente de subir');
+    const ultimo = ev('__toasts').pop();
+    assert.ok(ultimo.includes('pendiente de subir') && !ultimo.includes('eliminado'), ultimo);
+    // la prueba falla (error / tiempo agotado): mismo resultado, ni se borra ni se recrea
+    for (const p of ["({data:null,error:{message:'jwt'}})", "(()=>{throw new Error('Tiempo agotado: acceso')})()"]) {
+      ev("dirtyFields=Object.create(null);__calls=[];__upd=()=>({data:[],error:null});__probe=()=>" + p);
+      assert.strictEqual(await ev("cloudUpdateFields('I1',{stock:1})"), false);
+      assert.deepStrictEqual(evj('items.map(i=>i.id)'), ['I1', 'I2']);
+      assert.strictEqual(ev("__calls.filter(c=>c[0]==='upsert').length"), 0);
+    }
+    // la prueba devuelve una fila: ahora sí es un borrado real y se quita como antes
+    ev("__probe=()=>({data:[{key:'categories'}],error:null});dirtyFields=Object.create(null);__stock=()=>({data:null,error:null});__toasts=[];pendingDelta=-1");
+    await ev('confirmPending()');
+    assert.deepStrictEqual(evj('items.map(i=>i.id)'), ['I2']);
+    assert.deepStrictEqual(evj('__dbDel'), ['I1']);
+    assert.ok(ev('__toasts').pop().includes('eliminado'));
   });
 });
 
@@ -629,16 +684,54 @@ test('stock: _confirmPending y _applyAdjust restauran el stock si falla el movim
     assert.strictEqual(ev('items[0].stock'), 5);
     assert.strictEqual(ev('__calls.length'), 0);
     assert.ok(ev('__toasts').some(m => m.includes('Error al registrar')));
-    // el movimiento va bien pero falla guardar en el móvil: aviso y el artículo queda en la cola
+    // el movimiento va bien pero falla guardar en el móvil (la nube sí sube): el ÚLTIMO aviso es el de éxito con la advertencia
     ev("registrarMovimiento=async(it,a,n,t)=>{__movs.push([a,n,t]);};dbPut=async()=>{throw new Error('cuota')};__toasts=[];__movs=[];pendingDelta=-1");
     await ev('confirmPending()');
     assert.strictEqual(ev('__movs.length'), 1);
-    assert.ok(ev('__toasts').some(m => m.includes('no se pudo guardar en el móvil')));
-    // y si falla la subida: aviso y cola
+    let ultimo = ev('__toasts').pop();
+    assert.ok(ultimo.startsWith('−1 ud') && ultimo.includes('no guardado en el móvil'), ultimo);
+    // y si falla la subida: queda en la cola de cambios parciales y el ÚLTIMO aviso lo dice (no se tapa con el de éxito)
     ev("dbPut=async()=>{};dirtyIds=new Set();__upd=()=>({data:null,error:{message:'red'}});__toasts=[];pendingDelta=-1");
     await ev('confirmPending()');
-    assert.strictEqual(ev("dirtyIds.has('I1')"), true);
-    assert.ok(ev('__toasts').some(m => m.includes('no se pudo subir')));
+    assert.deepStrictEqual(evj('dirtyFields'), { I1: { stock: 4 } }, 'la nube dice 5 -> 4');
+    assert.strictEqual(ev("dirtyIds.has('I1')"), false, 'cambio parcial: no se sube la fila entera');
+    ultimo = ev('__toasts').pop();
+    assert.ok(ultimo.startsWith('−1 ud') && ultimo.endsWith('⚠ pendiente de subir'), ultimo);
+    assert.ok(!ev('__toasts').some(m => m.includes('no se pudo subir')), 'ya no hay un toast de advertencia que el de éxito tape');
+    // todo bien: sin sufijo
+    ev("__upd=()=>({data:[{id:'I1'}],error:null});__toasts=[];pendingDelta=-1");
+    await ev('confirmPending()');
+    assert.strictEqual(ev('__toasts.pop()'), '−1 ud · stock: 3', 'con stock pendiente manda el local (4), no el de la nube (5)');
+    assert.deepStrictEqual(evj('dirtyFields'), {}, 'subido: se quita de la cola');
+  });
+});
+
+test('avisos: el aviso de pendiente de subir llega al final en ajuste, compra y escáner (no lo tapa el de éxito)', async () => {
+  const dom = { 'pur-qty': { value: '3' }, 'pur-price': { value: '' }, 'pur-discount': { value: '' }, 'pur-provider': { value: '' } };
+  await conNube({ dom }, async () => {
+    const g = ev('({pa:cloudPriceAdd,ap:addProvider,rp:renderPriceHistory,adm:adminUnlocked,il:_invLines,ip:_invProvider,ri:renderInvoiceLines})'); ctx.__gt = g;
+    try {
+      ev("items=[{id:'I1',name:'A',stock:5}];currentItem=items[0];cloudPriceAdd=async()=>true;addProvider=async()=>{};renderPriceHistory=()=>{};__upd=()=>({data:null,error:{message:'red'}})");
+      ev("adjustValue=7");
+      await ev('applyAdjust()');
+      assert.strictEqual(ev('__toasts.pop()'), 'Stock actualizado: 7 · ⚠ pendiente de subir');
+      await ev('applyPurchase()');
+      let ultimo = ev('__toasts.pop()');
+      assert.ok(ultimo.startsWith('✓ Entrada de compra: +3') && ultimo.endsWith('⚠ pendiente de subir'), ultimo);
+      // línea de factura
+      ev("adminUnlocked=true;_invProvider='';_invLines=[{desc:'x',qty:2,price:null,status:'pending',itemId:null}];renderInvoiceLines=()=>{};");
+      await ev("assignInvoiceLine(0,'I1')");
+      ultimo = ev('__toasts.pop()');
+      assert.ok(ultimo.startsWith('✓ A · +2 ud') && ultimo.endsWith('⚠ pendiente de subir'), ultimo);
+      assert.ok(ev('dirtyFields.I1.stock') > 0);
+      // con la subida correcta no hay sufijo
+      ev("__upd=()=>({data:[{id:'I1'}],error:null});_invLines=[{desc:'y',qty:1,price:null,status:'pending',itemId:null}];");
+      await ev("assignInvoiceLine(0,'I1')");
+      assert.strictEqual(ev('__toasts.pop()'), '✓ A · +1 ud');
+      assert.strictEqual(ev("dirtyFields.I1"), undefined, 'la subida correcta quita la cola parcial');
+    } finally {
+      vm.runInContext('cloudPriceAdd=__gt.pa;addProvider=__gt.ap;renderPriceHistory=__gt.rp;adminUnlocked=__gt.adm;_invLines=__gt.il;_invProvider=__gt.ip;renderInvoiceLines=__gt.ri;', ctx);
+    }
   });
 });
 
@@ -652,7 +745,8 @@ test('ubicación: colocar/mover solo envía loc y pos, no recrea borrados y avis
     assert.deepStrictEqual(llamadas.map(c => c[0]), ['update', 'update', 'update']);
     for (const c of llamadas) assert.deepStrictEqual(c[1], { loc: '01-2', pos: 'g1' });
     assert.deepStrictEqual(evj('items.map(i=>i.id)'), ['I1', 'I3'], 'I2 (borrado por otra persona) se quita');
-    assert.strictEqual(ev("dirtyIds.has('I3')"), true, 'el fallo de red queda en la cola');
+    assert.deepStrictEqual(evj("dirtyFields"), { I3: { loc: '01-2', pos: 'g1' } }, 'el fallo de red queda en la cola parcial (solo loc/pos)');
+    assert.strictEqual(ev("dirtyIds.has('I3')"), false);
     const aviso = ev('__toasts').pop();
     assert.ok(aviso.includes('sin subir') && aviso.includes('ya no existían'), aviso);
     // mover una celda: solo loc/pos
@@ -706,7 +800,8 @@ test('QR "colocar aquí": espera a la cadena, revierte si falla lo local y avisa
     // la nube falla: se conserva en local, queda en la cola y el aviso lo dice
     ev("__upd=()=>({data:null,error:{message:'red'}});__toasts=[]");
     await ev("placeScannedItem(items[0],{sid:'03',balda:'1',cid:''})");
-    assert.strictEqual(ev("dirtyIds.has('I1')"), true);
+    assert.deepStrictEqual(evj("dirtyFields"), { I1: { loc: '03-1', pos: '' } });
+    assert.strictEqual(ev("dirtyIds.has('I1')"), false);
     assert.ok(ev('__toasts.pop()').includes('no se pudo subir'));
     // artículo borrado por otra persona
     ev("__upd=()=>({data:[],error:null});__toasts=[];dirtyIds=new Set()");
@@ -811,7 +906,7 @@ test('compra: cantidad, precio y descuento se validan y solo se sube stock y pre
 
 test('pushToCloud: sincroniza primero, pide confirmación con el número de artículos y respeta el bloqueo', async () => {
   await conNube({}, async () => {
-    ev("items=[{id:'I1'},{id:'I2'},{id:'I3'}];__sync=0;__push=0;__ordenOK=false;_stockBusy=false;_syncing=false;");
+    ev("items=[{id:'I1'},{id:'I2'},{id:'I3'}];__sync=0;__push=0;__ordenOK=false;_stockBusy=false;_syncing=false;__syncReal=syncFromCloud;");
     ev("syncFromCloud=async()=>{__sync++;cloudOK=true;};_pushToCloud=async()=>{__push++;__busyDuring=_stockBusy;};");
     assert.ok(ev('pushToCloud.toString()').includes('ensureOnline'), 'sigue protegida sin conexión');
     await ev('pushToCloud()');
@@ -819,11 +914,28 @@ test('pushToCloud: sincroniza primero, pide confirmación con el número de art�
     assert.strictEqual(ev('__push'), 0, 'no sube nada hasta confirmar');
     assert.ok(ev('__opened').includes('modal-confirm'));
     assert.ok(ev("document.getElementById('confirm-msg').textContent").includes('3 artículos'));
-    // confirmar: sube con el bloqueo puesto y lo libera al acabar
+    // confirmar: sincroniza OTRA vez antes de subir, sube con el bloqueo puesto y lo libera al acabar
     await ev("document.getElementById('confirm-ok').onclick()");
+    assert.strictEqual(ev('__sync'), 2, 'segunda sincronización justo antes de subir');
     assert.strictEqual(ev('__push'), 1);
     assert.strictEqual(ev('__busyDuring'), true);
     assert.strictEqual(ev('_stockBusy'), false);
+    assert.ok(!ev("document.getElementById('confirm-msg').textContent").includes('ya sincronizados ahora mismo'), 'el texto ya no afirma algo que puede ser viejo');
+    // la ventana se abrió bien pero la sincronización del momento de confirmar falla: no se sube nada
+    ev("__sync=0;__push=0;__toasts=[]");
+    await ev('pushToCloud()');
+    ev("syncFromCloud=async()=>{__sync++;cloudOK=false;}"); // cae la red mientras la ventana estaba abierta
+    await ev("document.getElementById('confirm-ok').onclick()");
+    assert.strictEqual(ev('__sync'), 2);
+    assert.strictEqual(ev('__push'), 0, 'sin sincronización correcta no se sube');
+    assert.strictEqual(ev('_stockBusy'), false);
+    assert.ok(ev('__toasts.pop()').includes('No se pudo sincronizar'));
+    // una sincronización que lanza una excepción deja cloudOK=false (la comprobación real)
+    ev("syncFromCloud=__syncReal");
+    ev("cloudOK=true;_syncFromCloud=async()=>{throw new Error('boom')}");
+    await ev('syncFromCloud()');
+    assert.strictEqual(ev('cloudOK'), false, 'un fallo al sincronizar no puede dejar cloudOK en true');
+    ev("syncFromCloud=async()=>{__sync++;cloudOK=true;}");
     // si hay un cambio de stock o sincronización en curso no empieza
     ev("__sync=0;__opened=[];_stockBusy=true");
     await ev('pushToCloud()');
@@ -837,8 +949,15 @@ test('pushToCloud: sincroniza primero, pide confirmación con el número de art�
     await ev('pushToCloud()');
     assert.strictEqual(ev('__opened.length'), 0);
     assert.ok(ev('__toasts.pop()').includes('No se pudo sincronizar'));
-    // cancelar (no pulsar confirmar) no sube nada
-    assert.strictEqual(ev('__push'), 1);
+    // cancelar (abrir la ventana y no pulsar confirmar) no sube nada ni deja bloqueos ni toca la nube
+    ev("syncFromCloud=async()=>{__sync++;cloudOK=true;};__sync=0;__push=0;__calls=[];__opened=[];__toasts=[]");
+    await ev('pushToCloud()');
+    assert.ok(ev('__opened').includes('modal-confirm'), 'la ventana se muestra');
+    assert.strictEqual(ev('__sync'), 1, 'solo la sincronización previa');
+    assert.strictEqual(ev('__push'), 0);
+    assert.strictEqual(ev('__calls.length'), 0, 'ninguna escritura en la nube');
+    assert.strictEqual(ev('_stockBusy'), false);
+    assert.strictEqual(ev('__toasts.length'), 0);
   });
 });
 
@@ -923,10 +1042,24 @@ test('config: flushDirtyCfg sube el valor local, y la sincronización lo hace AN
   });
 });
 
-test('config: la cola dirtyCfg se carga al arrancar antes de la primera sincronización', () => {
+test('colas: init carga TODAS las colas (loadDirty: artículos, columnas y config) antes de la primera sincronización', async () => {
+  // La carga de dirtyCfg vive ahora en loadDirty(), que init() llama antes de syncFromCloud()
   const ini = src.slice(src.indexOf('async function init()'), src.indexOf('async function _syncFromCloud'));
-  assert.ok(ini.indexOf("cfgGet('dirtyCfg')") > 0, 'se carga');
-  assert.ok(ini.indexOf("cfgGet('dirtyCfg')") < ini.indexOf('await syncFromCloud()'), 'antes de sincronizar');
+  assert.ok(ini.indexOf('await loadDirty()') > 0, 'init carga las colas');
+  assert.ok(ini.indexOf('await loadDirty()') < ini.indexOf('await syncFromCloud()'), 'antes de sincronizar');
+  await conR2({}, async () => {
+    ev("__cfg.dirtyIds=['A'];__cfg.dirtyDel=['B'];__cfg.dirtyCfg=['shelves','aisles'];__cfg.dirtyFields={C:{stock:4,loc:'01-1',zzz:1},'../x':{stock:1}};dirtyIds=new Set();dirtyDel=new Set();dirtyCfg=new Set();dirtyFields=Object.create(null);");
+    await ev('loadDirty()');
+    assert.deepStrictEqual(evj('[...dirtyIds]'), ['A']);
+    assert.deepStrictEqual(evj('[...dirtyDel]'), ['B']);
+    assert.deepStrictEqual(evj('[...dirtyCfg]'), ['shelves', 'aisles']);
+    assert.deepStrictEqual(evj('dirtyFields'), { C: { stock: 4, loc: '01-1' } }, 'columnas y ids validados');
+    // cola de configuración ilegible: no impide cargar las demás
+    ev("cfgGet=async k=>{if(k==='dirtyCfg')throw new Error('idb');return k==='dirtyIds'?['Z']:null;};dirtyIds=new Set();dirtyCfg=new Set();");
+    await ev('loadDirty()');
+    assert.deepStrictEqual(evj('[...dirtyIds]'), ['Z']);
+    assert.strictEqual(ev('dirtyCfg.size'), 0);
+  });
 });
 
 test('estantería: guardar una estantería NO confirma el resto del borrador del mapa (E-L6)', async () => {
@@ -1322,4 +1455,243 @@ test('importar los dos almacenes: el otro se escribe en su tabla, la config vac�
       vm.runInContext('globalThis.WAREHOUSE_CONFIG=undefined;globalThis.WAREHOUSE_OTHER_CONFIG=undefined', ctx);
     }
   });
+});
+
+test('cola parcial: tras un fallo, flushDirty sube SOLO esas columnas (sin upsert) y limpia la cola', async () => {
+  await conNube({}, async () => {
+    ev("items=[{id:'I1',name:'A',stock:3,loc:'01-1',photo:'data:image/png;base64,AAAA'},{id:'I2',name:'B',stock:2,loc:'01-1'}]");
+    ev("__upd=()=>({data:null,error:{message:'red'}})");
+    await ev("cloudUpdateFields('I1',{stock:7})");
+    await ev("cloudUpdateFields('I2',{loc:'05-2',pos:'g'})");
+    assert.deepStrictEqual(evj('dirtyFields'), { I1: { stock: 7 }, I2: { loc: '05-2', pos: 'g' } });
+    assert.strictEqual(ev('dirtyIds.size'), 0, 'no están como artículo entero');
+    // vuelve la red
+    ev("__calls=[];__upd=()=>({data:[{id:'x'}],error:null})");
+    await ev('flushDirty()');
+    assert.deepStrictEqual(evj('__calls'), [['update', { stock: 7 }, 'I1'], ['update', { loc: '05-2', pos: 'g' }, 'I2']]);
+    assert.strictEqual(ev("__calls.filter(c=>c[0]==='upsert').length"), 0, 'nunca se sube la fila entera');
+    assert.deepStrictEqual(evj('dirtyFields'), {});
+    assert.deepStrictEqual(evj('__cfg.dirtyFields'), {}, 'la cola guardada en el móvil también queda vacía');
+    // sigue sin red: la entrada se conserva para el siguiente intento
+    ev("__upd=()=>({data:null,error:{message:'red'}});__calls=[]");
+    await ev("cloudUpdateFields('I1',{stock:9})");
+    await ev('flushDirty()');
+    assert.deepStrictEqual(evj('dirtyFields'), { I1: { stock: 9 } });
+    assert.strictEqual(ev("__calls.filter(c=>c[0]==='upsert').length"), 0);
+    // un artículo en la cola ENTERA (alta/edición) sigue subiéndose con upsert y esto limpia también lo parcial
+    ev("dirtyFields.I1={stock:9};markDirty('I1');__calls=[];__upd=()=>({data:[{id:'x'}],error:null})");
+    await ev('flushDirty()');
+    assert.deepStrictEqual(evj('__calls.map(c=>c[0])'), ['upsert'], 'solo el volcado entero, sin update duplicado');
+    assert.deepStrictEqual(evj('dirtyFields'), {});
+    assert.strictEqual(ev('dirtyIds.size'), 0);
+  });
+});
+
+test('cola parcial: si otra persona borró el artículo, flushDirty NO lo recrea y lo quita del móvil', async () => {
+  await conNube({}, async () => {
+    ev("items=[{id:'I1',name:'A',stock:3,loc:'01-1'},{id:'I2',name:'B',stock:2,loc:'01-1'}]");
+    ev("__upd=()=>({data:null,error:{message:'red'}})");
+    await ev("cloudUpdateFields('I1',{stock:7})");
+    ev("__calls=[];__upd=()=>({data:[],error:null})"); // la fila ya no existe y la sesión puede leer
+    await ev('flushDirty()');
+    assert.strictEqual(ev("__calls.filter(c=>c[0]==='upsert').length"), 0, 'no se recrea');
+    assert.deepStrictEqual(evj('items.map(i=>i.id)'), ['I2']);
+    assert.deepStrictEqual(evj('__dbDel'), ['I1']);
+    assert.deepStrictEqual(evj('dirtyFields'), {});
+    assert.strictEqual(ev("dirtyIds.has('I1')"), false);
+    // con la sesión caída (0 filas sin error y la prueba de lectura vacía) NO se da por borrado: la entrada se conserva
+    ev("__upd=()=>({data:null,error:{message:'red'}})");
+    await ev("cloudUpdateFields('I2',{stock:5})");
+    ev("__calls=[];__dbDel=[];__upd=()=>({data:[],error:null});__probe=()=>({data:[],error:null})");
+    await ev('flushDirty()');
+    assert.deepStrictEqual(evj('items.map(i=>i.id)'), ['I2'], 'sigue en el móvil');
+    assert.deepStrictEqual(evj('__dbDel'), []);
+    assert.deepStrictEqual(evj('dirtyFields'), { I2: { stock: 5 } });
+    assert.strictEqual(ev("__calls.filter(c=>c[0]==='upsert').length"), 0);
+    // una entrada de un artículo que ya no está en el móvil se descarta sin tocar la nube
+    ev("dirtyFields.GONE={stock:1};__calls=[]");
+    await ev('flushDirty()');
+    assert.strictEqual(ev("'GONE' in dirtyFields"), false);
+    assert.ok(!ev('__calls').some(c => c[2] === 'GONE'));
+  });
+});
+
+test('cola parcial: se guarda en el móvil, sobrevive a un reinicio (loadDirty) y se valida al cargar', async () => {
+  await conNube({}, async () => {
+    ev("items=[{id:'I1',name:'A',stock:3,loc:'01-1'}]");
+    ev("__upd=()=>({data:null,error:{message:'red'}})");
+    await ev("cloudUpdateFields('I1',{stock:7,loc:'02-1',pos:''})");
+    assert.deepStrictEqual(evj('__cfg.dirtyFields'), { I1: { stock: 7, loc: '02-1', pos: '' } }, 'guardada con cfgPut');
+    // "reinicio": se pierde la memoria y se vuelve a leer lo guardado
+    ev("dirtyFields=Object.create(null);dirtyIds=new Set();dirtyDel=new Set();cfgGet=async k=>(k in __cfg?__cfg[k]:null);");
+    await ev('loadDirty()');
+    assert.deepStrictEqual(evj('dirtyFields'), { I1: { stock: 7, loc: '02-1', pos: '' } });
+    assert.strictEqual(ev('hayPendientes()'), true, 'también cuenta para el aviso de cerrar sesión');
+    assert.strictEqual(ev("stockPendiente('I1')"), true);
+    // datos corruptos o manipulados: solo columnas conocidas, con su tipo y con ids seguros
+    ev("__cfg.dirtyFields={'mal id!':{stock:1},I1:{stock:'x',loc:'a',name:'zz',precio:null},I2:{stock:5,pos:7},I3:'no',I4:{}}");
+    await ev('loadDirty()');
+    assert.deepStrictEqual(evj('dirtyFields'), { I1: { loc: 'a', precio: null }, I2: { stock: 5 } });
+    ev("__cfg.dirtyFields=null");
+    await ev('loadDirty()');
+    assert.deepStrictEqual(evj('dirtyFields'), {});
+    assert.strictEqual(ev('hayPendientes()'), false);
+    ev("dirtyDel.add('X')");
+    assert.strictEqual(ev('hayPendientes()'), true);
+    // logout avisa de los cambios parciales sin subir
+    ev("dirtyDel=new Set();dirtyFields.I1={stock:1};");
+    assert.strictEqual(ev('hayPendientes()'), true);
+  });
+});
+
+test('cola parcial: la sincronización no pisa con el valor de la nube lo que está pendiente de subir', async () => {
+  await conNube({}, async () => {
+    ev("items=[{id:'I1',name:'A',stock:7,loc:'02-1',pos:'',photo:'data:image/png;base64,AAAA'},{id:'I2',name:'B',stock:2,loc:'01-1'}]");
+    ev("pushPendingMovements=async()=>{};dbReplaceAll=async()=>{};cloudCfgGetMany=async()=>undefined;setCloudStatus=()=>{};" +
+      "cloudGetMeta=async()=>[{id:'I1',name:'A',stock:50,loc:'09-9',pos:'x',categories:[]},{id:'I2',name:'B',stock:30,loc:'03-3',pos:'',categories:[]}]");
+    // I1 tiene stock y ubicación pendientes (el flush falla: sin red para escribir); I2 no tiene nada pendiente
+    ev("__upd=()=>({data:null,error:{message:'red'}});dirtyFields.I1={stock:7,loc:'02-1',pos:''}");
+    await ev('_syncFromCloud(false)');
+    const i1 = evj("items.find(i=>i.id==='I1')"), i2 = evj("items.find(i=>i.id==='I2')");
+    assert.strictEqual(i1.stock, 7, 'manda el stock local pendiente');
+    assert.strictEqual(i1.loc, '02-1');
+    assert.strictEqual(i1.pos, '');
+    assert.strictEqual(i1.photo, 'data:image/png;base64,AAAA', 'conserva la foto local');
+    assert.strictEqual(i2.stock, 30, 'sin pendiente: se toma lo de la nube');
+    assert.strictEqual(i2.loc, '03-3');
+    assert.deepStrictEqual(evj('dirtyFields'), { I1: { stock: 7, loc: '02-1', pos: '' } }, 'sigue pendiente');
+    // con el stock pendiente no se lee el de la nube para cambiarlo a ciegas
+    assert.strictEqual(await ev("refreshStock(items[0])"), 'skip');
+  });
+});
+
+test('estantería: el aviso distingue lo no subido a la nube de lo no guardado en este dispositivo', async () => {
+  await conNube({ dom: { 'es-name': { value: 'Nueva' }, 'es-code': { value: '02' }, 'es-baldas': { value: '3' } } }, async () => {
+    const preparar = () => {
+      ev("items=[{id:'I1',name:'A',stock:3,loc:'01-1'},{id:'I2',name:'B',stock:2,loc:'01-2'},{id:'I3',name:'C',stock:1,loc:'01-3'}];__toasts=[]");
+      // saveEditShelf ahora confirma la estantería editada en `shelves`: hay que reponerla en cada repetición
+      ev("shelves=[{id:'01',name:'E1',baldas:3}];mapDraftShelves=[{id:'01',name:'E1',baldas:3}];editShelfIdx=0;");
+    };
+    ev("dbPut=async it=>{if(it.id==='I3')throw new Error('cuota');}");
+    ev("__upd=()=>(__calls[__calls.length-1][2]==='I1'?{data:null,error:{message:'red'}}:{data:[{id:'x'}],error:null})");
+    preparar();
+    await ev('saveEditShelf()');
+    let aviso = ev('__toasts.pop()');
+    assert.ok(aviso.includes('1 repuesto(s) no se pudieron guardar en la nube'), aviso);
+    assert.ok(aviso.includes('1 repuesto(s) no se pudieron guardar en este dispositivo'), aviso);
+    // solo fallo local: no habla de la nube
+    ev("__upd=()=>({data:[{id:'x'}],error:null});__calls=[]");
+    preparar();
+    await ev('saveEditShelf()');
+    aviso = ev('__toasts.pop()');
+    assert.ok(aviso.includes('no se pudieron guardar en este dispositivo') && !aviso.includes('en la nube'), aviso);
+    // todo bien
+    ev("dbPut=async()=>{};__calls=[]");
+    preparar();
+    await ev('saveEditShelf()');
+    assert.ok(ev('__toasts.pop()').startsWith('✓ Estantería actualizada (3 repuesto(s)'));
+  });
+});
+
+// ===== Interacciones entre las dos colas (artículos: dirtyFields/dirtyIds/dirtyDel; configuración: dirtyCfg) =====
+test('colas: hayPendientes cuenta cada cola por separado, incluida la configuración', async () => {
+  await conR2({}, async () => {
+    const limpiar = "dirtyIds=new Set();dirtyDel=new Set();dirtyFields=Object.create(null);dirtyCfg=new Set();";
+    ev(limpiar);
+    assert.strictEqual(ev('hayPendientes()'), false);
+    for (const marca of ["dirtyIds.add('A')", "dirtyDel.add('A')", "dirtyFields.A={stock:1}", "dirtyCfg.add('shelves')"]) {
+      ev(limpiar + marca);
+      assert.strictEqual(ev('hayPendientes()'), true, marca);
+    }
+    ev(limpiar);
+  });
+});
+
+test('colas: una sincronización con columnas pendientes Y configuración pendiente conserva ambas cosas locales, y sube en orden', async () => {
+  await conR2({}, async () => {
+    ev(`items=[{id:'I1',name:'A',stock:7,min:0,loc:'01-1',pos:'h'}];__orden=[];
+      dirtyIds=new Set();dirtyDel=new Set();dirtyFields={I1:{stock:7,loc:'01-1'}};dirtyCfg=new Set(['shelves']);
+      shelves=[{id:'LOCAL',name:'L',baldas:2}];categories=['A'];__cfg.shelves=shelves;
+      pushPendingMovements=async()=>{};dbReplaceAll=async()=>{};setCloudStatus=()=>{};
+      cloudGetMeta=async()=>{__orden.push('meta');return [{id:'I1',name:'A',stock:99,min:0,loc:'09-9',pos:'g',categories:[]}];};
+      cloudCfgGetMany=async()=>{__orden.push('leer');return {shelves:[{id:'NUBE',name:'N',baldas:5}],categories:['B']};};
+      sb={from:t=>({select:()=>({limit:async()=>({data:[{key:'k'}],error:null})}),
+        upsert:async o=>{__orden.push('cfg:'+o.key);return {error:{message:'red'}};},
+        update:f=>({eq:(c,id)=>({select:async()=>{__orden.push('upd:'+id);return {data:null,error:{message:'red'}};}})})})};`);
+    await ev('_syncFromCloud(false)');
+    // orden: columnas pendientes -> configuración pendiente -> lectura de la nube
+    assert.deepStrictEqual(evj('__orden'), ['upd:I1', 'cfg:shelves', 'meta', 'leer']);
+    // sin red: manda lo local en las dos colas y nada se pierde
+    assert.strictEqual(ev("items[0].stock"), 7);
+    assert.strictEqual(ev("items[0].loc"), '01-1');
+    assert.deepStrictEqual(evj('shelves.map(s=>s.id)'), ['LOCAL']);
+    assert.deepStrictEqual(evj('categories'), ['B'], 'lo que no está pendiente sí se actualiza desde la nube');
+    assert.deepStrictEqual(evj('dirtyFields'), { I1: { stock: 7, loc: '01-1' } });
+    assert.deepStrictEqual(evj('[...dirtyCfg]'), ['shelves']);
+    assert.strictEqual(ev('hayPendientes()'), true);
+    // vuelve la red: se suben las dos colas, se vacían y entonces manda la nube
+    ev(`__orden=[];sb={from:t=>({select:()=>({limit:async()=>({data:[{key:'k'}],error:null})}),
+        upsert:async o=>{__orden.push('cfg:'+o.key);return {error:null};},
+        update:f=>({eq:(c,id)=>({select:async()=>{__orden.push('upd:'+id+':'+JSON.stringify(f));return {data:[{id}],error:null};}})})})};`);
+    await ev('_syncFromCloud(false)');
+    assert.deepStrictEqual(evj('__orden'), ['upd:I1:{"stock":7,"loc":"01-1"}', 'cfg:shelves', 'meta', 'leer']);
+    assert.deepStrictEqual(evj('dirtyFields'), {});
+    assert.strictEqual(ev('dirtyCfg.size'), 0);
+    assert.strictEqual(ev('hayPendientes()'), false);
+  });
+});
+
+test('colas: cerrar sesión avisa también cuando solo queda configuración sin subir', async () => {
+  await conR2({}, async () => {
+    const guardar = ev('movGetAll');
+    ctx.__mg = guardar;
+    try {
+      ev("movGetAll=async()=>[];dirtyIds=new Set();dirtyDel=new Set();dirtyFields=Object.create(null);dirtyCfg=new Set();");
+      await ev('askLogout()');
+      assert.ok(!ev("document.getElementById('confirm-msg').textContent").includes('sin sincronizar'), 'sin nada pendiente no hay aviso');
+      ev("dirtyCfg.add('shelves')");
+      await ev('askLogout()');
+      assert.ok(ev("document.getElementById('confirm-msg').textContent").includes('Hay cambios sin sincronizar'));
+      ev("dirtyCfg=new Set();dirtyFields.I1={stock:2}");
+      await ev('askLogout()');
+      assert.ok(ev("document.getElementById('confirm-msg').textContent").includes('Hay cambios sin sincronizar'));
+    } finally {
+      ev('movGetAll=__mg');
+    }
+  });
+});
+
+test('colas: cambiar el código de una estantería sin red deja encoladas la ubicación (parcial) y la config, y lo cuenta el aviso', async () => {
+  await conR2({ dom: { 'es-name': { value: 'E2' }, 'es-code': { value: '02' }, 'es-baldas': { value: '3' } } }, async () => {
+    ev(`items=[{id:'I1',name:'A',stock:3,loc:'01-1',pos:'h'}];__toasts=[];
+      shelves=[{id:'01',name:'E1',baldas:3}];mapDraftShelves=[{id:'01',name:'E1',baldas:3}];editShelfIdx=0;
+      sb={from:t=>({select:()=>({limit:async()=>({data:[{key:'k'}],error:null})}),
+        upsert:async o=>({error:{message:'red'}}),
+        update:f=>({eq:(c,id)=>({select:async()=>({data:null,error:{message:'red'}})})})})};`);
+    await ev('saveEditShelf()');
+    const aviso = ev('__toasts.pop()');
+    assert.ok(aviso.includes('1 repuesto(s) no se pudieron guardar en la nube'), aviso);
+    assert.ok(aviso.includes('La estantería solo se guardó en este dispositivo'), aviso);
+    assert.deepStrictEqual(evj('dirtyFields'), { I1: { loc: '02-1', pos: 'h' } }, 'solo la ubicación, nunca el artículo entero');
+    assert.strictEqual(ev('dirtyIds.size'), 0);
+    assert.deepStrictEqual(evj('[...dirtyCfg]'), ['shelves']);
+    assert.deepStrictEqual(evj('shelves.map(s=>s.id)'), ['02']);
+    assert.strictEqual(ev('hayPendientes()'), true);
+  });
+});
+
+test('tests: conNube restaura las variables globales que tocan los tests', async () => {
+  const antes = ev('[shelves,adjustValue,categories,addHereTarget,[...addHereSel],mapDraftShelves,editShelfIdx,dirtyFields,dirtyDel]');
+  await conNube({}, async () => {
+    ev("shelves=[{id:'ZZ'}];adjustValue=99;categories=['X'];addHereTarget={sid:'1'};addHereSel.add('Q');mapDraftShelves=[{id:'ZZ'}];editShelfIdx=3;dirtyFields.I9={stock:1};");
+  });
+  assert.strictEqual(ev('shelves'), antes[0]);
+  assert.strictEqual(ev('adjustValue'), antes[1]);
+  assert.strictEqual(ev('categories'), antes[2]);
+  assert.strictEqual(ev('addHereTarget'), antes[3]);
+  assert.strictEqual(ev('addHereSel.size'), antes[4].length);
+  assert.strictEqual(ev('mapDraftShelves'), antes[5]);
+  assert.strictEqual(ev('editShelfIdx'), antes[6]);
+  assert.strictEqual(ev('dirtyFields'), antes[7]);
+  assert.strictEqual(ev('dirtyDel'), antes[8]);
 });
