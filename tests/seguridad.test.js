@@ -1117,11 +1117,13 @@ test('plano, estanterías, distribución, proveedor y etiquetas: avisan cuando s
     assert.strictEqual(ev('__toasts.pop()'), '✓ Estanterías actualizadas');
     // proveedor
     ev("providers=[];__toasts=[];__ups=()=>({error:{message:'red'}})");
-    await ev("addProvider('ACME')");
+    // R3: addProvider ya no avisa por su cuenta (el aviso se taparía): devuelve el resultado y quien llama añade sufijoHist
+    assert.strictEqual(await ev("addProvider('ACME')"), false);
     assert.deepStrictEqual(evj('providers'), ['ACME']);
-    assert.ok(ev('__toasts.pop()').includes('solo se guardó en este dispositivo'));
+    assert.strictEqual(ev("dirtyCfg.has('providers')"), true, 'queda en la cola para subirse al sincronizar');
     ev("__ups=()=>({error:null});__toasts=[]");
-    await ev("addProvider('Otro')");
+    assert.strictEqual(await ev("addProvider('Otro')"), true);
+    assert.strictEqual(await ev("addProvider('Otro')"), true, 'ya existía: nada que guardar');
     assert.strictEqual(ev('__toasts.length'), 0, 'con éxito no se avisa');
     // etiquetas impresas
     ev("printedIds=new Set(['I1']);modifiedIds=new Set();__ups=()=>({error:{message:'red'}})");
@@ -1694,4 +1696,520 @@ test('tests: conNube restaura las variables globales que tocan los tests', async
   assert.strictEqual(ev('editShelfIdx'), antes[6]);
   assert.strictEqual(ev('dirtyFields'), antes[7]);
   assert.strictEqual(ev('dirtyDel'), antes[8]);
+});
+
+// ===== Historial, informes y borrados (bloque R3) =====
+// Sustituye funciones/variables globales durante la prueba y las restaura siempre (sobre conNube/conR2, que restauran el resto)
+let _conStubsN = 0;
+async function conStubs(nombres, fn) {
+  const clave = '__stubs' + (++_conStubsN);
+  ctx[clave] = ev('({' + nombres.map(n => n + ':' + n).join(',') + '})');
+  try { await fn(); } finally { ev(nombres.map(n => n + '=' + clave + '.' + n).join(';')); delete ctx[clave]; }
+}
+const norm = x => JSON.parse(JSON.stringify(x));
+// Nube simulada de movimientos: constructor de consultas encadenable y "esperable" que registra las operaciones en __mqs
+// y responde con __movRes(st) (st={t:tabla, ops:[[nombre,...args],...]})
+const QB = String.raw`
+  __mqs=[];__movRes=()=>({data:[],error:null});
+  __qb=t=>{const st={t,ops:[]};const b={};
+    ['select','gte','lte','order','range','eq','limit','delete','insert'].forEach(k=>{b[k]=(...a)=>{st.ops.push([k,...a]);return b;};});
+    b.then=(res,rej)=>{__mqs.push(st);return Promise.resolve().then(()=>__movRes(st)).then(res,rej);};
+    return b;};
+  sb={from:t=>__qb(t)};`;
+const nombresOps = q => q.ops.map(o => o[0]);
+
+test('historial: getMergedMovements estricto devuelve null si falla la nube, sin duplicados y solo la ventana pedida (SF-A5)', async () => {
+  await conR2({}, async () => {
+    await conStubs(['movGetAll'], async () => {
+      ev(QB);
+      ev("__movRes=()=>({data:[{ts:30,itemId:'B'},{ts:20,itemId:'A'},{ts:20,itemId:'A'},{ts:10,itemId:'C'}],error:null})");
+      ev("movGetAll=async()=>[{ts:20,itemId:'A',synced:false},{ts:25,itemId:'L',synced:false},{ts:5,itemId:'OLD',synced:false},{ts:26,itemId:'S',synced:true}]");
+      const r = norm(await ev('getMergedMovements(true,{desde:8,hasta:100})'));
+      assert.deepStrictEqual(r.map(m => m.ts + '|' + m.itemId), ['30|B', '20|A', '10|C', '25|L'],
+        'la fila repetida de la nube se deduplica, el pendiente fuera de la ventana (5) y el ya subido (26) no entran');
+      // consulta acotada y paginación ordenada por el par único (ts,itemId)
+      const q = norm(ev('__mqs[0]'));
+      assert.deepStrictEqual(q.ops.filter(o => o[0] === 'gte' || o[0] === 'lte'), [['gte', 'ts', 8], ['lte', 'ts', 100]]);
+      assert.deepStrictEqual(q.ops.filter(o => o[0] === 'order'), [['order', 'ts', { ascending: false }], ['order', 'itemId', { ascending: false }]]);
+      // lectura estricta que falla: null (no un informe parcial)
+      ev("__movRes=()=>({data:null,error:{message:'red'}})");
+      assert.strictEqual(await ev('getMergedMovements(true)'), null);
+      ev("__movRes=()=>{throw new Error('boom')}");
+      assert.strictEqual(await ev('getMergedMovements(true)'), null);
+      // con estado: devuelve lo local y marca que la nube no se pudo leer
+      ev("__e={nube:true}");
+      const loc = norm(await ev('getMergedMovements(false,undefined,__e)'));
+      assert.deepStrictEqual(loc.map(m => m.itemId), ['A', 'L', 'OLD']);
+      assert.strictEqual(ev('__e.nube'), false);
+      // sin nube (sb nulo) también cuenta como fallo en modo estricto
+      ev('sb=null');
+      assert.strictEqual(await ev('getMergedMovements(true)'), null);
+    });
+  });
+});
+
+test('historial: cloudMovGetAll acota por fechas, pagina con orden estable y distingue fallo (strict) de vacío', async () => {
+  await conR2({}, async () => {
+    ev(QB);
+    // sin rango: ni gte ni lte; dos páginas (1000 + 5)
+    ev("__movRes=st=>{const r=st.ops.find(o=>o[0]==='range');return {data:Array.from({length:r[1]===0?1000:5},(_,i)=>({ts:i,itemId:'X'+r[1]+'_'+i})),error:null};}");
+    const todo = await ev('cloudMovGetAll(true)');
+    assert.strictEqual(todo.length, 1005);
+    assert.strictEqual(ev('__mqs.length'), 2);
+    assert.deepStrictEqual(norm(ev('__mqs.map(q=>q.ops.find(o=>o[0]==="range").slice(1))')), [[0, 999], [1000, 1999]]);
+    assert.ok(ev('__mqs.every(q=>!q.ops.some(o=>o[0]==="gte"||o[0]==="lte"))'), 'sin rango no se filtra');
+    // fallo: strict -> null, no strict -> []
+    ev("__movRes=()=>({data:null,error:{message:'red'}})");
+    assert.strictEqual(await ev('cloudMovGetAll(true,{desde:1})'), null);
+    assert.deepStrictEqual(norm(await ev('cloudMovGetAll(false,{desde:1})')), []);
+    // tiempo agotado por página
+    ev("withTimeout=()=>Promise.reject(new Error('Tiempo agotado: página 1'))");
+    assert.strictEqual(await ev('cloudMovGetAll(true)'), null);
+    ev('withTimeout=__o2.withTimeout');
+    ev('sb=null');
+    assert.strictEqual(await ev('cloudMovGetAll(true)'), null);
+    assert.deepStrictEqual(norm(await ev('cloudMovGetAll(false)')), []);
+  });
+});
+
+test('historial: los pendientes se comparan solo desde el movimiento pendiente más antiguo (no se baja toda la tabla)', async () => {
+  await conR2({}, async () => {
+    await conStubs(['movGetAll', 'cloudMovGetAll', 'cloudMovPut', 'movUpdate'], async () => {
+      ev("__args=[];__sub=[];movGetAll=async()=>[{ts:100,itemId:'A',synced:false},{ts:50,itemId:'B',synced:false},{ts:70,itemId:'C',synced:true}];cloudMovGetAll=async(s,r)=>{__args.push([s,r]);return [{ts:100,itemId:'A'}];};cloudMovPut=async m=>{__sub.push(m.itemId);return true;};movUpdate=async()=>{};");
+      await ev('_pushPendingMovements()');
+      assert.deepStrictEqual(norm(ev('__args')), [[true, { desde: 50 }]]);
+      assert.deepStrictEqual(norm(ev('__sub')), ['B'], 'A ya estaba en la nube: no se duplica');
+    });
+  });
+});
+
+test('borrado de línea: cloudMovDelete devuelve true / false (denegado) / null (error de red o tiempo agotado)', async () => {
+  await conR2({}, async () => {
+    ev(QB);
+    const borrar = () => ev('cloudMovDelete(5,"A")');
+    const esDelete = "st.ops.some(o=>o[0]==='delete')";
+    ev("__movRes=st=>(" + esDelete + "?{data:[{ts:5}],error:null}:{data:[],error:null})");
+    assert.strictEqual(await borrar(), true, 'borrada de verdad');
+    ev("__movRes=()=>({data:[],error:null})");
+    assert.strictEqual(await borrar(), true, '0 filas y la comprobación no la encuentra: ya no existía');
+    ev("__movRes=st=>(" + esDelete + "?{data:[],error:null}:{data:[{ts:5}],error:null})");
+    assert.strictEqual(await borrar(), false, '0 filas pero sigue ahí: denegado por RLS');
+    ev("__movRes=()=>({data:null,error:{code:'42501',message:'rls'}})");
+    assert.strictEqual(await borrar(), false, 'error de permisos');
+    ev("__movRes=()=>({data:null,error:{message:'red'}})");
+    assert.strictEqual(await borrar(), null, 'error de la nube');
+    ev("__movRes=()=>{throw new Error('Failed to fetch')}");
+    assert.strictEqual(await borrar(), null, 'excepción de red (antes devolvía true y la línea reaparecía)');
+    ev("__movRes=st=>(" + esDelete + "?{data:[],error:null}:{data:null,error:{message:'red'}})");
+    assert.strictEqual(await borrar(), null, 'falla la comprobación posterior: no se sabe');
+    ev("__movRes=()=>({data:[{ts:5}],error:null});withTimeout=()=>Promise.reject(new Error('Tiempo agotado: borrar movimiento'))");
+    assert.strictEqual(await borrar(), null, 'tiempo agotado');
+    ev('withTimeout=__o2.withTimeout;sb=null');
+    assert.strictEqual(await borrar(), null, 'sin conexión no se puede borrar en la nube');
+  });
+});
+
+test('borrado de línea: confirmDeleteMov no toca la fila local si falla la red y avisa de cada caso', async () => {
+  await conR2({}, async () => {
+    await conStubs(['cloudMovDelete', 'movDeleteLocal', 'renderHomeMovements', 'renderCostes', 'pendingMovDel'], async () => {
+      ev(QB);
+      ev("__locales=[];__rend=0;movDeleteLocal=async(ts,id)=>{__locales.push([ts,id]);};renderHomeMovements=async()=>{__rend++;};renderCostes=async()=>{__rend++;};");
+      // error de red
+      ev("cloudMovDelete=async()=>null;pendingMovDel={ts:5,itemId:'A'};__toasts=[]");
+      await ev('confirmDeleteMov()');
+      assert.deepStrictEqual(norm(ev('__locales')), [], 'la fila local se conserva');
+      assert.strictEqual(ev('__rend'), 0);
+      assert.ok(ev('__toasts').some(m => m.includes('No se pudo borrar (error de red)')), ev('__toasts.join("|")'));
+      assert.ok(!ev('__toasts').some(m => m.includes('Línea borrada')));
+      // denegado: mensaje de permisos de siempre
+      ev("cloudMovDelete=async()=>false;pendingMovDel={ts:5,itemId:'A'};__toasts=[]");
+      await ev('confirmDeleteMov()');
+      assert.deepStrictEqual(norm(ev('__locales')), []);
+      assert.ok(ev('__toasts').some(m => m.includes('Sin permisos para borrar esta línea')));
+      // borrado real
+      ev("cloudMovDelete=async()=>true;pendingMovDel={ts:5,itemId:'A'};__toasts=[]");
+      await ev('confirmDeleteMov()');
+      assert.deepStrictEqual(norm(ev('__locales')), [[5, 'A']]);
+      assert.strictEqual(ev('__toasts.pop()'), 'Línea borrada');
+      assert.strictEqual(ev('__rend'), 1);
+    });
+  });
+});
+
+test('movimientos: cloudMovPut reintenta sin provider SOLO si falta la columna (PGRST204 / 42703) y avisa una vez (SF-A16)', async () => {
+  await conR2({}, async () => {
+    await conStubs(['_provAviso'], async () => {
+      ev(QB);
+      ev("_provAviso=false;__movRes=st=>__ins(st.ops.find(o=>o[0]==='insert')[1]);__ins=()=>({error:null})");
+      const mov = '({itemId:"A",ts:1,provider:"ACME",synced:false,id:3})';
+      const inserts = () => ev('__mqs.filter(q=>q.ops.some(o=>o[0]==="insert")).length');
+      // columna inexistente: segundo intento sin provider
+      for (const code of ['PGRST204', '42703']) {
+        ev("__mqs=[];__ins=m=>('provider' in m?{error:{code:'" + code + "'}}:{error:null})");
+        assert.strictEqual(await ev('cloudMovPut(' + mov + ')'), true, code);
+        assert.strictEqual(inserts(), 2, code);
+        assert.ok(!('provider' in norm(ev('__mqs[1].ops.find(o=>o[0]==="insert")[1]'))), 'el reintento va sin provider');
+      }
+      assert.strictEqual(ev('__toasts.filter(m=>m.includes("provider")).length'), 1, 'aviso una sola vez');
+      // cualquier otro error: NO se reintenta sin provider y el movimiento sigue pendiente
+      for (const err of ["{message:'red'}", "{code:'42501',message:'rls'}", "{code:'PGRST301'}", "{code:'08006'}"]) {
+        ev("__mqs=[];__ins=()=>({error:" + err + "})");
+        assert.strictEqual(await ev('cloudMovPut(' + mov + ')'), false, err);
+        assert.strictEqual(inserts(), 1, err + ': un solo intento, con provider');
+      }
+      ev("__mqs=[];__movRes=()=>{throw new Error('Failed to fetch')}");
+      assert.strictEqual(await ev('cloudMovPut(' + mov + ')'), false);
+      assert.strictEqual(inserts(), 1);
+      // ya existía (índice único)
+      ev("__mqs=[];__movRes=st=>({error:{code:'23505'}})");
+      assert.strictEqual(await ev('cloudMovPut(' + mov + ')'), true);
+      assert.strictEqual(inserts(), 1);
+      // columna inexistente pero el segundo intento también falla (red): pendiente
+      ev("__mqs=[];__movRes=st=>(st.ops.find(o=>o[0]==='insert')[1].provider!==undefined?{error:{code:'PGRST204'}}:{error:{message:'red'}})");
+      assert.strictEqual(await ev('cloudMovPut(' + mov + ')'), false);
+      assert.strictEqual(inserts(), 2);
+      // sin proveedor no hay reintento
+      ev("__mqs=[];__movRes=()=>({error:{code:'PGRST204'}})");
+      assert.strictEqual(await ev('cloudMovPut({itemId:"A",ts:2,synced:false})'), false);
+      assert.strictEqual(inserts(), 1);
+    });
+  });
+});
+
+test('Inicio: una sola lectura del historial (ventana de 6 meses), aviso visible si falla y sin pisar con un render lento (SF-A5, E-L10)', async () => {
+  const dom = { 'home-hist-warn': { style: { display: 'none' } } };
+  await conNube({ dom }, async () => {
+    await conStubs(['checkPendingMovs', 'getMergedMovements', 'renderHomeChart', 'homeMovsCache', '_homeSeq'], async () => {
+      const ahora = Date.now();
+      ev("__gm=[];__chart=[];items=[];checkPendingMovs=async()=>{};renderHomeChart=m=>{__chart.push(m.length);};");
+      ev("getMergedMovements=async(s,r,e)=>{__gm.push([s,r]);return [{ts:" + (ahora - 1000) + ",diferencia:2,nombre:'RECIENTE',itemId:'A'},{ts:" + (ahora - 200 * 86400000) + ",diferencia:-1,nombre:'ANTIGUO',itemId:'B'}];}");
+      await ev('renderHomeMovements()');
+      assert.strictEqual(ev('__gm.length'), 1, 'antes se pedía dos veces');
+      const d = new Date();
+      assert.deepStrictEqual(norm(ev('__gm[0]')), [false, { desde: new Date(d.getFullYear(), d.getMonth() - 5, 1).getTime() }]);
+      assert.deepStrictEqual(norm(ev('__chart')), [2], 'el gráfico recibe la misma lectura (6 meses)');
+      const html = ctx.__dom['home-entradas'].innerHTML + ctx.__dom['home-salidas'].innerHTML;
+      assert.ok(html.includes('RECIENTE') && !html.includes('ANTIGUO'), 'la lista solo muestra 90 días');
+      assert.strictEqual(ctx.__dom['home-hist-warn'].style.display, 'none');
+      // la nube no se pudo leer: aviso visible y se siguen mostrando los datos locales
+      ev("getMergedMovements=async(s,r,e)=>{e.nube=false;return [{ts:" + (ahora - 5) + ",diferencia:3,nombre:'LOCAL',itemId:'A'}];}");
+      await ev('renderHomeMovements(true)');
+      assert.strictEqual(ctx.__dom['home-hist-warn'].style.display, '');
+      assert.ok(ctx.__dom['home-entradas'].innerHTML.includes('LOCAL'));
+      // vuelve a leerse bien: el aviso desaparece
+      ev("getMergedMovements=async()=>[]");
+      await ev('renderHomeMovements(true)');
+      assert.strictEqual(ctx.__dom['home-hist-warn'].style.display, 'none');
+      // un render lento no pisa a uno más reciente
+      ev("__n=0;getMergedMovements=async()=>{const n=++__n;if(n===1)await new Promise(r=>{__rel=r;});return [{ts:" + (ahora - 9) + ",diferencia:1,nombre:n===1?'VIEJO':'NUEVO',itemId:'A'}];}");
+      const lento = ev('renderHomeMovements(true)');
+      await new Promise(r => setTimeout(r, 10));
+      await ev('renderHomeMovements(true)');
+      ev('__rel()');
+      await lento;
+      const fin = ctx.__dom['home-entradas'].innerHTML;
+      assert.ok(fin.includes('NUEVO') && !fin.includes('VIEJO'), 'manda el render más reciente');
+      assert.ok(ev('homeMovsCache').every(m => m.nombre === 'NUEVO'));
+    });
+  });
+});
+
+test('gráfico: el mes de cada movimiento se calcula en hora local (turno de noche del día 1) (E-L9)', async () => {
+  const tzAntes = process.env.TZ;
+  process.env.TZ = 'Europe/Madrid'; // zona con adelanto sobre UTC: con toISOString() la 00:30 del día 1 caía en el mes anterior
+  try {
+    await conNube({}, async () => {
+      const d = new Date();
+      const primero = new Date(d.getFullYear(), d.getMonth(), 1, 0, 30).getTime();
+      const ultimoMesAnt = new Date(d.getFullYear(), d.getMonth(), 0, 23, 30).getTime();
+      ev('renderHomeChart([{ts:' + primero + ',diferencia:5},{ts:' + ultimoMesAnt + ',diferencia:-3}])');
+      const grupos = ctx.__dom['home-chart-bars'].innerHTML.split('chart-bar-group').slice(1);
+      assert.strictEqual(grupos.length, 6);
+      assert.ok(grupos[5].includes('Entradas: 5') && grupos[5].includes('Salidas: 0'), 'mes actual: ' + grupos[5]);
+      assert.ok(grupos[4].includes('Salidas: 3') && grupos[4].includes('Entradas: 0'), 'mes anterior: ' + grupos[4]);
+      assert.strictEqual(ev('claveMes(new Date(2026,0,1,0,30))'), '2026-01');
+    });
+  } finally {
+    if (tzAntes === undefined) delete process.env.TZ; else process.env.TZ = tzAntes;
+  }
+});
+
+test('Costes: lectura estricta de solo el mes elegido; si falla no hay cifras parciales y lastCostesCalc guarda sus movimientos', async () => {
+  const dom = { 'cos-month': { value: '3' }, 'cos-year': { value: '2026' }, 'cos-hist-warn': { style: { display: 'none' } } };
+  await conNube({ dom }, async () => {
+    await conStubs(['getMergedMovements', 'lastCostesCalc', 'pushPendingMovements', 'homeMovsCache'], async () => {
+      ev("__gm=[];items=[];pushPendingMovements=async()=>{};homeMovsCache=[{nombre:'DE-INICIO'}];getMergedMovements=async(s,r)=>{__gm.push([s,r]);return null;};");
+      // fallo de lectura
+      assert.strictEqual(await ev('calcCostesMes()'), null);
+      await ev('renderCostes()');
+      assert.strictEqual(ev('lastCostesCalc'), null);
+      assert.strictEqual(ctx.__dom['cos-hist-warn'].style.display, '');
+      assert.strictEqual(ctx.__dom['cos-in'].textContent, '—', 'sin cifras parciales');
+      assert.ok(ev('__toasts').some(m => m.includes('No se pudo leer el historial de la nube')));
+      // lectura correcta
+      const dentro = new Date(2026, 3, 15, 12).getTime(), fuera = new Date(2026, 4, 2, 12).getTime();
+      ev("__gm=[];getMergedMovements=async(s,r)=>{__gm.push([s,r]);return [{ts:" + dentro + ",diferencia:2,coste:5,tipo:'Entrada',cat:'C',nombre:'DEL-MES'},{ts:" + fuera + ",diferencia:1,nombre:'OTRO-MES'}];}");
+      await ev('renderCostes()');
+      assert.deepStrictEqual(norm(ev('__gm[0]')), [true, { desde: new Date(2026, 3, 1).getTime(), hasta: new Date(2026, 4, 0, 23, 59, 59, 999).getTime() }]);
+      assert.strictEqual(ctx.__dom['cos-hist-warn'].style.display, 'none');
+      assert.deepStrictEqual(norm(ev('lastCostesCalc.movs.map(m=>m.nombre)')), ['DEL-MES']);
+      assert.strictEqual(ev('lastCostesCalc.m'), 3);
+      assert.strictEqual(ev('lastCostesCalc.y'), 2026);
+      assert.deepStrictEqual(norm(ev('homeMovsCache')), [{ nombre: 'DE-INICIO' }], 'Costes ya no pisa la caché de Inicio');
+    });
+  });
+});
+
+test('informe de costes PDF: usa los movimientos del mes (lastCostesCalc), no la caché de Inicio, y no sale si no se pudo leer (E-L10)', async () => {
+  const dom = { 'cos-month': { value: '3' }, 'cos-year': { value: '2026' } };
+  await conNube({ dom }, async () => {
+    await conStubs(['lastCostesCalc', 'homeMovsCache', 'renderCostes', 'adminUnlocked'], async () => {
+      ctx.window.jspdf = ev("({jsPDF:function(){return new Proxy({},{get:(o,k)=>k==='internal'?{pageSize:{getWidth:()=>595}}:k==='autoTable'?(opt=>{__tablas.push(opt);}):k==='save'?(n=>{__guardado=n;}):(()=>{})});}})");
+      try {
+        ev("__tablas=[];__guardado=null;adminUnlocked=false;homeMovsCache=[{ts:1,fecha:'x',nombre:'DE-INICIO',tipo:'Entrada',diferencia:1}];lastCostesCalc={valIn:0,valOut:0,valCompras:0,porCat:{},m:3,y:2026,movs:[{ts:2,fecha:'y',nombre:'DEL-MES',tipo:'Entrada',diferencia:2}]};__rc=0;renderCostes=async()=>{__rc++;};");
+        await ev('exportCostesPDF()');
+        assert.strictEqual(ev('__rc'), 0, 'datos del mes elegido: no recalcula');
+        const filas = norm(ev('__tablas[1].body'));
+        assert.deepStrictEqual(filas.map(f => f[1]), ['DEL-MES']);
+        assert.ok(String(ev('__guardado')).includes('2026-04'));
+        // otro mes seleccionado: recalcula; si no se puede leer la nube (lastCostesCalc nulo) no se genera el PDF
+        ev("__tablas=[];__guardado=null;lastCostesCalc.m=2;renderCostes=async()=>{__rc++;lastCostesCalc=null;};");
+        await ev('exportCostesPDF()');
+        assert.strictEqual(ev('__rc'), 1);
+        assert.strictEqual(ev('__guardado'), null);
+        assert.strictEqual(ev('__tablas.length'), 0);
+      } finally {
+        delete ctx.window.jspdf;
+      }
+    });
+  });
+});
+
+test('exportar movimientos: lectura estricta, aborta con aviso si no se puede leer la nube y consulta solo el rango pedido (SF-A5)', async () => {
+  const dom = { 'mov-from': { value: '2026-04-01' }, 'mov-to': { value: '2026-04-30' } };
+  await conNube({ dom }, async () => {
+    await conStubs(['getMergedMovements', 'movRangeMode', 'asegurarFotos', 'pushPendingMovements'], async () => {
+      ev("__gm=[];__fotos=0;pushPendingMovements=async()=>{};asegurarFotos=async()=>{__fotos++;return {};};getMergedMovements=async(s,r)=>{__gm.push([s,r]);return null;};movRangeMode='range';");
+      await ev('doExportMovimientos()');
+      assert.deepStrictEqual(norm(ev('__gm')), [[true, { desde: new Date('2026-04-01T00:00:00').getTime(), hasta: new Date('2026-04-30T23:59:59.999').getTime() }]]);
+      assert.ok(ev('__toasts').some(m => m.includes('No se pudo leer el historial de la nube')), ev('__toasts.join("|")'));
+      assert.ok(!ev('__toasts').some(m => m.includes('Generando Excel')), 'no se llega a generar el Excel');
+      assert.strictEqual(ev('__fotos'), 0);
+      // exportar todo: sin ventana, pero también estricto
+      ev("__gm=[];__toasts=[];movRangeMode='all';");
+      await ev('doExportMovimientos()');
+      assert.deepStrictEqual(norm(ev('__gm')), [[true, null]], 'sin ventana de fechas (undefined se serializa como null)');
+      assert.ok(ev('__toasts').some(m => m.includes('No se pudo leer el historial de la nube')));
+    });
+  });
+});
+
+test('historial de precios y proveedor: el aviso de fallo llega en el toast final de compra, factura y artículo nuevo (SF-A10)', async () => {
+  assert.strictEqual(ev('sufijoHist(true,true)'), '');
+  assert.strictEqual(ev('sufijoHist(undefined,undefined)'), '', 'sin dato (nada que guardar) no se avisa');
+  assert.strictEqual(ev('sufijoHist(false,true)'), ' · ⚠ historial de precios no guardado');
+  assert.strictEqual(ev('sufijoHist(true,false)'), ' · ⚠ proveedor no guardado en la nube');
+  // compra desde la ficha
+  const dom = { 'pur-qty': { value: '3' }, 'pur-price': { value: '2' }, 'pur-discount': { value: '' }, 'pur-provider': { value: 'ACME' } };
+  await conNube({ dom }, async () => {
+    await conStubs(['cloudPriceAdd', 'addProvider', 'renderPriceHistory', 'renderInvoiceModal', 'adminUnlocked', '_invLines', '_invProvider'], async () => {
+      ev("items=[{id:'I1',name:'A',stock:5,precio:1}];currentItem=items[0];renderPriceHistory=()=>{};renderInvoiceModal=()=>{};cloudPriceAdd=async()=>false;addProvider=async()=>false;");
+      await ev('applyPurchase()');
+      let t = ev('__toasts.pop()');
+      assert.ok(t.startsWith('✓ Entrada de compra: +3') && t.includes('historial de precios no guardado') && t.includes('proveedor no guardado'), t);
+      ev("items=[{id:'I1',name:'A',stock:5,precio:1}];currentItem=items[0];cloudPriceAdd=async()=>true;addProvider=async()=>true;");
+      await ev('applyPurchase()');
+      t = ev('__toasts.pop()');
+      assert.ok(t.startsWith('✓ Entrada de compra: +3') && !t.includes('⚠'), t);
+      // línea de factura asignada a un artículo existente
+      ev("adminUnlocked=true;_invProvider='ACME';_invLines=[{desc:'x',qty:2,price:4,status:'pending',itemId:null}];renderInvoiceLines=()=>{};cloudPriceAdd=async()=>false;addProvider=async()=>false;items=[{id:'I1',name:'A',stock:5,precio:1}];");
+      await ev("assignInvoiceLine(0,'I1')");
+      t = ev('__toasts.pop()');
+      assert.ok(t.startsWith('✓ A · +2 ud') && t.includes('historial de precios no guardado') && t.includes('proveedor no guardado'), t);
+      // artículo nuevo creado desde la factura (con el movimiento de compra fallando)
+      ev("_invLines=[{desc:'y',qty:1,price:4,status:'pending',itemId:null}];items=[{id:'N1',name:'Nuevo',stock:4,precio:3}];registrarMovimiento=async()=>{throw new Error('idb');};");
+      await t_invoiceAfterSave();
+      t = ev('__toasts.pop()');
+      assert.ok(t.startsWith('✓ Nuevo creado y asignado a la factura') && t.includes('no se pudo registrar el movimiento de compra') && t.includes('historial de precios no guardado') && t.includes('proveedor no guardado'), t);
+      ev("registrarMovimiento=async()=>{};_invLines=[{desc:'y',qty:1,price:4,status:'pending',itemId:null}];cloudPriceAdd=async()=>true;addProvider=async()=>true;");
+      await t_invoiceAfterSave();
+      assert.strictEqual(ev('__toasts.pop()'), '✓ Nuevo creado y asignado a la factura');
+    });
+  });
+});
+async function t_invoiceAfterSave() { return ev("_invoiceAfterSave('N1',0)"); }
+
+test('historial de precios: cloudPriceAdd devuelve el resultado real (con tiempo límite)', async () => {
+  await conR2({}, async () => {
+    ev(QB);
+    assert.strictEqual(await ev('cloudPriceAdd({item_id:"I1",price:1})'), true);
+    assert.strictEqual(ev('__mqs[0].t'), 'price_history');
+    ev("__movRes=()=>({error:{message:'rls'}})");
+    assert.strictEqual(await ev('cloudPriceAdd({item_id:"I1"})'), false);
+    ev("__movRes=()=>{throw new Error('red')}");
+    assert.strictEqual(await ev('cloudPriceAdd({item_id:"I1"})'), false);
+    ev("__movRes=()=>({error:null});withTimeout=()=>Promise.reject(new Error('Tiempo agotado: precio'))");
+    assert.strictEqual(await ev('cloudPriceAdd({item_id:"I1"})'), false);
+    ev('withTimeout=__o2.withTimeout;sb=null');
+    assert.strictEqual(await ev('cloudPriceAdd({item_id:"I1"})'), false);
+  });
+});
+
+test('proveedor: addProvider devuelve si se pudo guardar y deja el fallo en la cola dirtyCfg (SF-A10)', async () => {
+  await conR2({}, async () => {
+    await conStubs(['providers'], async () => {
+      ev("providers=[]");
+      assert.strictEqual(await ev("addProvider('')"), true);
+      ev("__ups=()=>({error:{message:'red'}})");
+      assert.strictEqual(await ev("addProvider('ACME')"), false);
+      assert.strictEqual(ev("dirtyCfg.has('providers')"), true);
+      ev("__ups=()=>({error:null});cfgPut=async()=>{throw new Error('idb')}");
+      assert.strictEqual(await ev("addProvider('Otro')"), false, 'falla el guardado en el móvil');
+      ev("cfgPut=async(k,v)=>{__cfg[k]=v}");
+      assert.strictEqual(await ev("addProvider('Tercero')"), true);
+    });
+  });
+});
+
+// Entorno para mover/borrar: dos almacenes, nube de artículos simulada y funciones de red sustituidas
+const STUBS_MOVER = ['cloudPutTo', 'cloudDelete', 'cloudGetPhotos', 'otherWarehouse', 'requireAdmin', 'updateSelBar', 'dbGetAll', 'dbDelete'];
+async function conMover(fn) {
+  await conNube({}, async () => {
+    await conStubs(STUBS_MOVER, async () => {
+      ev(`WH={key:'electrico',name:'Eléctrico',tblCfg:'config',tblItems:'items'};
+        __otro={name:'Mecánico',tblItems:'items_mec'};otherWarehouse=()=>__otro;requireAdmin=f=>f();updateSelBar=()=>{};
+        __copias=[];__borrados=[];__dbDel=[];__fotos={};
+        cloudPutTo=async(t,it)=>{__copias.push([t,it.id,it.stock,it.loc,it.photo]);return !(__noCopia&&__noCopia.includes(it.id));};
+        cloudDelete=async id=>{__borrados.push(id);if(__noBorra&&__noBorra.includes(id)){markDirtyDel(id);return false;}return true;};
+        cloudGetPhotos=async ids=>{const o={};ids.forEach(i=>{if(i in __fotos)o[i]=__fotos[i];});return o;};
+        __noCopia=[];__noBorra=[];
+        dbDelete=async id=>{__dbDel.push(id);};dbGetAll=async()=>items.filter(i=>!__dbDel.includes(i.id));`);
+      await fn();
+    });
+  });
+}
+
+test('mover de almacén: lee el stock actual de la nube antes de copiar y solo borra en local lo borrado de verdad (SF-A14)', async () => {
+  await conMover(async () => {
+    ev("items=[{id:'I1',name:'A',stock:3,loc:'01-1',pos:'p',photo:'data:image/png;base64,AAAA'}];__stock=()=>({data:{stock:9},error:null});");
+    assert.strictEqual(await ev('_moverItemA(items[0],__otro)'), 'ok');
+    assert.deepStrictEqual(norm(ev('__copias')), [['items_mec', 'I1', 9, '', 'data:image/png;base64,AAAA']], 'copia el stock de la nube (9), no el local viejo (3), y sin ubicación');
+    assert.deepStrictEqual(norm(ev('__dbDel')), ['I1']);
+    // no se pudo leer el stock: no se copia nada (falla cerrado)
+    ev("items=[{id:'I2',name:'B',stock:3,photo:'data:image/png;base64,AAAA'}];__copias=[];__borrados=[];__dbDel=[];__stock=()=>{throw new Error('t')}");
+    assert.strictEqual(await ev('_moverItemA(items[0],__otro)'), 'stock');
+    assert.strictEqual(ev('__copias.length'), 0);
+    assert.strictEqual(ev('__borrados.length'), 0);
+    // otra persona lo borró: se quita del móvil y no se copia
+    ev("__stock=()=>({data:null,error:null})");
+    assert.strictEqual(await ev('_moverItemA(items[0],__otro)'), 'missing');
+    assert.strictEqual(ev('__copias.length'), 0);
+    assert.strictEqual(ev('items.length'), 0);
+    // con un cambio local pendiente manda el stock local
+    ev("items=[{id:'I3',name:'C',stock:3,photo:'data:image/png;base64,AAAA'}];dirtyFields.I3={stock:3};__stock=()=>({data:{stock:9},error:null});__copias=[]");
+    assert.strictEqual(await ev('_moverItemA(items[0],__otro)'), 'ok');
+    assert.strictEqual(ev('__copias[0][2]'), 3);
+    // la copia falla: no se borra nada del origen
+    ev("items=[{id:'I4',name:'D',stock:3,photo:'data:image/png;base64,AAAA'}];__copias=[];__borrados=[];__dbDel=[];__noCopia=['I4']");
+    assert.strictEqual(await ev('_moverItemA(items[0],__otro)'), 'nube');
+    assert.strictEqual(ev('__borrados.length'), 0);
+    assert.strictEqual(ev('__dbDel.length'), 0);
+    // el borrado del origen falla: queda en los dos y la fila local NO se borra
+    ev("items=[{id:'I5',name:'E',stock:3,photo:'data:image/png;base64,AAAA'}];__copias=[];__borrados=[];__dbDel=[];__noCopia=[];__noBorra=['I5']");
+    assert.strictEqual(await ev('_moverItemA(items[0],__otro)'), 'copiado');
+    assert.strictEqual(ev('__copias.length'), 1);
+    assert.deepStrictEqual(norm(ev('__dbDel')), [], 'se conserva la fila local');
+    assert.strictEqual(ev("dirtyDel.has('I5')"), true, 'el borrado queda en la cola');
+    // sin foto local y sin poder comprobarla: no se mueve
+    ev("items=[{id:'I6',name:'F',stock:3,photo:null}];__copias=[];__noBorra=[];__fotos={}");
+    assert.strictEqual(await ev('_moverItemA(items[0],__otro)'), 'foto');
+    assert.strictEqual(ev('__copias.length'), 0);
+  });
+});
+
+test('mover de almacén (ficha): el aviso dice lo que pasó de verdad', async () => {
+  await conMover(async () => {
+    const mover = async () => { await ev('moveToOtherWarehouse()'); await ctx.__dom['confirm-ok'].onclick(); };
+    ev("items=[{id:'I1',name:'A',stock:3,photo:'data:image/png;base64,AAAA'}];currentItem=items[0];__stock=()=>({data:{stock:9},error:null});__toasts=[]");
+    await mover();
+    assert.strictEqual(ev('__toasts.pop()'), '✓ Movido a Mecánico (sin ubicación)');
+    assert.deepStrictEqual(norm(ev('__dbDel')), ['I1']);
+    // el borrado del origen falla por la red: aviso de que queda en los dos, con reintento
+    ev("items=[{id:'I2',name:'B',stock:3,photo:'data:image/png;base64,AAAA'}];currentItem=items[0];__dbDel=[];__noBorra=['I2'];__toasts=[]");
+    await mover();
+    const t = ev('__toasts.pop()');
+    assert.ok(t.includes('Copiado a Mecánico') && t.includes('NO se pudo quitar de Eléctrico') && t.includes('se reintentará'), t);
+    assert.deepStrictEqual(norm(ev('__dbDel')), []);
+    assert.strictEqual(ev('items.length'), 1, 'el artículo sigue en este almacén');
+    // la copia falla
+    ev("items=[{id:'I3',name:'C',stock:3,photo:'data:image/png;base64,AAAA'}];currentItem=items[0];__noBorra=[];__noCopia=['I3'];__toasts=[]");
+    await mover();
+    assert.ok(ev('__toasts.pop()').includes('No se pudo mover'));
+    // no se pudo comprobar el stock
+    ev("items=[{id:'I4',name:'D',stock:3,photo:'data:image/png;base64,AAAA'}];currentItem=items[0];__noCopia=[];__stock=()=>{throw new Error('t')};__toasts=[]");
+    await mover();
+    assert.ok(ev('__toasts.pop()').includes('No se pudo comprobar el stock actual'));
+  });
+});
+
+test('mover varios: informa de movidos, fallidos, copiados sin borrar y desaparecidos; solo se borra en local lo borrado (SF-A14)', async () => {
+  await conMover(async () => {
+    ev(`items=['I1','I2','I3','I5'].map(id=>({id,name:id,stock:3,photo:'data:image/png;base64,AAAA'}));
+      __stock=()=>({data:{stock:9},error:null});__noCopia=['I2'];__noBorra=['I3'];__toasts=[];
+      selectedIds.clear();['I1','I2','I3','I4','I5'].forEach(i=>selectedIds.add(i));`);
+    try {
+      await ev('bulkMove()');
+      await ctx.__dom['confirm-ok'].onclick();
+      const t = ev('__toasts.pop()');
+      assert.ok(t.includes('Movidos 2 de 5 a Mecánico'), t);
+      assert.ok(t.includes('1 no se movieron') && t.includes('1 copiados pero no se pudieron quitar') && t.includes('1 ya no existían'), t);
+      assert.deepStrictEqual(norm(ev('__dbDel')), ['I1', 'I5'], 'solo lo borrado de verdad se quita en local');
+      assert.deepStrictEqual(norm(ev('[...selectedIds]')), ['I2'], 'queda seleccionado lo que no se movió');
+      // todo bien
+      ev("items=[{id:'I8',name:'x',stock:1,photo:'data:image/png;base64,AAAA'}];__noCopia=[];__noBorra=[];__dbDel=[];selectedIds.clear();selectedIds.add('I8');");
+      await ev('bulkMove()');
+      await ctx.__dom['confirm-ok'].onclick();
+      assert.strictEqual(ev('__toasts.pop()'), '✓ Movidos 1 de 1 a Mecánico');
+      assert.strictEqual(ev('selectedIds.size'), 0);
+    } finally {
+      ev('selectedIds.clear()');
+    }
+  });
+  assert.strictEqual(ev('resumenMover({ok:2,copiado:0,fallo:0,missing:0,total:2},"X")'), '✓ Movidos 2 de 2 a X');
+});
+
+test('borrar todo: cuenta aciertos y fallos y solo limpia en local (y las categorías) lo que se borró de verdad (SF-A14)', async () => {
+  await conMover(async () => {
+    ev("items=['I1','I2','I3'].map(id=>({id,name:id,stock:1}));categories=['Cat'];__noBorra=['I2'];__toasts=[];__cfg={};");
+    await ev('askWipe()');
+    await ctx.__dom['confirm-ok'].onclick();
+    let t = ev('__toasts.pop()');
+    assert.ok(t.includes('Borrados 2 de 3') && t.includes('Fallaron 1') && t.includes('se reintentará'), t);
+    assert.deepStrictEqual(norm(ev('__dbDel')), ['I1', 'I3'], 'I2 sigue en el móvil');
+    assert.deepStrictEqual(norm(ev('items.map(i=>i.id)')), ['I2']);
+    assert.deepStrictEqual(norm(ev('categories')), ['Cat'], 'con fallos no se vacían las categorías');
+    assert.ok(!('categories' in norm(ev('__cfg'))));
+    // sin fallos: se borra todo, se vacían las categorías y se avisa de si no subieron
+    ev("items=['I1','I2'].map(id=>({id,name:id,stock:1}));__noBorra=[];__dbDel=[];__toasts=[];cloudCfgPut=async()=>false");
+    await ev('wipeAll()');
+    t = ev('__toasts.pop()');
+    assert.ok(t.startsWith('Inventario borrado') && t.includes('categorías solo se vaciaron en este dispositivo'), t);
+    assert.strictEqual(ev('items.length'), 0);
+    assert.deepStrictEqual(norm(ev('categories')), []);
+    ev("items=['I1'].map(id=>({id,name:id,stock:1}));__dbDel=[];__toasts=[];cloudCfgPut=async()=>true");
+    await ev('wipeAll()');
+    assert.strictEqual(ev('__toasts.pop()'), 'Inventario borrado');
+  });
+});
+
+test('diagnóstico de movimientos: solo lee la columna ts (DB-LOW6)', async () => {
+  await conR2({}, async () => {
+    await conStubs(['showInfo'], async () => {
+      ev(QB);
+      ev("__movRes=()=>({data:[],error:null,count:7});showInfo=(t,m)=>{__info=m;};");
+      await ev('diagnosticoMovimientos()');
+      assert.deepStrictEqual(norm(ev('__mqs[0].ops[0]')), ['select', 'ts', { count: 'exact' }]);
+      assert.ok(String(ev('__info')).includes('7'));
+    });
+  });
 });

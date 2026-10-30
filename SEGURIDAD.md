@@ -62,6 +62,14 @@ Un corte momentáneo (cambio de repetidor wifi) se reintenta una vez antes de av
 - La configuración (categorías, estanterías, plano, proveedores, etiquetas impresas) que no llega a la nube queda en una cola local
   (dirtyCfg) que se reintenta al sincronizar y no se pisa con el valor de la nube mientras esté pendiente; la app avisa de que
   "solo se guardó en este dispositivo". Si dos dispositivos cambian la misma clave sin conexión, gana el último que sincroniza.
+- Historial e informes: el Excel de movimientos, los costes del mes y su PDF leen la nube de forma estricta; si no se puede leer
+  el historial se aborta con "No se pudo leer el historial de la nube" (nunca salen informes parciales). Inicio sí muestra lo local
+  pero con un aviso visible. Solo se consulta la ventana necesaria (6 meses en Inicio, el mes en Costes, el rango pedido al exportar).
+- Borrar una línea del historial solo borra la copia local si la nube la borró (o ya no existía); un fallo de red lo avisa y no toca nada.
+  El proveedor de un movimiento solo se descarta si la tabla no tiene la columna `provider`; cualquier otro fallo lo deja pendiente.
+- Mover entre almacenes lee el stock actual de la nube antes de copiar y solo quita el artículo de aquí si la copia se subió y el borrado
+  en la nube tuvo éxito; si no, avisa "queda en los dos almacenes" (el borrado pendiente se reintenta al sincronizar). "Borrar todo" y
+  "mover varios" informan de cuántos salieron bien y fallaron.
 
 ## Escáner de facturas (IA)
 - Solo para administradores (modo administrador activado) y con conexión. Al bloquear el modo administrador se cierra y se olvida la factura.

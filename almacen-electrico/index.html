@@ -78,7 +78,7 @@
       </ol>
     </div>
     <div id="home-sync-warn" style="display:none;background:var(--orange-bg,#fff3e0);color:var(--orange-text,#b06000);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:12px;">⚠️ No se ha podido conectar con la nube. Lo que ves puede no incluir movimientos hechos desde otros dispositivos.</div>
-    <div id="home-pending-warn" style="display:none;background:var(--orange-bg,#fff3e0);color:var(--orange-text,#b06000);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:12px;"></div>
+    <div id="home-pending-warn" style="display:none;background:var(--orange-bg,#fff3e0);color:var(--orange-text,#b06000);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:12px;"></div><div id="home-hist-warn" style="display:none;background:var(--orange-bg,#fff3e0);color:var(--orange-text,#b06000);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:12px;">⚠️ No se pudo leer el historial de la nube. Las listas y el gráfico solo muestran los movimientos de este dispositivo pendientes de subir y pueden estar incompletos.</div>
     <button class="btn btn-block" style="margin-bottom:12px;" onclick="syncAndRenderHome()">🔄 Sincronizar ahora</button>
     <button class="inv-scan-btn" id="btn-scan-invoice" onclick="document.getElementById('inv-file').click()" style="display:none;"><svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 12h6M9 16h6M4 4h16v16H4z" stroke-width="1.7" stroke-linecap="round"/></svg>Escanear factura con IA</button>
     <input type="file" id="inv-file" accept="image/*,application/pdf" style="display:none;" onchange="handleInvoiceFile(event)">
@@ -271,7 +271,7 @@
       <div><div class="page-title">Costes</div><div class="page-sub">Valor del almacén y gasto mensual</div></div>
       <button class="btn btn-sm" onclick="showPage('ajustes')">← Volver</button>
     </div>
-    <div id="cos-sync-warn" style="display:none;background:var(--orange-bg,#fff3e0);color:var(--orange-text,#b06000);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:12px;">⚠️ No se ha podido conectar con la nube. Lo que ves puede no incluir movimientos hechos desde otros dispositivos.</div>
+    <div id="cos-sync-warn" style="display:none;background:var(--orange-bg,#fff3e0);color:var(--orange-text,#b06000);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:12px;">⚠️ No se ha podido conectar con la nube. Lo que ves puede no incluir movimientos hechos desde otros dispositivos.</div><div id="cos-hist-warn" style="display:none;background:var(--orange-bg,#fff3e0);color:var(--orange-text,#b06000);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-bottom:12px;">⚠️ No se pudo leer el historial de la nube: no se muestran cifras (serían parciales) ni se puede generar el PDF.</div>
     <button class="btn btn-block" style="margin-bottom:12px;" onclick="syncAndRenderCostes()">🔄 Sincronizar ahora</button>
     <div class="search-bar">
       <select class="lf-sel" id="cos-month" onchange="renderCostes()" style="flex:1;"></select>

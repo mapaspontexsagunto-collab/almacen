@@ -154,7 +154,8 @@ async function _pushPendingMovements(){
   const pend=all.filter(m=>m.synced!==true);
   if(!pend.length)return;
   // Evitar duplicados: ver qué movimientos ya existen en la nube
-  const cloud=await cloudMovGetAll(true);
+  // Solo se consulta desde el movimiento pendiente más antiguo (todo lo que pueda estar duplicado es posterior)
+  const cloud=await cloudMovGetAll(true,{desde:Math.min(...pend.map(m=>Number(m.ts)||0))});
   if(cloud===null)return; // no se pudo leer la nube: no se sube nada (evita duplicados)
   const enNube=new Set(cloud.map(m=>m.ts+'|'+m.itemId));
   for(const m of pend){
@@ -164,17 +165,30 @@ async function _pushPendingMovements(){
   }
 }
 
-// Devuelve TODOS los movimientos combinando nube + local (sin duplicar)
-async function getMergedMovements(){
-  const cloud=await cloudMovGetAll();
+// Devuelve los movimientos combinando nube + local (sin duplicar). rango={desde,hasta} (ms, opcional) limita la consulta
+// a esa ventana de fechas (la nube y los pendientes locales).
+// strict=true: si no se puede leer la nube devuelve null (los informes deben abortar, no salir incompletos).
+// strict=false: devuelve solo los pendientes locales y, si se pasa estado, pone estado.nube=false (para avisarlo en pantalla).
+async function getMergedMovements(strict,rango,estado){
+  const cloud=await cloudMovGetAll(!!strict||!!estado,rango);
+  if(cloud===null){
+    if(estado)estado.nube=false;
+    if(strict)return null;
+  }
   const local=await movGetAll();
+  const dentro=m=>m&&(!rango||((rango.desde==null||m.ts>=rango.desde)&&(rango.hasta==null||m.ts<=rango.hasta)));
   // Solo añadimos los movimientos locales que AÚN no se han subido a la nube.
   // Los que ya están subidos (synced) viven en la nube: si se borran allí desde
   // cualquier dispositivo, deben desaparecer y no "revivir" desde la copia local.
-  const pendientes=(local||[]).filter(m=>m.synced!==true);
-  const vistos=new Set((cloud||[]).map(m=>m.ts+'|'+m.itemId));
-  const extra=pendientes.filter(m=>!vistos.has(m.ts+'|'+m.itemId));
-  return [...(cloud||[]),...extra];
+  const pendientes=(local||[]).filter(m=>m.synced!==true&&dentro(m));
+  const vistos=new Set();
+  const out=[];
+  [...(cloud||[]),...pendientes].forEach(m=>{ // sin duplicados por ts|itemId (también si la paginación repite filas)
+    const k=m.ts+'|'+m.itemId;
+    if(vistos.has(k))return;
+    vistos.add(k);out.push(m);
+  });
+  return out;
 }
 
 // ===== SUPABASE (sincronización en la nube) =====
@@ -564,45 +578,66 @@ async function cloudMovPut(mov){
   }catch(e){
     if(e&&e.code==='23505')return true; // ya existía en la nube
     console.warn('cloudMovPut error',e, 'payload:', m);
-    // Si el fallo es porque la columna "provider" no existe en la tabla (instalación
-    // antigua de Supabase donde no se ejecutó el ALTER TABLE), reintentamos sin ella
-    // para no perder el resto del movimiento.
-    if(m.provider!=null){
+    // Solo si el fallo es que la columna "provider" no existe en la tabla (instalación antigua de Supabase donde no se
+    // ejecutó el ALTER TABLE: PGRST204 / 42703) se reintenta sin ella para no perder el resto del movimiento.
+    // Cualquier otro error (red, permisos, tiempo agotado) deja el movimiento pendiente: así no se pierde el proveedor.
+    if(m.provider!=null&&e&&(e.code==='PGRST204'||e.code==='42703')){
       try{
         const{provider,...m2}=m;
-        const{error:error2}=await sb.from(WH.tblMov).insert(m2);
+        const{error:error2}=await withTimeout(sb.from(WH.tblMov).insert(m2),15000,'movimiento');
         if(error2)throw error2;
         console.warn('cloudMovPut: se subió sin el campo "provider" (revisa que la columna exista en Supabase)');
+        if(!_provAviso){_provAviso=true;try{toast('⚠ Falta la columna "provider" en la tabla de movimientos de Supabase: los movimientos se guardan sin proveedor');}catch(e3){}}
         return true;
-      }catch(e2){console.warn('cloudMovPut error (reintento sin provider)',e2);}
+      }catch(e2){
+        if(e2&&e2.code==='23505')return true; // ya existía en la nube
+        console.warn('cloudMovPut error (reintento sin provider)',e2);
+      }
     }
     return false;
   }
 }
-async function cloudMovGetAll(strict){
+let _provAviso=false; // el aviso de columna "provider" ausente se da una sola vez por sesión
+// Lee los movimientos de la nube. rango={desde,hasta} (ms, opcional) limita la consulta a esa ventana (el resto de la
+// tabla no se descarga). strict=true devuelve null si falla; si no, []. Paginación ordenada por el par único (ts,itemId).
+async function cloudMovGetAll(strict,rango){
   if(!sb||!WH?.tblMov)return strict?null:[];
-  try{return await fetchAllPages(()=>sb.from(WH.tblMov).select('*').order('ts',{ascending:false}));}
+  try{
+    return await fetchAllPages(()=>{
+      let q=sb.from(WH.tblMov).select('*');
+      if(rango&&rango.desde!=null)q=q.gte('ts',rango.desde);
+      if(rango&&rango.hasta!=null)q=q.lte('ts',rango.hasta);
+      return q.order('ts',{ascending:false}).order('itemId',{ascending:false});
+    },1000,200,20000);
+  }
   catch(e){console.warn('cloudMovGetAll error',e);return strict?null:[];}
 }
+// Borra una línea del historial en la nube. Devuelve true (borrada o ya no existía), false (denegado: solo administradores)
+// o null (no se pudo comprobar: red, tiempo agotado o sin conexión; la línea puede seguir en la nube).
 async function cloudMovDelete(ts,itemId){
-  if(!sb||!WH?.tblMov)return true;
+  if(!sb||!WH?.tblMov)return null;
   try{
-    const{data,error}=await sb.from(WH.tblMov).delete().eq('ts',ts).eq('itemId',itemId).select('ts');
+    const{data,error}=await withTimeout(sb.from(WH.tblMov).delete().eq('ts',ts).eq('itemId',itemId).select('ts'),15000,'borrar movimiento');
     if(error)throw error;
     if(!data||data.length===0){
-      const chk=await sb.from(WH.tblMov).select('ts').eq('ts',ts).eq('itemId',itemId).limit(1);
+      const chk=await withTimeout(sb.from(WH.tblMov).select('ts').eq('ts',ts).eq('itemId',itemId).limit(1),15000,'borrar movimiento');
       if(chk.error)throw chk.error;
       if(chk.data&&chk.data.length)return false; // la línea sigue ahí: borrado denegado
     }
     return true;
-  }catch(e){console.warn('cloudMovDelete error',e);return true;}
+  }catch(e){
+    console.warn('cloudMovDelete error',e);
+    return (e&&e.code==='42501')?false:null;
+  }
 }
-// Histórico de precios (tabla aparte: price_history / price_history_mec)
+// Histórico de precios (tabla aparte: price_history / price_history_mec). true si se guardó, false si no.
 async function cloudPriceAdd(entry){
   if(!sb||!WH?.tblPrice)return false;
-  try{const{error}=await sb.from(WH.tblPrice).insert(entry);if(error)throw error;return true;}
+  try{const{error}=await withTimeout(sb.from(WH.tblPrice).insert(entry),15000,'precio');if(error)throw error;return true;}
   catch(e){console.warn('cloudPriceAdd error',e);return false;}
 }
+// Sufijo de aviso para los toasts de éxito cuando el historial de precios o el proveedor no se pudieron guardar
+function sufijoHist(precioOk,provOk){return (precioOk===false?' · ⚠ historial de precios no guardado':'')+(provOk===false?' · ⚠ proveedor no guardado en la nube':'');}
 async function cloudPriceGetForItem(itemId,limit){
   if(!sb||!WH?.tblPrice)return[];
   try{
@@ -643,13 +678,16 @@ let lastAIIdent=null; // última identificación cruda de la IA (para buscar en 
 // shelves model: [{id:'01', name:'Estantería 01', baldas:5}, ...]
 function defaultShelves(){const a=[];for(let i=1;i<=26;i++){const n=String(i).padStart(2,'0');a.push({id:n,name:'Estantería '+n,baldas:5});}return a;}
 // Registra un proveedor nuevo (si no existía) para que aparezca en el autocompletado
+// Devuelve true (guardado o ya existía) o false (no se pudo guardar en el móvil o en la nube; si falló la nube queda en la
+// cola dirtyCfg y se sube al sincronizar). NO avisa: lo hace quien llama con sufijoHist() para que el aviso no se tape.
 async function addProvider(name){
   const n=(name||'').trim();
-  if(!n||providers.includes(n))return;
+  if(!n||providers.includes(n))return true;
   providers.push(n);
-  await cfgPut('providers',providers);
+  let okl=true;
+  try{await cfgPut('providers',providers);}catch(e){okl=false;console.warn('addProvider (móvil)',e);}
   const okc=await cloudCfgPut('providers',providers);
-  if(!okc)toast('⚠ El proveedor "'+n+'" solo se guardó en este dispositivo (se subirá al sincronizar)');
+  return okl&&okc;
 }
 function renderProviderList(){
   const dl=document.getElementById('provider-list');
@@ -1065,6 +1103,9 @@ function renderAlerts(){
 // ===== Entradas / Salidas en la pantalla de inicio (últimos 3 meses) =====
 let homeMovsCache=[];      // movimientos cargados para inicio
 let pendingMovDel=null;    // {ts,itemId,name} pendiente de borrar
+let _homeSeq=0;            // número de la última actualización de Inicio (una lenta no pisa a una más reciente)
+// Primer instante (hora local) del mes más antiguo del gráfico (6 meses incluido el actual)
+function inicioGrafico(){const d=new Date();return new Date(d.getFullYear(),d.getMonth()-5,1,0,0,0,0).getTime();}
 
 // Fuerza una sincronización con la nube antes de pintar Inicio,
 // así nos asegura ver también lo metido desde otros dispositivos.
@@ -1099,16 +1140,22 @@ async function renderHomeMovements(silent){
     cont1.innerHTML='<div class="mov-empty">Cargando...</div>';
     cont2.innerHTML='<div class="mov-empty">Cargando...</div>';
   }
+  const seq=++_homeSeq;
   await checkPendingMovs();
-  // Combinar nube + local (para ver siempre los propios aunque aún no hayan subido)
-  let movs=await getMergedMovements();
+  // Combinar nube + local (para ver siempre los propios aunque aún no hayan subido). UNA sola lectura, solo de la
+  // ventana necesaria: la del gráfico (6 meses, que incluye los 90 días de la lista).
+  const estado={nube:true};
+  const todos=await getMergedMovements(false,{desde:inicioGrafico()},estado);
+  if(seq!==_homeSeq)return; // otra actualización más reciente ya está en marcha: esta se descarta (no pisa la caché)
   const limite=Date.now()-(90*24*60*60*1000); // 3 meses aprox.
-  movs=(movs||[]).filter(m=>m.ts&&m.ts>=limite).sort((a,b)=>b.ts-a.ts);
+  const movs=(todos||[]).filter(m=>m.ts&&m.ts>=limite).sort((a,b)=>b.ts-a.ts);
   homeMovsCache=movs;
+  const aviso=document.getElementById('home-hist-warn');
+  if(aviso)aviso.style.display=estado.nube?'none':'';
   cont1.innerHTML=renderMovRows(movs.filter(m=>m.diferencia>0),'in');
   cont2.innerHTML=renderMovRows(movs.filter(m=>m.diferencia<0),'out');
-  // Gráfico de los últimos 6 meses (todos los movimientos sin filtro de tiempo)
-  try{const allMovs=await getMergedMovements();renderHomeChart(allMovs||[]);}catch(e){renderHomeChart([]);}
+  // Gráfico de los últimos 6 meses (con la misma lectura)
+  try{renderHomeChart(todos||[]);}catch(e){console.warn('renderHomeChart',e);}
   // Guía de onboarding
   const og=document.getElementById('onboarding-guide');
   if(og)og.style.display=(items&&items.length===0)?'':'none';
@@ -1139,7 +1186,7 @@ function renderMovRows(list,dir){
 
 function askDeleteMov(ts,itemId){
   requireAdmin(()=>{
-    const m=homeMovsCache.find(x=>x.ts===ts&&x.itemId===itemId);
+    const m=homeMovsCache.find(x=>x.ts===ts&&x.itemId===itemId)||((lastCostesCalc&&lastCostesCalc.movs)||[]).find(x=>x.ts===ts&&x.itemId===itemId);
     pendingMovDel={ts,itemId};
     document.getElementById('confirm-title').textContent='Borrar línea';
     document.getElementById('confirm-msg').textContent = m
@@ -1155,8 +1202,10 @@ async function confirmDeleteMov(){
   const {ts,itemId}=pendingMovDel;
   toast('Borrando línea...');
   const okMov=await cloudMovDelete(ts,itemId);
+  // null = no se pudo comprobar (red / tiempo agotado): la línea puede seguir en la nube, así que NO se toca la copia local
+  if(okMov===null){toast('⚠ No se pudo borrar (error de red). La línea sigue en el historial');pendingMovDel=null;return;}
   if(!okMov){toast('⚠ Sin permisos para borrar esta línea (solo administradores)');pendingMovDel=null;return;}
-  await movDeleteLocal(ts,itemId);
+  try{await movDeleteLocal(ts,itemId);}catch(e){console.warn('movDeleteLocal',e);}
   pendingMovDel=null;
   // Refrescar la lista visible: la de Inicio o la de Costes, según dónde estemos
   if(document.getElementById('page-costes')?.classList.contains('active')){
@@ -1410,9 +1459,11 @@ function costesRango(){
 }
 // Calcula entradas/salidas/compras valorizadas del mes, y desglose por categoría
 async function calcCostesMes(){
-  const {desdeTs,hastaTs}=costesRango();
+  const {desdeTs,hastaTs,m:mesSel,y:anioSel}=costesRango();
   await pushPendingMovements();
-  let movs=await getMergedMovements();
+  // Lectura estricta y solo del mes elegido: si falla la nube se devuelve null (no se calcula con datos parciales)
+  let movs=await getMergedMovements(true,{desde:desdeTs,hasta:hastaTs});
+  if(movs===null)return null;
   movs=movs.filter(m=>m.ts>=desdeTs&&m.ts<=hastaTs);
   let valIn=0, valOut=0, valCompras=0;
   const porCat={}; // cat -> {in:0,out:0,compras:0}
@@ -1428,7 +1479,7 @@ async function calcCostesMes(){
       else if(diff<0){valOut+=coste; porCat[cat].out+=coste;}
     }
   });
-  return {valIn,valOut,valCompras,porCat,movs};
+  return {valIn,valOut,valCompras,porCat,movs,m:mesSel,y:anioSel};
 }
 function valorAlmacenActual(){
   return items.reduce((s,i)=>s+(i.precio!=null?Number(i.precio)*(i.stock||0):0),0);
@@ -1443,26 +1494,39 @@ async function syncAndRenderCostes(){
   await renderCostes();
 }
 async function renderCostes(){
-  const {valIn,valOut,valCompras,porCat,movs}=await calcCostesMes();
-  lastCostesCalc={valIn,valOut,valCompras,porCat};
+  const calc=await calcCostesMes();
+  const aviso=document.getElementById('cos-hist-warn');
+  if(calc===null){ // no se pudo leer el historial de la nube: no se muestran cifras parciales
+    lastCostesCalc=null;
+    if(aviso)aviso.style.display='';
+    ['cos-in','cos-out','cos-compras'].forEach(id=>{document.getElementById(id).textContent='—';});
+    const msg='<div class="mov-empty">No se pudo leer el historial de la nube.</div>';
+    document.getElementById('cos-entradas').innerHTML=msg;
+    document.getElementById('cos-salidas').innerHTML=msg;
+    toast('⚠ No se pudo leer el historial de la nube');
+    return;
+  }
+  if(aviso)aviso.style.display='none';
+  const {valIn,valOut,valCompras,porCat,movs}=calc;
+  lastCostesCalc={valIn,valOut,valCompras,porCat,movs,m:calc.m,y:calc.y}; // con sus propios movimientos (el PDF no usa la caché de Inicio)
   document.getElementById('cos-in').textContent=fmtEur(valIn);
   document.getElementById('cos-out').textContent=fmtEur(valOut);
   document.getElementById('cos-compras').textContent=fmtEur(valCompras);
   document.getElementById('cos-total').textContent=fmtEur(valorAlmacenActual());
   const _conPrecio=items.filter(i=>i.precio!=null).length;
   document.getElementById('cos-total-sub').textContent=_conPrecio+' de '+items.length+' artículos con precio asignado';
-  // Reutilizamos la misma caché y la misma función de pintado que en Inicio,
-  // así el botón de borrar línea funciona igual aquí y revierte el stock.
-  homeMovsCache=movs;
+  // Misma función de pintado que en Inicio (el botón de borrar línea funciona igual); askDeleteMov busca en lastCostesCalc.movs
   const sorted=[...movs].sort((a,b)=>b.ts-a.ts);
   document.getElementById('cos-entradas').innerHTML=renderMovRows(sorted.filter(m=>m.diferencia>0),'in');
   document.getElementById('cos-salidas').innerHTML=renderMovRows(sorted.filter(m=>m.diferencia<0),'out');
 }
 // Exporta el informe de costes del mes seleccionado en PDF (jsPDF, se genera en el propio dispositivo)
 async function exportCostesPDF(){
-  if(!lastCostesCalc){await renderCostes();}
-  const {valIn,valOut,valCompras,porCat}=lastCostesCalc;
   const {m,y}=costesRango();
+  // Se recalcula si no hay datos o son de otro mes; si no se puede leer la nube, renderCostes ya avisó y no se genera el PDF
+  if(!lastCostesCalc||lastCostesCalc.m!==m||lastCostesCalc.y!==y){await renderCostes();}
+  if(!lastCostesCalc)return;
+  const {valIn,valOut,valCompras,porCat}=lastCostesCalc;
   const btn=document.getElementById('btn-costes-pdf');
   if(btn){btn.disabled=true;btn.style.opacity='0.6';}
   try{
@@ -1516,7 +1580,7 @@ async function exportCostesPDF(){
       rows.forEach(r=>{ y2+=18; doc.text(r[0]+' — In: '+r[1]+' / Out: '+r[2]+' / Compras: '+r[3],40,y2); });
     }
     // Listado de movimientos del mes (igual que se ve en pantalla)
-    const movRows=[...homeMovsCache].sort((a,b)=>b.ts-a.ts).map(mv=>[
+    const movRows=[...lastCostesCalc.movs].sort((a,b)=>b.ts-a.ts).map(mv=>[
       mv.fecha||'', mv.nombre||'', mv.tipo||'', (mv.diferencia>0?'+':'')+mv.diferencia, mv.coste!=null?fmtEur(Number(mv.coste)):'—', ...(adminUnlocked?[quienMov(mv)||'—']:[])
     ]);
     if(doc.autoTable){
@@ -1565,7 +1629,7 @@ async function withFreshStock(fn,opts){
     let w=0;while(_syncing&&w<60){await new Promise(r=>setTimeout(r,200));w++;}
     const _it=(opts&&opts.item)||currentItem;
     const antes=currentItem?currentItem.stock:null;
-    const _rs=await refreshStock(_it);
+    const _rs=(opts&&opts.sinRefresco)?'skip':await refreshStock(_it); // sinRefresco: fn lee el stock de cada artículo por su cuenta (mover entre almacenes)
     // No se pudo leer el stock de la nube: no se cambia nada a ciegas con un valor local posiblemente viejo
     if(_rs==='error'){toast('⚠ No se pudo comprobar el stock actual. Inténtalo de nuevo');return;}
     // Otra persona borró el artículo: se quita aquí y NO se vuelve a subir (no resucita)
@@ -1682,18 +1746,19 @@ async function _applyPurchase(){
   // Solo se suben el stock y el precio (no la fila entera ni la foto)
   const _rc=await _commitStock(currentItem,anterior,anterior+qty,'Compra',_coste,price!=null?{precio:price}:null,provider);
   if(!_rc)return;
+  let _okPrecio=true,_okProv=true; // el historial de precios y el proveedor no son críticos, pero si fallan se avisa
   if(price!=null){
     const now=new Date();
     const entry={item_id:currentItem.id, price, previous_price:precioAnterior, qty, provider:provider||null, fecha:now.toLocaleDateString('es-ES'), ts:now.getTime()};
-    await cloudPriceAdd(entry);
+    _okPrecio=await cloudPriceAdd(entry);
   }
-  if(provider)await addProvider(provider);
+  if(provider)_okProv=await addProvider(provider);
   closeModal('modal-purchase');
   document.getElementById('detail-stock').textContent=currentItem.stock;
   adjustValue=currentItem.stock;document.getElementById('adjust-val').textContent=adjustValue;
   renderAll();
   if(document.getElementById('modal-detail').classList.contains('open'))renderPriceHistory(currentItem.id);
-  toast('✓ Entrada de compra: +'+qty+(price!=null?(' a '+fmtEur(price)+'/u'):'')+sufijoCommit(_rc));
+  toast('✓ Entrada de compra: +'+qty+(price!=null?(' a '+fmtEur(price)+'/u'):'')+sufijoCommit(_rc)+sufijoHist(_okPrecio,_okProv));
 }
 
 // DELETE con modal propio (confirm() fallaba en tablet)
@@ -3420,7 +3485,7 @@ async function diagnosticoMovimientos(){
       msg='No hay conexión con la nube (Supabase). Revisa tu conexión a internet e inténtalo de nuevo.';
     }else{
       // 1) ¿Se puede LEER la tabla?
-      const lectura=await sb.from(tabla).select('id',{count:'exact'}).limit(1);
+      const lectura=await sb.from(tabla).select('ts',{count:'exact'}).limit(1);
       if(lectura.error){
         msg='❌ No se puede acceder a la tabla "'+tabla+'".\n\nCausa probable: la tabla NO existe en Supabase, o tiene el candado de seguridad (RLS) activado.\n\nSolución: ejecuta en Supabase los SQL de seguridad (supabase_seguridad.sql y supabase_admin_roles.sql) y comprueba que la tabla existe.\n\nDetalle técnico: '+(lectura.error.message||lectura.error);
       }else{
@@ -3471,7 +3536,10 @@ async function doExportMovimientos(){
   // Subir pendientes y leer combinando nube + local
   toast('⏳ Descargando movimientos...');
   await pushPendingMovements();
-  let movs=await getMergedMovements();
+  // Lectura estricta: si no se puede leer el historial de la nube NO se genera un Excel incompleto.
+  // Solo la exportación de "todo" baja la tabla entera; con fechas se consulta solo ese rango.
+  let movs=await getMergedMovements(true,(desdeTs!==null&&hastaTs!==null)?{desde:desdeTs,hasta:hastaTs}:undefined);
+  if(movs===null){toast('⚠ No se pudo leer el historial de la nube. No se genera el Excel para no exportar datos incompletos');return;}
   // Filtrar por rango de fechas si procede
   if(desdeTs!==null&&hastaTs!==null){
     movs=movs.filter(m=>m.ts>=desdeTs&&m.ts<=hastaTs);
@@ -3517,8 +3585,29 @@ async function doExportMovimientos(){
 }
 function askWipe(){
   requireAdmin(()=>{
-    document.getElementById('confirm-title').textContent='Borrar todo';document.getElementById('confirm-msg').textContent='¿Borrar TODO el inventario? Se borrará también en la nube y en todos los dispositivos. Exporta una copia antes. Esta acción no se puede deshacer.';document.getElementById('confirm-ok').onclick=async()=>{const ids=items.map(i=>i.id);await dbClear();categories=[];await cfgPut('categories',[]);for(const id of ids)await cloudDelete(id);await cloudCfgPut('categories',[]);items=[];closeModal('modal-confirm');renderAll();toast('Inventario borrado');};openModal('modal-confirm');
+    document.getElementById('confirm-title').textContent='Borrar todo';document.getElementById('confirm-msg').textContent='¿Borrar TODO el inventario? Se borrará también en la nube y en todos los dispositivos. Exporta una copia antes. Esta acción no se puede deshacer.';document.getElementById('confirm-ok').onclick=async()=>{closeModal('modal-confirm');await wipeAll();};openModal('modal-confirm');
   });
+}
+// Borra el inventario: primero en la nube, artículo a artículo, y en el móvil SOLO lo que de verdad se borró allí.
+// Si todo se borró también se vacían las categorías; si algo falló se conservan (los artículos que quedan las usan).
+async function wipeAll(){
+  const ids=items.map(i=>i.id);
+  const borrados=[];
+  let fallo=0;
+  for(const id of ids){
+    if(await cloudDelete(id))borrados.push(id);else fallo++;
+  }
+  for(const id of borrados){try{await dbDelete(id);}catch(e){console.warn('wipeAll dbDelete',e);}}
+  let _okc=true;
+  if(!fallo){
+    categories=[];
+    try{await cfgPut('categories',[]);}catch(e){console.warn('wipeAll cfgPut',e);}
+    _okc=await cloudCfgPut('categories',[]);
+  }
+  try{items=await dbGetAll();}catch(e){console.warn('wipeAll dbGetAll',e);items=items.filter(i=>!borrados.includes(i.id));}
+  renderAll();
+  if(fallo)toast('⚠ Borrados '+borrados.length+' de '+ids.length+'. Fallaron '+fallo+' (siguen en el inventario'+(ids.some(id=>dirtyDel.has(id))?'; se reintentará el borrado al sincronizar':'')+')');
+  else toast('Inventario borrado'+(_okc?'':' · ⚠ las categorías solo se vaciaron en este dispositivo (se subirá al sincronizar)'));
 }
 
 async function loadDemo(){
@@ -3929,27 +4018,56 @@ function moveToOtherWarehouse(){
     document.getElementById('confirm-msg').textContent='"'+currentItem.name+'" se quitará de '+WH.name+' y aparecerá en '+other.name+' SIN ubicación, para que lo coloques allí. ¿Continuar?';
     document.getElementById('confirm-ok').onclick=async()=>{
       closeModal('modal-confirm');
-      const it=currentItem; const id=it.id;
+      const it=currentItem;
+      if(!it)return;
+      const id=it.id;
       toast('Moviendo...');
-      const moved={...it, loc:'', pos:''};
-      if(!moved.photo){
-        const _ph=await cloudGetPhotos([id]);
-        if(!(id in _ph)){toast('No se pudo comprobar la foto. Inténtalo con conexión.');return;}
-        moved.photo=_ph[id]||null;
-      }
-      const okCloud=await cloudPutTo(other.tblItems,moved);
-      if(okCloud){
-        await dbDelete(id); await cloudDelete(id); // si el borrado falla, queda en cola y se reintenta al sincronizar
-        items=await dbGetAll();
-        closeModal('modal-detail');
-        renderAll();
-        toast('✓ Movido a '+other.name+' (sin ubicación)');
-      }else{
-        toast('No se pudo mover (sin conexión). Inténtalo con internet.');
-      }
+      // withFreshStock: sin otro cambio de stock a la vez; _moverItemA lee el stock actual de la nube antes de copiar
+      await withFreshStock(async()=>{
+        const r=await _moverItemA(it,other);
+        if(r==='ok'){
+          try{items=await dbGetAll();}catch(e){console.warn('moveToOtherWarehouse',e);}
+          closeModal('modal-detail');
+          renderAll();
+          toast('✓ Movido a '+other.name+' (sin ubicación)');
+        }else if(r==='missing')toast('El artículo fue eliminado por otra persona: no se movió');
+        else if(r==='stock')toast('⚠ No se pudo comprobar el stock actual: no se movió. Inténtalo de nuevo');
+        else if(r==='foto')toast('No se pudo comprobar la foto. Inténtalo con conexión.');
+        else if(r==='nube')toast('No se pudo mover (error de red). Inténtalo con internet.');
+        else toast('⚠ Copiado a '+other.name+' pero NO se pudo quitar de '+WH.name+': queda en los dos almacenes'+(dirtyDel.has(id)?' (se reintentará el borrado al sincronizar)':'. Bórralo a mano de aquí'));
+      },{item:it,sinRefresco:true});
     };
     openModal('modal-confirm');
   });
+}
+// Copia un artículo al otro almacén con el stock ACTUAL de la nube y, solo si la copia se subió, lo borra de este.
+// Devuelve 'ok' (movido), 'missing' (ya no existe aquí: otra persona lo borró), 'stock' (no se pudo leer el stock actual),
+// 'foto' (no se pudo comprobar la foto), 'nube' (no se pudo copiar) o 'copiado' (copiado pero NO borrado de este almacén:
+// queda en los dos; si fue un fallo de red el borrado queda en la cola dirtyDel). Quien llama debe estar dentro de withFreshStock.
+async function _moverItemA(it,other){
+  const id=it.id;
+  const rs=await refreshStock(it); // con cambios locales pendientes ('skip') manda el valor local, que es el último que se aplicó
+  if(rs==='error')return 'stock';
+  if(rs==='missing'){await dropMissingItem(id);return 'missing';}
+  const moved={...it, loc:'', pos:''};
+  if(!moved.photo){
+    const _ph=await cloudGetPhotos([id]);
+    if(!(id in _ph))return 'foto';
+    moved.photo=_ph[id]||null;
+  }
+  if(!(await cloudPutTo(other.tblItems,moved)))return 'nube';
+  if(!(await cloudDelete(id)))return 'copiado'; // no se borra en local lo que sigue en la nube
+  try{await dbDelete(id);}catch(e){console.warn('_moverItemA dbDelete',e);} // si falla, el siguiente sync lo quita
+  return 'ok';
+}
+// Texto de resumen de un traslado de varios artículos: c={ok,copiado,fallo,missing,total}
+function resumenMover(c,otherName){
+  let s=(c.ok===c.total?'✓ ':'⚠ ')+'Movidos '+c.ok+' de '+c.total+' a '+otherName;
+  const resto=[];
+  if(c.fallo)resto.push(c.fallo+' no se movieron (stock, foto o red; siguen seleccionados)');
+  if(c.copiado)resto.push(c.copiado+' copiados pero no se pudieron quitar de este almacén (quedan en los dos)');
+  if(c.missing)resto.push(c.missing+' ya no existían (borrados por otra persona)');
+  return resto.length?s+'. '+resto.join('; '):s;
 }
 
 // ===== POSICIONES (huecos / gavetas) =====
@@ -4660,22 +4778,21 @@ function bulkMove(){
       if(!sb){toast('Necesitas conexión para mover entre almacenes');return;}
       const ids=[...selectedIds];
       toast('⏳ Moviendo '+ids.length+' artículos...');
-      let okc=0;
-      for(const id of ids){
-        const it=items.find(x=>x.id===id); if(!it)continue;
-        const moved={...it, loc:'', pos:''};
-        if(!moved.photo){
-          const _ph=await cloudGetPhotos([id]);
-          if(!(id in _ph))continue; // no se pudo comprobar la foto: este artículo no se mueve
-          moved.photo=_ph[id]||null;
+      const c={ok:0,copiado:0,fallo:0,missing:0,total:ids.length};
+      await withFreshStock(async()=>{
+        for(const id of ids){
+          const it=items.find(x=>x.id===id);
+          if(!it){c.missing++;selectedIds.delete(id);continue;} // ya no está en este móvil
+          const r=await _moverItemA(it,o);
+          if(r==='ok'){c.ok++;selectedIds.delete(id);}
+          else if(r==='missing'){c.missing++;selectedIds.delete(id);}
+          else if(r==='copiado'){c.copiado++;selectedIds.delete(id);}
+          else c.fallo++; // 'stock' / 'foto' / 'nube': no se movió y sigue seleccionado para reintentar
         }
-        const ok=await cloudPutTo(o.tblItems,moved);
-        if(ok){ await dbDelete(id); await cloudDelete(id); okc++; }
-      }
-      items=await dbGetAll();
-      selectedIds.clear();
-      renderItems(); updateSelBar();
-      toast('✓ Movidos '+okc+' artículos a '+o.name);
+        try{items=await dbGetAll();}catch(e){console.warn('bulkMove',e);}
+        renderItems(); updateSelBar();
+        toast(resumenMover(c,o.name));
+      },{sinRefresco:true});
     };
     openModal('modal-confirm');
   });
@@ -4752,17 +4869,19 @@ if('serviceWorker' in navigator){
 }
 
 // ===== GRÁFICO DASHBOARD =====
+// Clave "AAAA-MM" de un día en hora LOCAL (con UTC, el turno de noche del día 1 caería en el mes anterior)
+function claveMes(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');}
 function renderHomeChart(movements){
   const bars=document.getElementById('home-chart-bars');
   if(!bars)return;
   const months=[];
   for(let i=5;i>=0;i--){
     const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-i);
-    months.push({key:`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`,label:d.toLocaleString('es',{month:'short'})});
+    months.push({key:claveMes(d),label:d.toLocaleString('es',{month:'short'})});
   }
   const data=months.map(m=>{
     const mMovs=(movements||[]).filter(mv=>{
-      const ts=mv.ts?new Date(mv.ts).toISOString().slice(0,7):null;
+      const ts=mv.ts?claveMes(new Date(mv.ts)):null; // mes en hora local (igual que las claves de arriba)
       return ts===m.key;
     });
     return {label:m.label,ins:mMovs.filter(mv=>(mv.diferencia||0)>0).reduce((a,mv)=>a+Math.abs(mv.diferencia||0),0),outs:mMovs.filter(mv=>(mv.diferencia||0)<0).reduce((a,mv)=>a+Math.abs(mv.diferencia||0),0)};
@@ -5264,18 +5383,17 @@ async function _assignInvoiceLine(idx,itemId){
     if(subido==='missing'){await dropMissingItem(it.id);toast('⚠ Entrada registrada, pero el artículo fue eliminado por otra persona');}
     else if(subido!==true)_res='pend';
   }catch(e){console.error('guardar stock factura (nube)',e);markDirtyFields(it.id,_campos);_res='pend';}
-  // Lo siguiente no es crítico: si falla no se deshace la entrada
-  try{
-    if(price!=null){
-      const now=new Date();
-      await cloudPriceAdd({item_id:it.id,price,previous_price:prevPrecio,qty,provider:_invProvider||null,fecha:now.toLocaleDateString('es-ES'),ts:now.getTime()});
-    }
-    if(_invProvider)await addProvider(_invProvider);
-  }catch(e){console.warn('historial de precios / proveedor',e);}
+  // Lo siguiente no es crítico: si falla no se deshace la entrada, pero se avisa (cloudPriceAdd/addProvider no lanzan: devuelven el resultado)
+  let _okPrecio=true,_okProv=true;
+  if(price!=null){
+    const now=new Date();
+    _okPrecio=await cloudPriceAdd({item_id:it.id,price,previous_price:prevPrecio,qty,provider:_invProvider||null,fecha:now.toLocaleDateString('es-ES'),ts:now.getTime()});
+  }
+  if(_invProvider)_okProv=await addProvider(_invProvider);
   try{items=await dbGetAll();}catch(e){}
   closeModal('modal-inv-search');
   renderInvoiceLines();
-  if(items.some(x=>x.id===it.id))toast(`✓ ${it.name} · +${qty} ud${sufijoCommit(_res)}`); // si el artículo ya no existe se conserva el aviso anterior
+  if(items.some(x=>x.id===it.id))toast(`✓ ${it.name} · +${qty} ud${sufijoCommit(_res)}${sufijoHist(_okPrecio,_okProv)}`); // si el artículo ya no existe se conserva el aviso anterior
 }
 
 function openInvoiceCreate(idx){
@@ -5314,20 +5432,21 @@ async function _invoiceAfterSave(savedId,idx){
     return;
   }
   line.status='assigned';line.itemId=savedId;
+  let _movFalla=false;
   try{
     if(stock>0){
       const coste=it.precio!=null?+(stock*it.precio).toFixed(2):null;
       await registrarMovimiento(it,0,stock,'Compra',coste,_invProvider||null);
     }
-  }catch(e){console.warn('movimiento de compra (artículo nuevo)',e);toast('⚠ Artículo creado, pero no se pudo registrar el movimiento de compra');}
-  try{
-    if(it.precio!=null){
-      const now=new Date();
-      await cloudPriceAdd({item_id:it.id,price:+(+it.precio).toFixed(4),previous_price:null,qty:stock||line.qty||1,provider:_invProvider||null,fecha:now.toLocaleDateString('es-ES'),ts:now.getTime()});
-    }
-    if(_invProvider)await addProvider(_invProvider);
-  }catch(e){console.warn('historial de precios / proveedor',e);}
-  toast(`✓ ${it.name} creado y asignado a la factura`);
+  }catch(e){console.warn('movimiento de compra (artículo nuevo)',e);_movFalla=true;}
+  // cloudPriceAdd/addProvider no lanzan: devuelven el resultado, que se avisa en el toast final (un toast anterior quedaría tapado)
+  let _okPrecio=true,_okProv=true;
+  if(it.precio!=null){
+    const now=new Date();
+    _okPrecio=await cloudPriceAdd({item_id:it.id,price:+(+it.precio).toFixed(4),previous_price:null,qty:stock||line.qty||1,provider:_invProvider||null,fecha:now.toLocaleDateString('es-ES'),ts:now.getTime()});
+  }
+  if(_invProvider)_okProv=await addProvider(_invProvider);
+  toast(`✓ ${it.name} creado y asignado a la factura${_movFalla?' · ⚠ no se pudo registrar el movimiento de compra':''}${sufijoHist(_okPrecio,_okProv)}`);
   renderInvoiceModal();
 }
 
