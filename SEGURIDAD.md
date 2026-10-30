@@ -54,12 +54,20 @@ Un corte momentáneo (cambio de repetidor wifi) se reintenta una vez antes de av
 
 ## Escáner de facturas (IA)
 - Solo para administradores (modo administrador activado) y con conexión. Al bloquear el modo administrador se cierra y se olvida la factura.
-- **Privacidad:** cada factura o PDF completo se envía a la función `bright-worker` y de ahí a Gemini (Google). Contiene proveedor,
-  precios y posiblemente direcciones o NIF. No subas documentos que no deban salir de la empresa.
+- **Privacidad:** cada factura se envía como imagen (hasta 3 páginas por documento, una petición por página) a la función
+  `bright-worker` y de ahí a Gemini (Google). Contiene proveedor, precios y posiblemente direcciones o NIF, y las páginas
+  segundas y terceras pueden llevar condiciones o datos bancarios. No subas documentos que no deban salir de la empresa.
 - Todo lo que devuelve la IA se trata como dato no fiable: se limpia, se validan cantidad y precio (formato español "12,50" incluido,
   cantidades enteras, límites) y se muestra una confirmación con lo que se va a registrar antes de tocar el stock. El artículo lo elige siempre una persona.
-- Cada entrada pasa por las mismas protecciones que una compra normal: conexión real, stock actual leído de la nube, bloqueo anti doble pulsación.
+- Cada entrada pasa por las mismas protecciones que una compra normal: conexión real, stock actual leído de la nube (si esa lectura
+  tarda más de 5 s o hay un cambio local pendiente, se usa el stock del móvil), bloqueo anti doble pulsación.
   Una línea registrada no se puede repetir ni "deshacer" desde la factura (para corregir, ajusta el stock en la ficha del artículo).
+- Crear un artículo desde una factura registra su compra con el stock final del formulario; con stock 0 no se registra nada y la línea sigue pendiente.
+- Si se cierra la factura o se bloquea el modo administrador mientras la IA analiza, el resultado se descarta.
+- En los textos de los artículos (nombre, referencia, marca, máquina, notas) se eliminan los caracteres < y > al leerlos.
 - Los PDF se leen con pdf.js 3.11.174 fijado: el script lleva control de integridad (SRI), el worker se verifica por huella antes de usarlo,
   y se abre con `isEvalSupported:false` (mitigación de CVE-2024-4367). Máximo 15 MB y 3 páginas por documento.
-- Límites de la función en el servidor (no están en este repositorio): debe seguir exigiendo sesión de usuario y limitar el tamaño de imagen.
+- La función `bright-worker` no está en este repositorio: hoy basta una sesión de usuario (no solo administradores) y debe limitar
+  el tamaño de la imagen. Si se quiere que solo la usen administradores, hay que comprobar el rol dentro de la función.
+- La seguridad real de los datos es RLS y el rol de administrador en Supabase, no el candado de la pantalla: cualquier usuario con
+  sesión podría escribir artículos y movimientos llamando a la API; solo el histórico de precios es exclusivo de administradores.

@@ -20,7 +20,7 @@ const ctx = vm.createContext({
   Intl, URL, Blob: function () {}, FileReader: function () {}, Image: function () {},
 });
 // Las declaraciones `let/const` de nivel superior no cuelgan del contexto: las exponemos con una función
-vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid,quienMov,whBarHtml,sesStorageKey,logout,isAdminRole,ensureOnline,GUARDED_FUNCS,asegurarFotos,noPhotoIds,pedirFoto,parseNumES,_invSanitize,_invValidate,assignInvoiceLine};', ctx);
+vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid,quienMov,whBarHtml,sesStorageKey,logout,isAdminRole,ensureOnline,GUARDED_FUNCS,asegurarFotos,noPhotoIds,pedirFoto,parseNumES,_invSanitize,_invValidate,assignInvoiceLine,_invoiceAfterSave};', ctx);
 const t = ctx.__t;
 
 test('ids: solo letras, números, guion y guion bajo', () => {
@@ -265,6 +265,13 @@ test('escáner: parseNumES entiende el formato español e inglés y rechaza lo q
   assert.ok(Number.isNaN(t.parseNumES(null)));
   assert.ok(Number.isNaN(t.parseNumES(NaN)));
   assert.ok(Number.isNaN(t.parseNumES('')));
+  // "1.500" es ambiguo: en un precio se rechaza; en una cantidad se toma como mil
+  assert.ok(Number.isNaN(t.parseNumES('1.500')));
+  assert.strictEqual(t.parseNumES('1.500', { miles: true }), 1500);
+  assert.strictEqual(t.parseNumES('12.500.000', { miles: true }), 12500000);
+  assert.strictEqual(t.parseNumES('1,5'), 1.5);
+  assert.ok(Number.isNaN(t.parseNumES('1e5')));
+  assert.ok(Number.isNaN(t.parseNumES('0x10')));
 });
 
 test('escáner: _invSanitize limpia texto, números y límites de lo que devuelve la IA', () => {
@@ -296,6 +303,8 @@ test('escáner: _invSanitize limpia texto, números y límites de lo que devuelv
   const muchas = t._invSanitize({ lines: Array.from({ length: 500 }, () => ({ desc: 'x', qty: 1 })) });
   assert.strictEqual(muchas.lines.length, 200, 'máximo 200 líneas');
   assert.strictEqual(t._invSanitize(null).lines.length, 0);
+  assert.strictEqual(t._invSanitize({ lines: [{ desc: 'sin cantidad' }] }).lines[0].qty, null, 'sin cantidad: la persona debe escribirla');
+  assert.strictEqual(t._invSanitize({ lines: [{ desc: 'p', qty: 1, price: '1.500' }] }).lines[0].priceBad, true, 'precio ambiguo se marca');
 });
 
 test('escáner: _invValidate exige cantidad entera positiva y precio válido', () => {
@@ -306,6 +315,7 @@ test('escáner: _invValidate exige cantidad entera positiva y precio válido', (
   assert.notStrictEqual(t._invValidate({ qty: -1 }), '');
   assert.notStrictEqual(t._invValidate({ qty: 2.5 }), '', 'decimales: hay que editarla');
   assert.notStrictEqual(t._invValidate({ qty: 1, price: -3 }), '');
+  assert.notStrictEqual(t._invValidate({ qty: 1, price: null, priceBad: true }), '', 'un precio marcado como dudoso bloquea la línea');
   assert.notStrictEqual(t._invValidate(null), '');
 });
 
@@ -369,11 +379,11 @@ test('escáner: registrar una línea suma el stock UNA vez, valida, exige admin 
     ctx.navigator = {};
     ctx.document.getElementById = getAntes;
     ctx.__g = guardar;
-    vm.runInContext('registrarMovimiento=__g.rm;dbPut=__g.dp;cloudPut=__g.cp;cloudPriceAdd=__g.pa;addProvider=__g.ap;dbGetAll=__g.dg;closeModal=__g.cm;renderInvoiceLines=__g.rl;refreshVisiblePage=__g.rv;sb=null;adminUnlocked=false;_invLines=[];', ctx);
+    vm.runInContext('registrarMovimiento=__g.rm;dbPut=__g.dp;cloudPut=__g.cp;cloudPriceAdd=__g.pa;addProvider=__g.ap;dbGetAll=__g.dg;closeModal=__g.cm;renderInvoiceLines=__g.rl;refreshVisiblePage=__g.rv;sb=null;adminUnlocked=false;_invLines=[];items=[];_invProvider="";WH=null;', ctx);
   }
 });
 
-test('escáner: cerrar el formulario sin guardar olvida la línea y no se asocia a otro artículo', async () => {
+test('escáner: cerrar el formulario sin guardar olvida la línea pendiente de crear', async () => {
   const dummy = { classList: { add() {}, remove() {} }, style: {}, textContent: '', innerHTML: '' };
   const getAntes = ctx.document.getElementById;
   ctx.document.getElementById = () => dummy;
@@ -388,6 +398,51 @@ test('escáner: cerrar el formulario sin guardar olvida la línea y no se asocia
   } finally {
     ctx.document.getElementById = getAntes;
     vm.runInContext('_invCreateIdx=null;_invLines=[];', ctx);
+  }
+});
+
+test('escáner: cerrar la factura cancela un escaneo en curso', () => {
+  const dummy = { classList: { add() {}, remove() {} }, style: {}, textContent: '', innerHTML: '' };
+  const getAntes = ctx.document.getElementById;
+  ctx.document.getElementById = () => dummy;
+  try {
+    vm.runInContext('_invScanning=true;_invScanId=5;', ctx);
+    vm.runInContext("closeModal('modal-invoice')", ctx);
+    assert.strictEqual(vm.runInContext('_invScanning', ctx), false, 'se puede empezar otro escaneo');
+    assert.strictEqual(vm.runInContext('_invScanId', ctx), 6, 'el escaneo anterior queda invalidado');
+  } finally {
+    ctx.document.getElementById = getAntes;
+  }
+});
+
+test('escáner: un artículo nuevo con stock 0 no registra la compra y la línea sigue pendiente', async () => {
+  const guardar = vm.runInContext('({rm:registrarMovimiento,pa:cloudPriceAdd,ap:addProvider,rv:renderInvoiceModal,ts:toast})', ctx);
+  try {
+    vm.runInContext(String.raw`
+      __movs=[];__precios=[];
+      registrarMovimiento=async()=>{__movs.push(1);};cloudPriceAdd=async e=>{__precios.push(e);return true;};addProvider=async()=>{};
+      renderInvoiceModal=()=>{};toast=()=>{};
+      adminUnlocked=true;_invProvider='ACME';
+      items=[{id:'N1',name:'Nuevo',stock:0,precio:3}];
+      _invLines=[{desc:'x',qty:5,price:3,status:'pending',itemId:null}];
+    `, ctx);
+    await t._invoiceAfterSave('N1', 0);
+    assert.strictEqual(vm.runInContext('_invLines[0].status', ctx), 'pending');
+    assert.strictEqual(vm.runInContext('__movs.length', ctx), 0);
+    assert.strictEqual(vm.runInContext('__precios.length', ctx), 0, 'sin unidades no hay historial de precios');
+    // con stock real: registra la compra con el stock final del formulario
+    vm.runInContext("items[0].stock=4;", ctx);
+    await t._invoiceAfterSave('N1', 0);
+    assert.strictEqual(vm.runInContext('_invLines[0].status', ctx), 'assigned');
+    assert.strictEqual(vm.runInContext('__movs.length', ctx), 1);
+    assert.strictEqual(vm.runInContext('__precios[0].qty', ctx), 4);
+    // con el modo administrador bloqueado no hace nada
+    vm.runInContext("__movs=[];adminUnlocked=false;_invLines=[{desc:'y',qty:1,price:1,status:'pending',itemId:null}];items[0].stock=2;", ctx);
+    await t._invoiceAfterSave('N1', 0);
+    assert.strictEqual(vm.runInContext('__movs.length', ctx), 0);
+  } finally {
+    ctx.__g2 = guardar;
+    vm.runInContext('registrarMovimiento=__g2.rm;cloudPriceAdd=__g2.pa;addProvider=__g2.ap;renderInvoiceModal=__g2.rv;toast=__g2.ts;adminUnlocked=false;_invLines=[];items=[];_invProvider="";', ctx);
   }
 });
 
