@@ -167,6 +167,7 @@ test('logout borra la sesión y el desbloqueo de admin de los dos almacenes', as
   Object.assign(store, { se: '1', sm: '1', almacen_sesion_sb: '1' });
   sess.almacen_admin_electrico = '1'; sess.almacen_admin_mecanico = '1';
   await t.logout();
+  ev('_cerrando=false'); // el cierre real recarga la página; aquí se libera el bloqueo de sincronización
   assert.ok(!('se' in store) && !('sm' in store));
   assert.ok(!('almacen_admin_electrico' in sess) && !('almacen_admin_mecanico' in sess));
   vm.runInContext("WAREHOUSE_CONFIG=undefined;WAREHOUSE_OTHER_CONFIG=undefined; delete globalThis.WAREHOUSE_CONFIG; delete globalThis.WAREHOUSE_OTHER_CONFIG", ctx);
@@ -2843,7 +2844,7 @@ async function conSalida(fn) {
         await fn();
       });
     });
-  } finally { ctx.location = locAntes; ctx.navigator = navAntes; ev('SALIR_ESPERA_MS=' + esp + ';_saliendo=false'); quitarWH(); }
+  } finally { ctx.location = locAntes; ctx.navigator = navAntes; ev('SALIR_ESPERA_MS=' + esp + ';_saliendo=false;_cerrando=false'); quitarWH(); }
 }
 
 test('R4 E-L3: al cerrar sesión con conexión se suben los pendientes ANTES de salir y no se pide confirmación', async () => {
@@ -2865,7 +2866,7 @@ test('R4 E-L3: sin nada pendiente no se sube nada y se sale directamente', async
   });
 });
 
-test('R4 E-L3: sin conexión con pendientes exige confirmación explícita y, si se acepta, NO borra la cola', async () => {
+test('R4 E-L3: sin conexión con pendientes exige confirmación explícita y, si se acepta, cierra la sesión (el descarte de lo pendiente lo cubren las pruebas SEC-L4)', async () => {
   await conSalida(async () => {
     ctx.navigator = { onLine: false };
     await ev('logout()');
@@ -2877,8 +2878,6 @@ test('R4 E-L3: sin conexión con pendientes exige confirmación explícita y, si
     await esperar(30);
     assert.deepStrictEqual(evj('__orden'), ['signOut']);
     assert.strictEqual(ctx.__rl, 1);
-    assert.strictEqual(ev("dirtyCfg.has('shelves')"), true, 'lo pendiente no se descarta');
-    assert.strictEqual(ev('dirtyIds.has("I1")'), true);
   });
 });
 
@@ -3340,25 +3339,41 @@ test('R5 L-C: el aviso de arranque solo habla de "los datos de este móvil" si f
 });
 
 // Service workers: se cargan en un contexto aislado con caches/fetch simulados
-function cargarSW(carpeta, { fallan = [], putFalla = false, fetchFalla = false } = {}) {
+// Huellas SRI fijadas: las de los <script integrity> de index.html y las de pdf.js (constantes de app.js). El SW simulado calcula el
+// "hash" del cuerpo con un crypto falso: el cuerpo de cada URL se resume en su propia huella buena, salvo las de malaHuella.
+const SRI_FIJADOS = {};
+{
+  const h = fs.readFileSync(path.join(__dirname, '..', 'almacen-electrico', 'index.html'), 'utf8');
+  for (const m of h.matchAll(/<script src="(https:[^"]+)" integrity="(sha384-[^"]+)"/g)) SRI_FIJADOS[m[1]] = m[2];
+  for (const k of ['PDFJS', 'PDFJS_WORKER']) {
+    SRI_FIJADOS[src.match(new RegExp(k + "_URL='([^']+)'"))[1]] = src.match(new RegExp(k + "_SRI='([^']+)'"))[1];
+  }
+}
+function cargarSW(carpeta, { fallan = [], putFalla = false, fetchFalla = false, malaHuella = [], enCache = [] } = {}) {
   const codigo = fs.readFileSync(path.join(__dirname, '..', carpeta, 'sw.js'), 'utf8');
-  const handlers = {}, avisos = [], matches = [];
+  const handlers = {}, avisos = [], matches = [], puestos = [];
   const cache = {
     add: async r => { const u = typeof r === 'string' ? r : r.url; if (fallan.includes(u)) throw new TypeError('no disponible: ' + u); },
-    put: async () => { if (putFalla) throw new Error('cuota agotada'); }
+    put: async r => { if (putFalla) throw new Error('cuota agotada'); puestos.push(typeof r === 'string' ? r : r.url); }
   };
   const cachesFalsas = {
     open: async () => cache,
     keys: async () => [],
     delete: async () => true,
-    match: async (r, o) => { matches.push(o || {}); return undefined; }
+    match: async (r, o) => { matches.push(o || {}); const u = typeof r === 'string' ? r : r.url; return enCache.includes(u) ? { ok: true, hit: u } : undefined; }
   };
-  const respuesta = { ok: true, status: 200, clone() { return { copia: true }; } };
+  // El cuerpo de cada respuesta es su URL (o 'malo'); el crypto falso devuelve la huella fijada de esa URL (o una distinta si es 'malo')
+  const resp = u => ({ ok: true, status: 200, url: u, clone() { return resp(u); }, arrayBuffer: async () => (malaHuella.includes(u) ? 'malo' : u) });
+  const crypto = { subtle: { digest: async (alg, cuerpo) => {
+    assert.strictEqual(alg, 'SHA-384');
+    return cuerpo === 'malo' || !SRI_FIJADOS[cuerpo] ? new Uint8Array(48).fill(7) : new Uint8Array(Buffer.from(SRI_FIJADOS[cuerpo].slice(7), 'base64'));
+  } } };
   const caja = {
+    crypto, btoa: s => Buffer.from(s, 'latin1').toString('base64'),
     self: { addEventListener: (t, f) => { handlers[t] = f; }, location: { origin: 'https://x.test' }, skipWaiting() {}, clients: { claim() {} } },
     caches: cachesFalsas, URL, Request: class { constructor(u, o) { this.url = u; this.o = o; } },
     Response: class { constructor(b, o) { this.b = b; this.o = o; } },
-    fetch: async () => { if (fetchFalla) throw new TypeError('sin red'); return respuesta; },
+    fetch: async r => { const u = typeof r === 'string' ? r : r.url; if (fetchFalla || fallan.includes(u)) throw new TypeError('sin red: ' + u); return resp(u); },
     setTimeout: () => 0, console: { warn: (...a) => avisos.push(a.map(String).join(' ')), log() {}, error() {} }
   };
   vm.runInNewContext(codigo, caja);
@@ -3368,7 +3383,7 @@ function cargarSW(carpeta, { fallan = [], putFalla = false, fetchFalla = false }
     handlers.fetch({ request: { method: 'GET', url, mode: 'navigate' }, waitUntil: x => esperas.push(x), respondWith: x => { resp = x; } });
     const r = await resp; await Promise.all(esperas); return r;
   };
-  return { instalar, pedir, avisos, matches };
+  return { instalar, pedir, avisos, matches, puestos };
 }
 
 for (const carpeta of ['almacen-electrico', 'almacen-mecanico']) {
@@ -3386,7 +3401,7 @@ for (const carpeta of ['almacen-electrico', 'almacen-mecanico']) {
   });
 
   test('R4 SF-A22 (' + carpeta + '): las búsquedas en caché se limitan a la caché de este almacén y un fallo de cache.put no se oculta', async () => {
-    const nombre = carpeta === 'almacen-electrico' ? 'almacen-electrico-v3' : 'almacen-mecanico-v3';
+    const nombre = carpeta === 'almacen-electrico' ? 'almacen-electrico-v4' : 'almacen-mecanico-v4';
     // sin red: se busca en caché (siempre con cacheName propio, también la página de arranque)
     let sw = cargarSW(carpeta, { fetchFalla: true });
     const r = await sw.pedir('https://x.test/shared/app.js');
@@ -3403,7 +3418,538 @@ for (const carpeta of ['almacen-electrico', 'almacen-mecanico']) {
     assert.strictEqual(ok.ok, true, 'la página se sirve igualmente');
     assert.ok(sw.avisos.some(a => a.includes('SW: no se pudo guardar') && a.includes('cuota agotada')), sw.avisos.join('|'));
     sw = cargarSW(carpeta, { putFalla: true });
-    await sw.pedir('https://cdn.jsdelivr.net/npm/x.js');
+    await sw.pedir('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js');
     assert.ok(sw.avisos.some(a => a.includes('SW: no se pudo guardar')), sw.avisos.join('|'));
   });
 }
+
+// ===== Seguridad menor (bloque R5) =====
+const LIB_EXCELJS = 'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js';
+const LIB_SUPABASE = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js';
+
+test('R5 SEC-M1: cleanShelves y cleanAisles limitan a 200 elementos y respetan lo normal', () => {
+  const sh = Array.from({ length: 250 }, (_, i) => ({ id: 'S' + i, baldas: 5 }));
+  assert.strictEqual(t.cleanShelves(sh).length, 200);
+  assert.strictEqual(t.cleanShelves(sh.slice(0, 200)).length, 200);
+  assert.strictEqual(t.cleanShelves(sh.slice(0, 26)).length, 26);
+  const ai = Array.from({ length: 300 }, (_, i) => ({ label: 'P' + i, x: i, y: 0, w: 5, h: 5 }));
+  assert.strictEqual(t.cleanAisles(ai).length, 200);
+  assert.strictEqual(t.cleanAisles(ai.slice(0, 10)).length, 10);
+  // los descartados no gastan cupo: 150 válidos tras 100 basura siguen entrando
+  assert.strictEqual(t.cleanAisles([...Array(100).fill(null), ...ai.slice(0, 150)]).length, 150);
+});
+
+test('R5 SEC-M1: como máximo 8 bloques por balda y filas x columnas <= 100 (sin tocar lo normal)', () => {
+  const bloques = Array.from({ length: 12 }, (_, i) => ({ id: 'b' + i, k: 'h', n: 3 }));
+  const gav = (rows, cols) => t.cleanShelves([{ id: '01', baldas: 5, layout: { 1: [{ id: 'g', k: 'g', rows, cols }] } }])[0].layout['1'][0];
+  assert.strictEqual(t.cleanShelves([{ id: '01', baldas: 5, layout: { 1: bloques } }])[0].layout['1'].length, 8);
+  assert.strictEqual(t.cleanShelves([{ id: '01', baldas: 5, layout: { 1: bloques.slice(0, 8) } }])[0].layout['1'].length, 8);
+  let g = gav(40, 40);
+  assert.ok(g.rows * g.cols <= 100 && g.rows >= 1 && g.cols >= 1, JSON.stringify(g));
+  g = gav(12, 12);
+  assert.ok(g.rows * g.cols <= 100, JSON.stringify(g));
+  g = gav(10, 10);
+  assert.deepStrictEqual([g.rows, g.cols], [10, 10]);
+  g = gav(3, 4);
+  assert.deepStrictEqual([g.rows, g.cols], [3, 4]);
+  g = gav(1, 40);
+  assert.deepStrictEqual([g.rows, g.cols], [1, 40]);
+  g = gav(40, 1);
+  assert.deepStrictEqual([g.rows, g.cols], [40, 1]);
+});
+
+test('R5 SEC-M1: strArr acota cantidad y longitud; cleanNames (categorías, proveedores, familias) 500 de 60 caracteres sin duplicados', () => {
+  assert.strictEqual(ev('strArr(Array.from({length:30000},(_, i)=>"I"+i)).length'), 20000);
+  assert.strictEqual(ev('strArr(["a".repeat(500)])[0].length'), 200);
+  assert.strictEqual(ev('strArr(["abc","def","ghi"],2,2).join("|")'), 'ab|de');
+  ctx.__l = Array.from({ length: 600 }, (_, i) => i + 'x'.repeat(100));
+  const r = evj('cleanNames(__l)');
+  assert.strictEqual(r.length, 500);
+  assert.ok(r.every(s => s.length <= 60));
+  assert.deepStrictEqual(evj('cleanNames(["Rodamientos","Rodamientos",null,7,"Rodamientos"])'), ['Rodamientos', '7']);
+  assert.deepStrictEqual(evj('cleanNames("no")'), []);
+  assert.ok(t.cleanItem({ id: 'I1', cats: ctx.__l }).cats.length === 500);
+  // la importación de copias pasa por los mismos límites
+  ctx.__wd = { categories: ctx.__l, providers: ctx.__l, shelves: Array.from({ length: 250 }, (_, i) => ({ id: 'S' + i })), aisles: Array.from({ length: 250 }, () => ({ label: 'P' })) };
+  const cfg = evj('cfgDeCopia(__wd)');
+  assert.strictEqual(cfg.categories.length, 500);
+  assert.strictEqual(cfg.providers.length, 500);
+  assert.strictEqual(cfg.shelves.length, 200);
+  assert.strictEqual(cfg.aisles.length, 200);
+});
+
+test('R5 SEC-M1: la sincronización aplica los límites a lo que llega de la nube y ya no pide adminPass ni loginCfg', async () => {
+  await conR2({}, async () => {
+    ctx.__muchas = Array.from({ length: 600 }, (_, i) => i + 'x'.repeat(100));
+    ctx.__sh = Array.from({ length: 250 }, (_, i) => ({ id: 'S' + i, baldas: 5 }));
+    ctx.__ai = Array.from({ length: 250 }, () => ({ label: 'P' }));
+    ev(`items=[];dirtyIds=new Set();__claves=null;
+      pushPendingMovements=async()=>{};flushDirty=async()=>{};cloudGetMeta=async()=>[];dbReplaceAll=async()=>{};setCloudStatus=()=>{};
+      cloudCfgGetMany=async k=>{__claves=k;return {categories:__muchas,providers:__muchas,shelves:__sh,aisles:__ai};};`);
+    await ev('_syncFromCloud(false)');
+    assert.strictEqual(ev('categories.length'), 500);
+    assert.strictEqual(ev('providers.length'), 500);
+    assert.strictEqual(ev('shelves.length'), 200);
+    assert.strictEqual(ev('aisles.length'), 200);
+    assert.ok(!evj('__claves').includes('adminPass') && !evj('__claves').includes('loginCfg'), evj('__claves').join());
+  });
+});
+
+test('R5 SEC-M1: el editor de distribución no deja pasar de 8 bloques por balda ni de 100 cajones por gavetero', async () => {
+  const dAntes = ev('layoutDraft'), sAntes = ev('layoutShelfId');
+  try {
+    await conNube({}, async () => {
+      ev("shelves=[{id:'01',baldas:5}];layoutShelfId='01';layoutDraft={}");
+      for (let i = 0; i < 10; i++) ev("layAdd(1,'h')");
+      assert.strictEqual(ev("layoutDraft['1'].length"), 8);
+      assert.ok(ev('__toasts').some(m => m.includes('8')), ev('__toasts').join());
+      ev("layoutDraft={'1':[{id:'b',k:'g',rows:12,cols:8}]}");
+      ev("layStep(1,0,'cols',1)"); // 12 x 9 = 108 > 100
+      assert.strictEqual(ev("layoutDraft['1'][0].cols"), 8);
+      ev("layStep(1,0,'rows',-1)");
+      ev("layStep(1,0,'cols',1)"); // 11 x 9 = 99
+      assert.deepStrictEqual(evj("[layoutDraft['1'][0].rows,layoutDraft['1'][0].cols]"), [11, 9]);
+    });
+  } finally { ctx.__d = dAntes; ev('layoutDraft=__d'); ctx.__d = sAntes; ev('layoutShelfId=__d'); }
+});
+
+test('R5 SEC-L1: el cliente de Supabase no lee la sesión de la URL y usa PKCE', () => {
+  const sbAntes = ev('sb'), winAntes = ctx.window;
+  ctx.__args = null;
+  ctx.window = { supabase: { createClient: (...a) => { ctx.__args = a; return { fake: true }; } } };
+  try {
+    ev('sb=null');
+    assert.strictEqual(ev('initSupabase()'), true);
+    const [url, key, opts] = ctx.__args;
+    assert.ok(url.startsWith('https://') && key);
+    assert.strictEqual(opts.auth.detectSessionInUrl, false, 'un enlace con #access_token no debe sustituir la sesión');
+    assert.strictEqual(opts.auth.flowType, 'pkce');
+    assert.ok(opts.auth.persistSession !== false && opts.auth.autoRefreshToken !== false, 'la sesión se sigue guardando y renovando');
+  } finally { ctx.window = winAntes; ctx.__sbx = sbAntes; ev('sb=__sbx'); }
+});
+
+test('R5 SEC-L3: renderPhotoZone escapa la foto pendiente', async () => {
+  const pAntes = ev('pendingPhoto');
+  try {
+    await conNube({ dom: { 'photo-zone': { innerHTML: '' } } }, async () => {
+      ctx.__ph = 'x" onerror="alert(1)';
+      ev('pendingPhoto=__ph;renderPhotoZone()');
+      const h = ctx.__dom['photo-zone'].innerHTML;
+      assert.ok(h.includes('<img src="x&quot; onerror=&quot;alert(1)">'), h);
+      assert.ok(!h.includes('" onerror="'), h);
+      ctx.__ph = 'data:image/jpeg;base64,/9j/4AAQ';
+      ev('pendingPhoto=__ph;renderPhotoZone()');
+      assert.ok(ctx.__dom['photo-zone'].innerHTML.includes('<img src="data:image/jpeg;base64,/9j/4AAQ">'));
+    });
+  } finally { ctx.__ph = pAntes; ev('pendingPhoto=__ph'); }
+});
+
+test('R5 SEC-L2: fabricante_web solo se acepta como nombre de dominio (sin barra, arroba, dos puntos ni espacios)', () => {
+  const w = s => { ctx.__w = s; return ev('webFabricante(__w)'); };
+  assert.strictEqual(w('siemens.com'), 'siemens.com');
+  assert.strictEqual(w('https://www.lovatoelectric.es/'), 'www.lovatoelectric.es');
+  assert.strictEqual(w('HTTP://Schneider-Electric.com'), 'Schneider-Electric.com');
+  assert.strictEqual(w('  abb.com  '), 'abb.com');
+  for (const malo of ['evil.com/ruta', 'evil.com//', 'a@evil.com', 'user:pass@evil.com', 'evil.com:8080', 'evil.com path', 'evil .com', 'javascript:alert(1)',
+    'evil.com?x=1', 'evil.com#x', '//evil.com', 'evil', 'a.b', '.com', 'evil..com', '-evil.com', 'evil-.com', 'evil.c0m', '', null, undefined, 42, '<b>x</b>.com', 'ev"il.com', "ev'il.com", 'evil.com\\x', 'a'.repeat(300) + '.com']) {
+    assert.strictEqual(w(malo), '', 'debe rechazarse: ' + malo);
+  }
+});
+
+test('R5 SEC-L2: runWebSearch solo enlaza a https://<dominio> y nunca a algo con ruta o arroba', async () => {
+  await conNube({ dom: { 'ai-web-results': { innerHTML: '' }, 'ai-web-btn': {} } }, async () => {
+    await conStubs(['braveSearch', 'buildWebBase'], async () => {
+      const lanzar = async web => {
+        ctx.__web = web;
+        ev("buildWebBase=()=>'x';braveSearch=async()=>({error:true,status:500});lastAIIdent={fabricante_web:__web}");
+        await ev('runWebSearch()');
+        return ctx.__dom['ai-web-results'].innerHTML;
+      };
+      let h = await lanzar('https://siemens.com/');
+      assert.ok(h.includes('href="https://siemens.com"'), h);
+      h = await lanzar('evil.com/x" onmouseover="1');
+      assert.ok(!h.includes('evil'), h);
+      h = await lanzar('a@evil.com');
+      assert.ok(!h.includes('evil'), h);
+    });
+  });
+});
+
+// Excel: ExcelJS simulado que recoge las filas escritas
+function excelFalso() {
+  const filas = [];
+  const ws = { addRow: v => { const f = { vals: v, eachCell() {}, getCell: () => ({}) }; filas.push(f); return f; }, addImage() {} };
+  ctx.ExcelJS = { Workbook: function () { this.addWorksheet = () => ws; this.addImage = () => 0; this.xlsx = { writeBuffer: async () => new Uint8Array(2) }; } };
+  return filas;
+}
+
+test('R5 SEC-L8: xlsTexto neutraliza = + - @ (y tabulador/retorno), recorta a 32000 y no toca números', () => {
+  const x = v => { ctx.__x = v; return ev('xlsTexto(__x)'); };
+  assert.strictEqual(x('=1+1'), "'=1+1");
+  assert.strictEqual(x('+cmd'), "'+cmd");
+  assert.strictEqual(x('-2+3'), "'-2+3");
+  assert.strictEqual(x('@SUM(A1)'), "'@SUM(A1)");
+  assert.strictEqual(x('\t=1'), "'\t=1");
+  assert.strictEqual(x('\r=1'), "'\r=1");
+  assert.strictEqual(x('Rodamiento 6204'), 'Rodamiento 6204');
+  assert.strictEqual(x('a=b'), 'a=b');
+  assert.strictEqual(x(null), '');
+  assert.strictEqual(x(undefined), '');
+  assert.strictEqual(x(0), '0');
+  assert.strictEqual(x(''), '');
+  assert.strictEqual(x('x'.repeat(40000)).length, 32000);
+  assert.ok(x('=' + 'x'.repeat(40000)).length <= 32767);
+  assert.ok(x('=' + 'x'.repeat(40000)).startsWith("'="));
+  assert.strictEqual(ev('xlsVal(5)'), 5);
+  assert.strictEqual(ev("xlsVal('=5')"), "'=5");
+  assert.strictEqual(ev("xlsVal('')"), '');
+  assert.strictEqual(ev('xlsVal(null)'), '');
+});
+
+test('R5 SEC-L8: el Excel de inventario neutraliza fórmulas y recorta textos enormes (los números siguen siendo números)', async () => {
+  const restaurar = descargaSimulada(), exAntes = ctx.ExcelJS;
+  try {
+    const filas = excelFalso();
+    await conNube({}, async () => {
+      await conStubs(['asegurarFotos'], async () => {
+        ctx.__it = [{ id: 'I1', name: '=HYPERLINK("http://x","a")', cat: '+cmd', loc: '-1', ref: '@SUM(A1)', brand: 'ok', machine: '=1+1', notes: 'n'.repeat(40000), stock: 3, min: 1, precio: 2.5 }];
+        ev('items=__it;asegurarFotos=async()=>({})');
+        await ev("doExportExcel('all')");
+      });
+    });
+    assert.strictEqual(ctx.__blobs.length, 1, 'se generó el Excel');
+    const v = filas[1].vals;
+    assert.strictEqual(v[1], "'=HYPERLINK(\"http://x\",\"a\")");
+    assert.deepStrictEqual([v[2], v[3], v[6], v[7], v[8]], ["'+cmd", "'-1", "'@SUM(A1)", 'ok', "'=1+1"]);
+    assert.strictEqual(v[9].length, 32000);
+    assert.deepStrictEqual([v[4], v[5], v[10], v[11]], [3, 1, 2.5, 7.5], 'stock, mínimo, precio y valor siguen siendo números');
+  } finally { restaurar(); if (exAntes === undefined) delete ctx.ExcelJS; else ctx.ExcelJS = exAntes; }
+});
+
+test('R5 SEC-L8: el Excel de movimientos neutraliza fórmulas (también la columna de usuario) y no convierte en texto lo numérico', async () => {
+  const restaurar = descargaSimulada(), exAntes = ctx.ExcelJS, modo = ev('movRangeMode');
+  try {
+    const filas = excelFalso();
+    await conR2({}, async () => {
+      await conStubs(['getMergedMovements', 'asegurarFotos', 'pushPendingMovements'], async () => {
+        ctx.__mv = [
+          { ts: 2, itemId: 'I1', nombre: '=cmd|calc', cat: '@x', loc: '+1', fecha: '1/1/2026', hora: '10:00', turno: 'Mañana', tipo: 'Salida', anterior: 5, nuevo: 4, diferencia: -1, ref: '-2', brand: 'b', machine: '=m', usuario: '=evil@x.com' },
+          { ts: 1, itemId: 'I2', nombre: 'ok', tipo: 'Compra', anterior: '=1', nuevo: 9, diferencia: '=2', coste: 3 },
+        ];
+        ev("movRangeMode='all';getMergedMovements=async()=>__mv;asegurarFotos=async()=>({});pushPendingMovements=async()=>{};items=[]");
+        await ev('doExportMovimientos()');
+      });
+    });
+    assert.strictEqual(ctx.__blobs.length, 1);
+    const a = filas[1].vals, b = filas[2].vals;
+    assert.deepStrictEqual([a[5], a[6], a[7], a[12], a[14], a[15]], ["'=cmd|calc", "'@x", "'+1", "'-2", "'=m", "'=evil"]);
+    assert.deepStrictEqual([a[8], a[10], a[9]], [5, 4, '-1'], 'las cifras no se prefijan: Antes/Después numéricos y diferencia con su signo');
+    assert.deepStrictEqual([b[8], b[9], b[10]], ["'=1", "'=2", 9], 'un valor de texto que llega de la nube sí se neutraliza');
+  } finally { restaurar(); ctx.__m = modo; ev('movRangeMode=__m'); if (exAntes === undefined) delete ctx.ExcelJS; else ctx.ExcelJS = exAntes; }
+});
+
+test('R5 SEC-L10: el código heredado del acceso antiguo (app_auth, contraseña de Ajustes, usuarios) ya no existe', () => {
+  for (const f of ['fetchAuthFromSupabase', 'saveAuthToSupabase', 'loadAuthCredentials', 'sha256', 'adminHash', 'openChangePass', 'saveAdminPass', 'openUsers', 'saveUsers', 'getLoginCfg', 'setLoginCfg']) {
+    assert.strictEqual(ev('typeof ' + f), 'undefined', f);
+  }
+  assert.ok(!/app_auth|almacen_auth_cache.*TTL|_authCredentials|ADMIN_PASS_DEFAULT|cfgGet\('adminPass'\)|'adminPass','loginCfg'\]/.test(src));
+  for (const w of ['almacen-electrico', 'almacen-mecanico']) {
+    const h = fs.readFileSync(path.join(__dirname, '..', w, 'index.html'), 'utf8');
+    for (const id of ['modal-change-pass', 'modal-users', 'openChangePass', 'openUsers', 'saveAdminPass', 'saveUsers', 'cp-cur', 'us-user']) assert.ok(!h.includes(id), w + ': ' + id);
+    assert.ok(h.includes('id="unlock-pass"') && h.includes('submitUnlock()'), 'el desbloqueo por rol sigue ahí');
+  }
+});
+
+test('R5 SEC-L10: sin Supabase Auth ya no hay inicio de sesión alternativo ni desbloqueo por contraseña (solo el rol de administrador)', async () => {
+  await conR2({ dom: { 'login-user': { value: 'ana' }, 'login-pass': { value: 'x' }, 'login-error': { textContent: '' } } }, async () => {
+    await conStubs(['enterApp'], async () => {
+      ev("__entro=0;enterApp=()=>{__entro++};var WAREHOUSE_CONFIG={key:'electrico',useSupabaseAuth:false};WH=WAREHOUSE_CONFIG");
+      try {
+        await ev('doLogin()');
+        assert.strictEqual(ev('__entro'), 0, 'no se entra');
+        assert.ok(ctx.__dom['login-error'].textContent.length > 0);
+        ev('adminUnlocked=false');
+        await ev('submitUnlock()');
+        assert.strictEqual(ev('adminUnlocked'), false);
+      } finally { quitarWH(); }
+    });
+  });
+  // con Supabase Auth, un usuario no administrador sigue sin poder desbloquear y el administrador sí
+  await conR2({}, async () => {
+    ev(WH_R4);
+    try {
+      ev('adminUnlocked=false;finishUnlock=()=>{adminUnlocked=true}');
+      ev("sb={auth:{getSession:async()=>({data:{session:{user:{app_metadata:{role:'user'}}}}})}}");
+      await ev('submitUnlock()');
+      assert.strictEqual(ev('adminUnlocked'), false);
+      ev("sb={auth:{getSession:async()=>({data:{session:{user:{app_metadata:{role:'admin'}}}}})}}");
+      await ev('submitUnlock()');
+      assert.strictEqual(ev('adminUnlocked'), true);
+    } finally { quitarWH(); ev('adminUnlocked=false'); }
+  });
+});
+
+// ---- SEC-L4: al cerrar sesión se vacía la base local (con IndexedDB simulada)
+// bases = {nombre:{items:[],config:[{key,value}],movements:[]}}; log registra las operaciones
+function idbFalsa(bases, log) {
+  const creadas = [];
+  const objDB = nombre => ({
+    objectStoreNames: { contains: n => n in bases[nombre] },
+    close() { log.push('close:' + nombre); },
+    transaction(nombres, modo) {
+      const tx = { _pend: 0, _fin() { if (this._pend === 0) setTimeout(() => { if (this._pend === 0 && !this._hecho) { this._hecho = true; if (this.oncomplete) this.oncomplete(); } }, 0); } };
+      const req = res => { const rq = { result: res }; tx._pend++; setTimeout(() => { if (rq.onsuccess) rq.onsuccess({ target: rq }); tx._pend--; tx._fin(); }, 0); return rq; };
+      tx.objectStore = n => {
+        assert.ok(nombres.includes(n), 'almacén fuera de la transacción: ' + n);
+        return {
+          getAll: () => req(bases[nombre][n].slice()),
+          get: k => req(bases[nombre][n].find(r => r.key === k)),
+          clear: () => { assert.strictEqual(modo, 'readwrite'); bases[nombre][n].length = 0; log.push('clear:' + nombre + ':' + n); return req(undefined); }
+        };
+      };
+      setTimeout(() => tx._fin(), 0);
+      return tx;
+    }
+  });
+  const indexedDB = {
+    open(nombre, ver) {
+      const r = {};
+      setTimeout(() => {
+        if (!bases[nombre]) {
+          if (ver !== undefined) { bases[nombre] = { items: [], config: [], movements: [] }; creadas.push(nombre); }
+          else {
+            if (r.onupgradeneeded) r.onupgradeneeded({ target: { result: {}, transaction: { abort() { log.push('abort:' + nombre); } } } });
+            if (r.onerror) r.onerror({});
+            return;
+          }
+        }
+        r.result = objDB(nombre);
+        if (r.onsuccess) r.onsuccess({ target: r });
+      }, 0);
+      return r;
+    }
+  };
+  return { indexedDB, creadas };
+}
+const baseConDatos = (pend = false) => ({
+  items: [{ id: 'I1', precio: 9.5, photo: 'data:image/png;base64,AA' }],
+  config: [{ key: 'shelves', value: [{ id: '01' }] }, { key: 'dirtyIds', value: pend ? ['I1'] : [] }, { key: 'dirtyDel', value: [] }, { key: 'dirtyFields', value: {} }, { key: 'dirtyCfg', value: [] }],
+  movements: [{ id: 1, itemId: 'I1', synced: !pend }]
+});
+const vacia = b => b.items.length === 0 && b.config.length === 0 && b.movements.length === 0;
+// conSalida + IndexedDB simulada + almacenes con nombre de base + historial de búsqueda
+async function conLimpieza(bases, fn) {
+  const idbAntes = ctx.indexedDB, lsAntes = ctx.localStorage, dbn = ev('DB_NAME'), rec = recogerAvisos();
+  const log = []; ctx.__log = log;
+  const { indexedDB, creadas } = idbFalsa(bases, log);
+  const datos = { almacen_search_history_electrico: '["a"]', almacen_search_history_mecanico: '["b"]', almacen_search_history_otro: '["c"]', 'sb-abc-auth-token': 't', otra: '2' };
+  const ls = Object.assign({}, datos);
+  for (const [k, f] of Object.entries({ getItem: k => (k in ls ? ls[k] : null), setItem: (k, v) => { ls[k] = String(v); }, removeItem: k => { delete ls[k]; } })) Object.defineProperty(ls, k, { value: f, enumerable: false });
+  ctx.indexedDB = indexedDB; ctx.localStorage = ls;
+  try {
+    await conSalida(async () => {
+      ev("DB_NAME='almacen_db';WAREHOUSE_CONFIG.db='almacen_db';var WAREHOUSE_OTHER_CONFIG={key:'mecanico',db:'almacen_mec_db'}");
+      ev("sb.auth.signOut=async()=>{__orden.push('signOut');__log.push('signOut');return {error:null};}");
+      const rl = ctx.location.reload; ctx.location.reload = () => { rl(); log.push('reload'); };
+      try { await fn({ log, creadas, ls }); }
+      finally { ev('delete globalThis.WAREHOUSE_OTHER_CONFIG;_cerrando=false'); }
+    });
+  } finally { ctx.indexedDB = idbAntes; ctx.localStorage = lsAntes; ctx.__d = dbn; ev('DB_NAME=__d'); rec.restaurar(); }
+}
+const primero = (log, p) => log.findIndex(x => x.startsWith(p));
+const ultimo = (log, p) => log.map(x => x.startsWith(p)).lastIndexOf(true);
+
+test('R5 SEC-L4: tras subir lo pendiente se cierra la sesión y se vacía la base local de los dos almacenes y el historial de búsqueda', async () => {
+  const bases = { almacen_db: baseConDatos(), almacen_mec_db: baseConDatos() };
+  await conLimpieza(bases, async ({ log, ls }) => {
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), ['push', 'flush', 'cfg', 'signOut'], 'primero se sube lo pendiente');
+    assert.ok(vacia(bases.almacen_db) && vacia(bases.almacen_mec_db), 'artículos, config (colas) y movimientos vaciados');
+    assert.ok(log.indexOf('signOut') < primero(log, 'clear:'), 'se vacía DESPUÉS de cerrar la sesión: ' + log.join());
+    assert.ok(ultimo(log, 'clear:') < log.indexOf('reload'), 'y la página se recarga cuando ya está vacía: ' + log.join());
+    assert.strictEqual(ctx.__rl, 1);
+    assert.ok(!Object.keys(ls).some(k => k.startsWith('almacen_search_history_')), 'historial de búsqueda borrado: ' + Object.keys(ls));
+    assert.strictEqual(ls.otra, '2', 'no se toca lo ajeno');
+  });
+});
+
+test('R5 SEC-L4: sin pendientes se vacía directamente; una base del otro almacén que nunca se abrió no se crea', async () => {
+  const bases = { almacen_db: baseConDatos() };
+  await conLimpieza(bases, async ({ log, creadas }) => {
+    ev("__pend=[];dirtyIds=new Set();dirtyCfg=new Set()");
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), ['signOut']);
+    assert.ok(vacia(bases.almacen_db));
+    assert.deepStrictEqual(Object.keys(bases), ['almacen_db'], 'no se crea la base del otro almacén');
+    assert.deepStrictEqual(creadas, []);
+    assert.ok(log.includes('abort:almacen_mec_db'));
+    assert.strictEqual(ctx.__rl, 1);
+  });
+});
+
+test('R5 SEC-L4: si no se pudo subir, cancelar no borra nada; aceptar descarta lo pendiente del almacén actual pero NO el de otro almacén con cambios sin subir', async () => {
+  const bases = { almacen_db: baseConDatos(true), almacen_mec_db: baseConDatos(true) };
+  await conLimpieza(bases, async ({ log }) => {
+    ctx.navigator = { onLine: false };
+    await ev('logout()');
+    // el cuadro de confirmación avisa de que se perderán; no se ha tocado nada
+    assert.ok(evj('__opened').includes('modal-confirm'));
+    assert.ok(/perder|borrar/i.test(ctx.__dom['confirm-msg'].textContent), ctx.__dom['confirm-msg'].textContent);
+    assert.ok(ctx.__dom['confirm-msg'].textContent.includes('sin subir'));
+    assert.ok(!log.some(x => x.startsWith('clear:')) && ctx.__rl === 0, 'cancelar (no aceptar) no borra');
+    assert.strictEqual(bases.almacen_db.items.length, 1);
+    // el usuario acepta
+    ctx.__dom['confirm-ok'].onclick();
+    await esperar(100);
+    assert.ok(vacia(bases.almacen_db), 'lo aceptado se descarta: la base del almacén actual queda vacía');
+    assert.strictEqual(bases.almacen_mec_db.items.length, 1, 'el otro almacén tiene cambios sin subir: no se toca');
+    assert.strictEqual(bases.almacen_mec_db.movements.length, 1);
+    assert.strictEqual(ctx.__rl, 1);
+    assert.ok(log.indexOf('signOut') < primero(log, 'clear:') && ultimo(log, 'clear:') < log.indexOf('reload'));
+  });
+});
+
+test('R5 SEC-L4: un fallo al vaciar no impide cerrar la sesión; en el cierre no arranca otra sincronización', async () => {
+  const bases = { almacen_db: baseConDatos() };
+  await conLimpieza(bases, async ({ log }) => {
+    ctx.indexedDB = { open() { throw new Error('modo privado'); } };
+    await ev('logout()');
+    assert.deepStrictEqual(evj('__orden'), ['push', 'flush', 'cfg', 'signOut']);
+    assert.strictEqual(ctx.__rl, 1, 'la sesión se cierra igualmente');
+    assert.strictEqual(ev('_cerrando'), true, 'mientras se cierra no arranca otra sincronización');
+    ev('__n=0;_syncFromCloud=async()=>{__n++}');
+    await ev('syncFromCloud()');
+    assert.strictEqual(ev('__n'), 0);
+  });
+});
+
+test('R5 SEC-L4: aunque borrarDatosLocales lanzara una excepción, la sesión se cierra igualmente', async () => {
+  const bases = { almacen_db: baseConDatos() };
+  await conLimpieza(bases, async () => {
+    await conStubs(['borrarDatosLocales'], async () => {
+      ev("borrarDatosLocales=async()=>{throw new Error('boom')}");
+      await ev('logout()');
+      assert.deepStrictEqual(evj('__orden'), ['push', 'flush', 'cfg', 'signOut']);
+      assert.strictEqual(ctx.__rl, 1);
+    });
+  });
+});
+
+test('R5 SEC-L4: la base del otro almacén se conserva por CUALQUIERA de sus pendientes (movimientos o cada cola) y se vacía si no tiene ninguno', async () => {
+  const valor = (b, k, v) => { b.config.find(r => r.key === k).value = v; };
+  const variantes = {
+    movimientos: b => { b.movements[0].synced = false; },
+    dirtyIds: b => valor(b, 'dirtyIds', ['I1']),
+    dirtyDel: b => valor(b, 'dirtyDel', ['I2']),
+    dirtyFields: b => valor(b, 'dirtyFields', { I1: { stock: 3 } }),
+    dirtyCfg: b => valor(b, 'dirtyCfg', ['shelves']),
+    ninguno: () => {},
+  };
+  for (const [nombre, poner] of Object.entries(variantes)) {
+    const otra = baseConDatos();
+    poner(otra);
+    const bases = { almacen_db: baseConDatos(), almacen_mec_db: otra };
+    await conLimpieza(bases, async () => { await ev('logout()'); });
+    assert.ok(vacia(bases.almacen_db), nombre + ': el almacén actual se vacía');
+    if (nombre === 'ninguno') assert.ok(vacia(otra), 'sin pendientes también se vacía el otro');
+    else { assert.strictEqual(otra.items.length, 1, nombre + ': el otro almacén se conserva'); assert.strictEqual(otra.movements.length, 1, nombre); }
+  }
+});
+
+test('R5 SEC-L4: espera (máx. unos segundos) a que acabe una sincronización en curso antes de vaciar', async () => {
+  const bases = { almacen_db: baseConDatos(true) };
+  await conLimpieza(bases, async ({ log }) => {
+    ev('_syncing=true');
+    setTimeout(() => { log.push('syncFin'); ev('_syncing=false'); }, 300);
+    await ev('logout(true)'); // ya aceptado el descarte de lo pendiente
+    assert.ok(log.indexOf('syncFin') >= 0 && log.indexOf('syncFin') < primero(log, 'clear:'), log.join());
+    assert.ok(vacia(bases.almacen_db));
+  });
+});
+
+test('R5 SEC-L4: el texto de aviso al cerrar sesión ya no promete subir lo pendiente a nombre de otra persona', async () => {
+  await conR2({}, async () => {
+    await conStubs(['movGetAll'], async () => {
+      ev(WH_R4 + ';movGetAll=async()=>[{synced:false}]');
+      try { await ev('askLogout()'); } finally { quitarWH(); }
+      const m = ctx.__dom['confirm-msg'].textContent;
+      assert.ok(m.includes('sin sincronizar') && !m.includes('a nombre de quien entre después'), m);
+    });
+  });
+});
+
+// ---- SEC-L5: caché del service worker con comprobación de huella (SRI)
+for (const carpeta of ['almacen-electrico', 'almacen-mecanico']) {
+  test('R5 SEC-L5 (' + carpeta + '): el SW guarda las librerías externas solo si su huella coincide con la fijada (precarga y uso normal)', async () => {
+    let sw = cargarSW(carpeta);
+    await sw.instalar();
+    const deIndex = Object.keys(SRI_FIJADOS).filter(u => !u.includes('pdf.js'));
+    assert.strictEqual(deIndex.length, 6);
+    for (const u of deIndex) assert.ok(sw.puestos.includes(u), 'se precarga ' + u);
+    // huella distinta en la precarga: no se guarda, se avisa y la instalación sigue
+    sw = cargarSW(carpeta, { malaHuella: [LIB_EXCELJS] });
+    await sw.instalar();
+    assert.ok(!sw.puestos.includes(LIB_EXCELJS));
+    assert.ok(sw.puestos.includes(LIB_SUPABASE));
+    assert.ok(sw.avisos.some(a => a.includes('exceljs')), sw.avisos.join('|'));
+    // uso normal: respuesta con huella distinta se entrega (la página la rechazará por su SRI) pero NO se guarda; la buena sí
+    let r = await sw.pedir(LIB_EXCELJS);
+    assert.strictEqual(r.ok, true);
+    assert.ok(!sw.puestos.includes(LIB_EXCELJS), 'una respuesta mala no queda guardada');
+    sw = cargarSW(carpeta);
+    r = await sw.pedir(LIB_EXCELJS);
+    assert.strictEqual(r.ok, true);
+    assert.deepStrictEqual(sw.puestos, [LIB_EXCELJS]);
+    // pdf.js (versión fijada en app.js) también se guarda cuando coincide
+    const worker = Object.keys(SRI_FIJADOS).find(u => u.includes('pdf.worker'));
+    await sw.pedir(worker);
+    assert.ok(sw.puestos.includes(worker));
+    // una URL de CDN sin huella conocida se sirve pero no se guarda
+    sw = cargarSW(carpeta);
+    r = await sw.pedir('https://cdnjs.cloudflare.com/ajax/libs/otra/1.0/x.js');
+    assert.strictEqual(r.ok, true);
+    assert.deepStrictEqual(sw.puestos, []);
+  });
+
+  test('R5 SEC-L5 (' + carpeta + '): lo que ya está en la caché sigue sirviéndose sin red; si la comprobación falla se cae a la red', async () => {
+    let sw = cargarSW(carpeta, { enCache: [LIB_EXCELJS], fetchFalla: true });
+    const r = await sw.pedir(LIB_EXCELJS);
+    assert.strictEqual(r.hit, LIB_EXCELJS, 'sin red se usa la copia guardada');
+    // huella distinta en la red: no se guarda, pero la respuesta se entrega (el SRI de la página decide si la ejecuta)
+    sw = cargarSW(carpeta, { malaHuella: [LIB_SUPABASE] });
+    const r2 = await sw.pedir(LIB_SUPABASE);
+    assert.strictEqual(r2.ok, true);
+    assert.deepStrictEqual(sw.puestos, []);
+  });
+
+  test('R5 SEC-L5 (' + carpeta + '): la caché se renueva (v4) para descartar lo guardado sin comprobar, y las huellas coinciden con las de index.html', () => {
+    const codigo = fs.readFileSync(path.join(__dirname, '..', carpeta, 'sw.js'), 'utf8');
+    assert.ok(/CACHE_NAME = PREFIX \+ 'v4'/.test(codigo));
+    const html = fs.readFileSync(path.join(__dirname, '..', carpeta, 'index.html'), 'utf8');
+    for (const [u, h] of Object.entries(SRI_FIJADOS)) {
+      if (u.includes('pdf.js')) continue;
+      assert.ok(html.includes('src="' + u + '" integrity="' + h + '"'), u);
+      assert.ok(codigo.includes("'" + u + "'") && codigo.includes("'" + h + "'"), 'el SW fija la huella de ' + u);
+    }
+    for (const [u, h] of Object.entries(SRI_FIJADOS)) assert.ok(codigo.includes("'" + u + "'") && codigo.includes("'" + h + "'"), u);
+  });
+
+  test('R5 SEC-L6 (' + carpeta + '): CSP mínima por meta (solo object-src, base-uri y form-action), antes de cualquier script', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', carpeta, 'index.html'), 'utf8');
+    const m = html.match(/<meta http-equiv="Content-Security-Policy" content="([^"]*)">/);
+    assert.ok(m, 'falta la meta CSP');
+    assert.strictEqual(m[1], "object-src 'none'; base-uri 'self'; form-action 'self'");
+    assert.ok(!/script-src|connect-src|default-src|style-src|img-src|frame/.test(m[1]), 'sin directivas que puedan romper la app');
+    assert.ok(html.indexOf(m[0]) < html.indexOf('<script'), 'la meta va antes del primer script');
+    assert.strictEqual((html.match(/Content-Security-Policy/g) || []).length, 1);
+  });
+}
+
+test('R5 documentación: SEGURIDAD.md ya no contiene afirmaciones que el código desmiente', () => {
+  const d = fs.readFileSync(path.join(__dirname, '..', 'SEGURIDAD.md'), 'utf8');
+  for (const viejo of ['No hay CSP', 'la limpieza de la base local al salir no está hecha', 'Editar el formulario de un artículo guarda también el stock que tenía al abrirlo', 'se subirá más adelante a nombre de quien entre después'])
+    assert.ok(!d.includes(viejo), 'afirmación obsoleta: ' + viejo);
+  assert.ok(!src.includes('supabase_seguridad.sql'), 'los avisos de la app no deben remitir a un fichero SQL que ya no existe');
+  for (const nuevo of ['IndexedDB', 'PKCE', 'Content-Security-Policy', 'bright-worker', 'Brave', 'savePrintedIds'])
+    assert.ok(d.includes(nuevo), 'falta documentar: ' + nuevo);
+});

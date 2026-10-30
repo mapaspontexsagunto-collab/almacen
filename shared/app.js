@@ -1,51 +1,4 @@
-// ===== CREDENCIALES DESDE SUPABASE =====
-async function fetchAuthFromSupabase(){
-  if(typeof WAREHOUSE_CONFIG!=='undefined'&&WAREHOUSE_CONFIG.useSupabaseAuth)return null; // con Supabase Auth ya no se usa app_auth
-  const _url='https://pttopgjtndbhtvrkuppk.supabase.co';
-  const _key='sb_publishable_x2BxA94JGgKWqNR1tYXYPA_2s-C_wEy';
-  try{
-    const res=await fetch(_url+'/rest/v1/app_auth?select=key,value',{
-      headers:{'apikey':_key,'Authorization':'Bearer '+_key}
-    });
-    if(!res.ok)return null;
-    const rows=await res.json();
-    if(!rows||!rows.length)return null;
-    const auth={};rows.forEach(r=>{auth[r.key]=r.value;});return auth;
-  }catch(e){return null;}
-}
-async function loadAuthCredentials(){
-  const AUTH_CACHE_KEY='almacen_auth_cache';
-  const AUTH_CACHE_TTL=7*24*60*60*1000;
-  const H=async v=>v?await sha256(v):''; // hash solo si hay valor (nunca el hash de una cadena vacía)
-  let cached=null;
-  try{const raw=localStorage.getItem(AUTH_CACHE_KEY);if(raw){const obj=JSON.parse(raw);if(Date.now()-obj.ts<AUTH_CACHE_TTL)cached=obj.data;}}catch(e){}
-  const fromSupabase=await fetchAuthFromSupabase();
-  if(fromSupabase){
-    const cacheData={
-      user:fromSupabase.auth_user||'',
-      pass_electrico:await H(fromSupabase.auth_pass_electrico),
-      pass_mecanico:await H(fromSupabase.auth_pass_mecanico),
-      admin_pass:await H(fromSupabase.admin_pass)
-    };
-    try{localStorage.setItem(AUTH_CACHE_KEY,JSON.stringify({ts:Date.now(),data:cacheData}));}catch(e){}
-    return cacheData;
-  }
-  if(cached)return cached;
-  return {user:'',pass_electrico:'',pass_mecanico:'',admin_pass:''};
-}
-async function saveAuthToSupabase(cfg){
-  const _url='https://pttopgjtndbhtvrkuppk.supabase.co';
-  const _key='sb_publishable_x2BxA94JGgKWqNR1tYXYPA_2s-C_wEy';
-  try{
-    const updates=[{key:'auth_user',value:cfg.user||''},{key:'auth_pass_electrico',value:cfg.raw_pass_electrico||''},{key:'auth_pass_mecanico',value:cfg.raw_pass_mecanico||''}];
-    for(const u of updates.filter(x=>x.value)){ // solo lo que se ha rellenado
-      await fetch(_url+'/rest/v1/app_auth?key=eq.'+u.key,{method:'PATCH',headers:{'apikey':_key,'Authorization':'Bearer '+_key,'Content-Type':'application/json','Prefer':'return=minimal'},body:JSON.stringify({value:u.value})}).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);});
-    }
-    _authCredentials=await loadAuthCredentials();
-    return true;
-  }catch(e){console.warn('No se pudo guardar en Supabase:',e);return false;}
-}
-let _authCredentials=null;
+// ===== ARRANQUE =====
 document.addEventListener('DOMContentLoaded',async function(){
   if(typeof WAREHOUSE_CONFIG!=='undefined'){
     WH=WAREHOUSE_CONFIG;DB_NAME=WH.db;applyBranding();
@@ -54,44 +7,7 @@ document.addEventListener('DOMContentLoaded',async function(){
     if(ok){document.getElementById('login-screen').style.display='none';enterApp();}
     else{document.getElementById('login-error').textContent='';document.getElementById('login-pass').value='';document.getElementById('login-screen').style.display='flex';setTimeout(()=>document.getElementById('login-user').focus(),100);}
   }else{showWarehouseSelector();}
-  _authCredentials=await loadAuthCredentials();
 });
-async function sha256(msg){
-  if(typeof crypto!=='undefined'&&crypto.subtle){
-    try{
-      const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(msg));
-      return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
-    }catch(e){}
-  }
-  // Fallback JS puro (para data:/file:// sin secure context)
-  function _sha256(ascii){
-    function rr(v,n){return(v>>>n)|(v<<(32-n));}
-    var H=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
-    var K=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
-    var hash=H.slice(),words=[],bitLen=ascii.length*8,i,j,a,b,c,d,e,f,g,h,t1,t2,w,oh;
-    ascii+='\x80';
-    while(ascii.length%64!==56)ascii+='\x00';
-    for(i=0;i<ascii.length;i++)words[i>>2]|=ascii.charCodeAt(i)<<((3-i%4)*8);
-    words.push(0,bitLen);
-    for(j=0;j<words.length;j+=16){
-      w=words.slice(j,j+16);
-      oh=hash.slice();
-      a=hash[0];b=hash[1];c=hash[2];d=hash[3];e=hash[4];f=hash[5];g=hash[6];h=hash[7];
-      for(i=0;i<64;i++){
-        if(i>=16){var p=w[i-15],q=w[i-2];w[i]=(w[i-16]+(rr(p,7)^rr(p,18)^(p>>>3))+w[i-7]+(rr(q,17)^rr(q,19)^(q>>>10)))|0;}
-        t1=(h+(rr(e,6)^rr(e,11)^rr(e,25))+((e&f)^(~e&g))+K[i]+(w[i]|0))|0;
-        t2=((rr(a,2)^rr(a,13)^rr(a,22))+((a&b)^(a&c)^(b&c)))|0;
-        h=g;g=f;f=e;e=(d+t1)|0;d=c;c=b;b=a;a=(t1+t2)|0;
-      }
-      hash[0]=(oh[0]+a)|0;hash[1]=(oh[1]+b)|0;hash[2]=(oh[2]+c)|0;hash[3]=(oh[3]+d)|0;
-      hash[4]=(oh[4]+e)|0;hash[5]=(oh[5]+f)|0;hash[6]=(oh[6]+g)|0;hash[7]=(oh[7]+h)|0;
-    }
-    var res='';
-    for(i=0;i<8;i++)for(j=3;j>=0;j--){var byte=(hash[i]>>(j*8))&255;res+=(byte<16?'0':'')+byte.toString(16);}
-    return res;
-  }
-  return _sha256(msg);
-}
 let db;
 let DB_NAME=(typeof WAREHOUSE_CONFIG!=='undefined'?WAREHOUSE_CONFIG.db:'almacen_db');const STORE='items',CFG='config',MOV='movements';
 function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB_NAME,2);r.onupgradeneeded=e=>{const d=e.target.result;if(!d.objectStoreNames.contains(STORE))d.createObjectStore(STORE,{keyPath:'id'});if(!d.objectStoreNames.contains(CFG))d.createObjectStore(CFG,{keyPath:'key'});if(!d.objectStoreNames.contains(MOV))d.createObjectStore(MOV,{keyPath:'id',autoIncrement:true});};r.onsuccess=e=>{db=e.target.result;res();};r.onerror=e=>rej(r.error||e);r.onblocked=()=>{try{toast('⚠ La base de datos del móvil está bloqueada por otra pestaña de la app: ciérrala para continuar');}catch(_){}};});}
@@ -202,7 +118,8 @@ function initSupabase(){
   if(sb)return true;
   try{
     if(window.supabase&&window.supabase.createClient){
-      sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+      // detectSessionInUrl:false: un enlace con #access_token=... no puede sustituir la sesión de quien lo abre. flowType 'pkce' por si algún día se usan enlaces de acceso.
+      sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{detectSessionInUrl:false,flowType:'pkce'}});
       return true;
     }
   }catch(e){console.warn('Supabase init falló',e);}
@@ -218,7 +135,12 @@ function safeUrl(u){return (typeof u==='string'&&/^https?:\/\//i.test(u))?u:'#';
 function jsq(s){return esc(JSON.stringify(String(s==null?'':s)));}
 function cleanText(s){return String(s==null?'':s).replace(/[<>"'&`\\]/g,'');}
 function cleanNum(v,min,max,def){v=Number(v);return Number.isFinite(v)?Math.max(min,Math.min(max,v)):def;}
-function strArr(v){return Array.isArray(v)?v.filter(x=>x!=null).map(x=>String(x)):[];}
+// Listas de texto que llegan de la nube o de una copia: con tope de cantidad y de longitud (una lista gigante congelaría la app en todos los móviles)
+function strArr(v,max=20000,len=200){return Array.isArray(v)?v.filter(x=>x!=null).map(x=>String(x).slice(0,len)).slice(0,max):[];}
+// Nombres (categorías, proveedores, familias de un artículo): máximo 500 de 60 caracteres, sin repetidos
+function cleanNames(v){return [...new Set(strArr(v,Infinity,60))].slice(0,500);}
+// Límites del plano: estanterías y pasillos, bloques por balda y cajones (filas x columnas) de un gavetero
+const MAX_ESTANTERIAS=200,MAX_PASILLOS=200,MAX_BLOQUES=8,MAX_CAJONES=100;
 function cleanItem(it,fast){
   if(!it||!isSafeId(String(it.id)))return null;
   const m={...it,id:String(it.id)};
@@ -233,7 +155,7 @@ function cleanItem(it,fast){
     if(m[k]!=null&&typeof m[k]!=='string')m[k]=String(m[k]);
     if(typeof m[k]==='string')m[k]=m[k].replace(/[<>]/g,'');
   });
-  if(m.cats!=null)m.cats=strArr(m.cats);
+  if(m.cats!=null)m.cats=cleanNames(m.cats);
   return m;
 }
 function cleanItems(list,fast){return (Array.isArray(list)?list:[]).map(it=>cleanItem(it,fast)).filter(Boolean);}
@@ -245,6 +167,7 @@ function cleanBlock(b){
   if(b.n!=null)o.n=Math.round(cleanNum(b.n,1,40,1));
   if(b.rows!=null)o.rows=Math.round(cleanNum(b.rows,1,40,1));
   if(b.cols!=null)o.cols=Math.round(cleanNum(b.cols,1,40,1));
+  if(o.rows!=null&&o.cols!=null&&o.rows*o.cols>MAX_CAJONES)o.cols=Math.max(1,Math.floor(MAX_CAJONES/o.rows)); // filas x columnas <= 100
   if(b.name!=null)o.name=cleanText(b.name).slice(0,60);
   return o;
 }
@@ -253,15 +176,14 @@ function cleanLayout(l){
   if(!l||typeof l!=='object')return out;
   Object.keys(l).forEach(k=>{
     if(!/^\d{1,2}$/.test(k))return;
-    const arr=Array.isArray(l[k])?l[k].map(cleanBlock).filter(Boolean).slice(0,40):[];
+    const arr=Array.isArray(l[k])?l[k].map(cleanBlock).filter(Boolean).slice(0,MAX_BLOQUES):[];
     if(arr.length)out[k]=arr;
   });
   return out;
 }
 // Estanterías: código solo con letras, números, guion y guion bajo; números acotados; distribución validada
 function cleanShelves(list){
-  return (Array.isArray(list)?list:[]).map(s=>{
-    if(!s||typeof s!=='object')return null;
+  return (Array.isArray(list)?list:[]).filter(s=>s&&typeof s==='object').slice(0,MAX_ESTANTERIAS).map(s=>{ // se recorta antes de limpiar: una lista enorme no gasta tiempo
     const id=String(s.id==null?'':s.id).replace(/[^A-Za-z0-9_-]/g,'').slice(0,64);
     if(!id)return null;
     const o={};
@@ -281,7 +203,7 @@ function cleanShelves(list){
   }).filter(Boolean);
 }
 function cleanAisles(list){
-  return (Array.isArray(list)?list:[]).filter(a=>a&&typeof a==='object').map(a=>({
+  return (Array.isArray(list)?list:[]).filter(a=>a&&typeof a==='object').slice(0,MAX_PASILLOS).map(a=>({
     label:cleanText(a.label==null?'Pasillo':a.label).slice(0,60),
     x:cleanNum(a.x,-10000,100000,0),y:cleanNum(a.y,-10000,100000,0),
     w:cleanNum(a.w,0,100000,0),h:cleanNum(a.h,0,100000,0)
@@ -715,7 +637,7 @@ function defaultShelves(){const a=[];for(let i=1;i<=26;i++){const n=String(i).pa
 // Devuelve true (guardado o ya existía) o false (no se pudo guardar en el móvil o en la nube; si falló la nube queda en la
 // cola dirtyCfg y se sube al sincronizar). NO avisa: lo hace quien llama con sufijoHist() para que el aviso no se tape.
 async function addProvider(name){
-  const n=(name||'').trim();
+  const n=(name||'').trim().slice(0,60); // el mismo tope que al leer la lista (cleanNames)
   if(!n||providers.includes(n))return true;
   providers.push(n);
   let okl=true;
@@ -746,16 +668,14 @@ async function init(){
   try{await openDB();}catch(e){_falloBD=true;throw e;}
   initSupabase();
   // Cargar primero lo local (rápido), luego intentar la nube
-  categories=strArr(await cfgGet('categories'));
-  providers=strArr(await cfgGet('providers'));
+  categories=cleanNames(await cfgGet('categories'));
+  providers=cleanNames(await cfgGet('providers'));
   shelves=await cfgGet('shelves');
   if(Array.isArray(shelves))shelves=cleanShelves(shelves);
   aisles=cleanAisles(await cfgGet('aisles'));
   mapSize=await cfgGet('mapSize')||{...DEFAULT_MAP_SIZE};
   await loadPrintedIds();
   if(!shelves||!shelves.length){shelves=defaultShelves();}
-  adminPass=(await cfgGet('adminPass'))||ADMIN_PASS_DEFAULT;
-  const _lc=await cfgGet('loginCfg'); if(_lc)setLoginCfg(_lc);
   try{adminUnlocked=sessionStorage.getItem('almacen_admin_'+WH.key)==='1';}catch(e){}
   if(adminUnlocked&&useSbAuth()&&!(await isAdminRole()))adminUnlocked=false;
   renderUserBar();
@@ -782,7 +702,7 @@ async function init(){
 let _syncing=false,_nubeVaciaAviso=false;
 async function syncFromCloud(refrescarTodasFotos=false){
   if(!sb){setCloudStatus(false);return;}
-  if(_syncing||_stockBusy)return; // evita dos sincronizaciones a la vez y pisar un cambio de stock en curso
+  if(_syncing||_stockBusy||_cerrando)return; // evita dos sincronizaciones a la vez, pisar un cambio de stock en curso o escribir mientras se cierra la sesión
   _syncing=true;
   try{await _syncFromCloud(refrescarTodasFotos);}
   catch(e){console.warn('Error al sincronizar',e);cloudOK=false;try{setCloudStatus(false);}catch(_){}} // también el texto "Conectado" de Ajustes y el aviso de Inicio
@@ -836,7 +756,7 @@ async function _syncFromCloud(refrescarTodasFotos){
   // Config desde la nube
   // Toda la configuración de la nube en una sola petición (antes eran nueve seguidas)
   const _s0={..._cfgSeq}; // contadores antes de leer: una clave guardada durante la lectura (aunque ya haya subido) no se pisa con lo leído
-  const _cfg=await cloudCfgGetMany(['categories','providers','shelves','aisles','mapSize','printedIds','modifiedIds','adminPass','loginCfg']);
+  const _cfg=await cloudCfgGetMany(['categories','providers','shelves','aisles','mapSize','printedIds','modifiedIds']);
   // undefined = falló, la clave sigue pendiente de subir o cambió durante la lectura (manda lo local: no se pisa ni se siembra), null = no hay fila
   const g=k=>(_cfg===undefined||dirtyCfg.has(k)||(_cfgSeq[k]||0)!==(_s0[k]||0))?undefined:(k in _cfg?_cfg[k]:null);
   const cCats=g('categories');
@@ -848,14 +768,12 @@ async function _syncFromCloud(refrescarTodasFotos){
   if(Array.isArray(cPrinted)){printedIds=new Set(cPrinted);await cfgPut('printedIds',cPrinted);}
   const cModified=g('modifiedIds');
   if(Array.isArray(cModified)){modifiedIds=new Set(cModified);await cfgPut('modifiedIds',cModified);}
-  if(Array.isArray(cCats)){categories=strArr(cCats);await cfgPut('categories',categories);}
-  if(Array.isArray(cProviders)){providers=strArr(cProviders);await cfgPut('providers',providers);}
+  if(Array.isArray(cCats)){categories=cleanNames(cCats);await cfgPut('categories',categories);}
+  if(Array.isArray(cProviders)){providers=cleanNames(cProviders);await cfgPut('providers',providers);}
   if(cShelves&&cShelves.length){shelves=cleanShelves(cShelves);await cfgPut('shelves',shelves);}
   else if(cShelves!==undefined){await cloudCfgPut('shelves',shelves);} // solo se siembra si la lectura funcionó
   if(Array.isArray(cAisles)){aisles=cleanAisles(cAisles);await cfgPut('aisles',aisles);}
   if(cMapSize&&cMapSize.w&&cMapSize.h){mapSize={w:Math.round(cleanNum(cMapSize.w,10,120,DEFAULT_MAP_SIZE.w)),h:Math.round(cleanNum(cMapSize.h,10,120,DEFAULT_MAP_SIZE.h))};await cfgPut('mapSize',mapSize);}
-  const cAdmin=g('adminPass'); if(cAdmin){adminPass=cAdmin;await cfgPut('adminPass',cAdmin);}
-  const cLogin=g('loginCfg'); if(cLogin){setLoginCfg(cLogin);await cfgPut('loginCfg',cLogin);}
   renderAll();
   if(document.getElementById('page-inicio')?.classList.contains('active'))renderHomeMovements(true);
 
@@ -1864,7 +1782,7 @@ function editCurrentItem(){
   selectedExtraCats=new Set(currentItem.cats||[]);renderCatChips();
   document.getElementById('newcat-zone').style.display='none';renderPhotoZone();resetAiFillStatus();closeModal('modal-detail');openModal('modal-form');
 }
-function renderPhotoZone(){const z=document.getElementById('photo-zone');z.innerHTML=pendingPhoto?`<div class="photo-preview"><img src="${pendingPhoto}"><button class="rotate" onclick="rotatePhoto()" title="Girar imagen"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 12a9 9 0 11-2.64-6.36M21 3v5h-5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="remove" onclick="removePhoto()">×</button></div>`:`<div class="photo-input" onclick="document.getElementById('photo-file').click()"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 9a2 2 0 012-2h.93a2 2 0 001.66-.9l.82-1.2A2 2 0 0110.07 4h3.86a2 2 0 011.66.9l.82 1.2a2 2 0 001.66.9H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z" stroke-width="1.7"/><circle cx="12" cy="13" r="3" stroke-width="1.7"/></svg><p>Tocar para hacer foto o elegir imagen</p></div>`;}
+function renderPhotoZone(){const z=document.getElementById('photo-zone');z.innerHTML=pendingPhoto?`<div class="photo-preview"><img src="${esc(pendingPhoto)}"><button class="rotate" onclick="rotatePhoto()" title="Girar imagen"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 12a9 9 0 11-2.64-6.36M21 3v5h-5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button class="remove" onclick="removePhoto()">×</button></div>`:`<div class="photo-input" onclick="document.getElementById('photo-file').click()"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 9a2 2 0 012-2h.93a2 2 0 001.66-.9l.82-1.2A2 2 0 0110.07 4h3.86a2 2 0 011.66.9l.82 1.2a2 2 0 001.66.9H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z" stroke-width="1.7"/><circle cx="12" cy="13" r="3" stroke-width="1.7"/></svg><p>Tocar para hacer foto o elegir imagen</p></div>`;}
 function removePhoto(){pendingPhoto=null;photoRemoved=true;renderPhotoZone();}
 // Gira la foto 90° en sentido horario
 function rotatePhoto(){
@@ -3072,11 +2990,11 @@ async function exportBoth(){
 // Claves de configuración que trae una copia (solo las que tienen contenido: NUNCA se escribe una lista vacía sobre la nube)
 function cfgDeCopia(wd){
   const cfg={};
-  const cats=strArr(wd.categories);if(cats.length)cfg.categories=cats;
+  const cats=cleanNames(wd.categories);if(cats.length)cfg.categories=cats;
   const sh=Array.isArray(wd.shelves)?cleanShelves(wd.shelves):[];if(sh.length)cfg.shelves=sh;
   const ai=Array.isArray(wd.aisles)?cleanAisles(wd.aisles):[];if(ai.length)cfg.aisles=ai;
   const ms=wd.mapSize;if(ms&&ms.w&&ms.h)cfg.mapSize={w:Math.round(cleanNum(ms.w,10,120,DEFAULT_MAP_SIZE.w)),h:Math.round(cleanNum(ms.h,10,120,DEFAULT_MAP_SIZE.h))};
-  const pv=strArr(wd.providers);if(pv.length)cfg.providers=pv;
+  const pv=cleanNames(wd.providers);if(pv.length)cfg.providers=pv;
   const pi=strArr(wd.printedIds).filter(isSafeId);if(pi.length)cfg.printedIds=pi;
   const mo=strArr(wd.modifiedIds).filter(isSafeId);if(mo.length)cfg.modifiedIds=mo;
   return cfg;
@@ -3392,6 +3310,13 @@ async function braveSearch(query,num){
   return {error:'http', status:ultimoEstado};
 }
 
+// Dominio del fabricante que devuelve la IA (dato no fiable): solo se acepta un nombre de dominio (letras, cifras y guiones
+// separadas por puntos, terminado en letras); sin ruta, arroba, dos puntos ni espacios. Devuelve '' si no vale; el enlace se construye como https://<dominio>.
+function webFabricante(v){
+  if(typeof v!=='string')return '';
+  const w=v.trim().replace(/^https?:\/\//i,'').replace(/\/$/,'');
+  return (w.length<=253&&/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/i.test(w))?w:'';
+}
 // Pulsar el bot\u00f3n: hace una b\u00fasqueda por cada categor\u00eda y muestra los enlaces
 async function runWebSearch(){
   const cont=document.getElementById('ai-web-results');
@@ -3432,8 +3357,8 @@ async function runWebSearch(){
   }
 
   // Web oficial del fabricante (si la IA la conoce) — enlace directo, no gasta búsqueda
-  const web=((lastAIIdent&&lastAIIdent.fabricante_web)||'').trim().replace(/^https?:\/\//,'').replace(/\/$/,'');
-  if(web && /\.[a-z]{2,}$/i.test(web)){
+  const web=webFabricante(lastAIIdent&&lastAIIdent.fabricante_web);
+  if(web){
     html+='<div style="margin:16px 0 8px;display:flex;align-items:center;gap:8px;"><span style="font-size:16px;">\ud83c\udf10</span><span class="fl" style="color:var(--green-text);">Web oficial del fabricante</span></div>';
     html+='<a href="https://'+esc(web)+'" target="_blank" rel="noopener" class="card" style="display:block;margin-bottom:10px;text-decoration:none;color:inherit;"><div style="padding:12px 14px;"><strong style="font-size:14px;color:var(--green-text);">'+esc(web)+'</strong></div></a>';
     huboAlgo=true;
@@ -3453,6 +3378,14 @@ async function runWebSearch(){
 
 function imgDims(dataUrl){return new Promise(res=>{const im=new Image();im.onload=()=>res({w:im.naturalWidth,h:im.naturalHeight});im.onerror=()=>res(null);im.src=dataUrl;});}
 
+// Texto seguro para una celda de Excel: como mucho 32000 caracteres (una celda de más de 32767 corrompe el xlsx) y, si empieza por
+// = + - @ (o tabulador / retorno), se antepone una comilla simple para que nunca se interprete como fórmula.
+function xlsTexto(v){
+  const s=String(v==null?'':v).slice(0,32000);
+  return /^[=+\-@\t\r]/.test(s)?"'"+s:s;
+}
+// Valor de celda: los números se dejan como número; cualquier otra cosa pasa por xlsTexto
+function xlsVal(v){return (typeof v==='number'&&Number.isFinite(v))?v:xlsTexto(v);}
 function exportExcel(){
   // Preguntar primero qué exportar
   openModal('modal-excel-scope');
@@ -3515,15 +3448,15 @@ async function doExportExcel(scope){
 
       const row = ws.addRow([
         '',                           // foto (se incrusta aparte)
-        i.name || '',
-        i.cat  || '',
-        i.loc  || '',
-        i.stock ?? '',
-        i.min   ?? '',
-        i.ref   || '',
-        i.brand || '',
-        i.machine || '',
-        i.notes || '',
+        xlsTexto(i.name),
+        xlsTexto(i.cat),
+        xlsTexto(i.loc),
+        xlsVal(i.stock ?? ''),
+        xlsVal(i.min   ?? ''),
+        xlsTexto(i.ref),
+        xlsTexto(i.brand),
+        xlsTexto(i.machine),
+        xlsTexto(i.notes),
         (i.precio!=null? Number(i.precio) : ''),
         (i.precio!=null? Number((Number(i.precio)*(i.stock||0)).toFixed(2)) : ''),
       ]);
@@ -3617,7 +3550,7 @@ async function diagnosticoMovimientos(){
       // 1) ¿Se puede LEER la tabla?
       const lectura=await sb.from(tabla).select('ts',{count:'exact'}).limit(1);
       if(lectura.error){
-        msg='❌ No se puede acceder a la tabla "'+tabla+'".\n\nCausa probable: la tabla NO existe en Supabase, o tiene el candado de seguridad (RLS) activado.\n\nSolución: ejecuta en Supabase los SQL de seguridad (supabase_seguridad.sql y supabase_admin_roles.sql) y comprueba que la tabla existe.\n\nDetalle técnico: '+(lectura.error.message||lectura.error);
+        msg='❌ No se puede acceder a la tabla "'+tabla+'".\n\nCausa probable: la tabla NO existe en Supabase, o tiene el candado de seguridad (RLS) activado.\n\nSolución: ejecuta en Supabase el SQL de seguridad (supabase_admin_roles.sql) y comprueba que la tabla existe.\n\nDetalle técnico: '+(lectura.error.message||lectura.error);
       }else{
         const total=lectura.count;
         // 2) ¿Se puede ESCRIBIR? insert de prueba y borrado
@@ -3625,7 +3558,7 @@ async function diagnosticoMovimientos(){
         const prueba={itemId:'__TEST__',nombre:'PRUEBA',ref:'',cat:'',loc:'',brand:'',machine:'',fecha:'',hora:'',turno:'',tipo:'Entrada',anterior:0,nuevo:0,diferencia:0,ts:testTs};
         const ins=await sb.from(tabla).insert(prueba);
         if(ins.error){
-          msg='⚠ La tabla "'+tabla+'" se puede LEER ('+total+' movimientos guardados en la nube) pero NO se puede ESCRIBIR.\n\nCausa: el candado de seguridad (RLS) bloquea la escritura.\n\nSolución: ejecuta en Supabase supabase_seguridad.sql y supabase_admin_roles.sql (nunca desactives la seguridad de la tabla).\n\nDetalle técnico: '+(ins.error.message||ins.error);
+          msg='⚠ La tabla "'+tabla+'" se puede LEER ('+total+' movimientos guardados en la nube) pero NO se puede ESCRIBIR.\n\nCausa: el candado de seguridad (RLS) bloquea la escritura.\n\nSolución: ejecuta en Supabase supabase_admin_roles.sql (nunca desactives la seguridad de la tabla).\n\nDetalle técnico: '+(ins.error.message||ins.error);
         }else{
           await sb.from(tabla).delete().eq('itemId','__TEST__').eq('ts',testTs);
           msg='✅ Todo correcto.\n\nLa tabla "'+tabla+'" funciona: se puede leer y escribir.\n\nMovimientos guardados en la nube ahora mismo: '+total+'.\n\nSi tienes movimientos antiguos que solo se ven en un navegador, abre ese navegador y pulsa "Descargar de la nube": la app subirá automáticamente los que falten.';
@@ -3694,7 +3627,8 @@ async function doExportMovimientos(){
     for(let idx=0;idx<sorted.length;idx++){
       const m=sorted[idx];const rowNum=idx+2;
       const diff=m.diferencia;const esEntrada=diff>0;
-      const row=ws.addRow(['',(m.fecha||''),(m.turno||''),(m.hora||''),(m.tipo||''),(m.nombre||''),(m.cat||''),(m.loc||''),(m.anterior??''),(diff>0?'+':'')+diff,(m.nuevo??''),(m.coste!=null?Number(m.coste):''),(m.ref||''),(m.brand||''),(m.machine||m.maq||''),...(adminUnlocked?[quienMov(m)]:[])]);
+      const dTxt=Number.isFinite(Number(diff))&&diff!==''&&diff!=null?((diff>0?'+':'')+Number(diff)):xlsTexto(diff); // la diferencia lleva su signo (+5 / -3); si no es un número se trata como texto
+      const row=ws.addRow(['',xlsTexto(m.fecha),xlsTexto(m.turno),xlsTexto(m.hora),xlsTexto(m.tipo),xlsTexto(m.nombre),xlsTexto(m.cat),xlsTexto(m.loc),xlsVal(m.anterior??''),dTxt,xlsVal(m.nuevo??''),(m.coste!=null&&Number.isFinite(Number(m.coste))?Number(m.coste):''),xlsTexto(m.ref),xlsTexto(m.brand),xlsTexto(m.machine||m.maq),...(adminUnlocked?[xlsTexto(quienMov(m))]:[])]);
       row.height=ROW_H;
       const bg=idx%2===0?'FFFFFFFF':'FFF5F4F0';
       row.eachCell({includeEmpty:true},(cell,colNum)=>{cell.alignment={vertical:'middle',horizontal:colNum===6?'left':'center',wrapText:true};cell.fill={type:'pattern',pattern:'solid',fgColor:{argb:bg}};cell.font={size:11};cell.border={bottom:{style:'hair',color:{argb:'FFDDDDDD'}}};});
@@ -3925,16 +3859,8 @@ async function doLogin(){
     enterApp();
     return;
   }
-  const creds=_authCredentials||await loadAuthCredentials();
-  const ph=await sha256(p);
-  const storedHash=creds['pass_'+WH.key]||'';
-  if(storedHash && creds.user && u===creds.user && ph===storedHash){
-    try{localStorage.setItem(sesStorageKey(),String(Date.now()));}catch(e){}
-    enterApp();
-  }else{
-    document.getElementById('login-error').textContent=storedHash?'Usuario o contraseña incorrectos':'No se pueden comprobar las credenciales (sin conexión)';
-    document.getElementById('login-pass').value='';
-  }
+  // El acceso antiguo (usuario y contraseña de una tabla propia) ya no existe: solo se entra con Supabase Auth
+  document.getElementById('login-error').textContent='Acceso no disponible: esta versión solo admite el acceso con Supabase Auth';
 }
 
 // HTML de la barra: pestaña del almacén actual (activa), enlace al otro almacén y nombre del usuario
@@ -3953,7 +3879,7 @@ async function askLogout(){
   let aviso='';
   try{
     const pend=(await movGetAll()).filter(m=>!m.synced).length;
-    if(pend||hayPendientes())aviso=' Hay cambios sin sincronizar: se intentarán subir antes de salir; si no se consigue, te lo diremos (si no, se anotarían a nombre de quien entre después en este móvil).';
+    if(pend||hayPendientes())aviso=' Hay cambios sin sincronizar: se intentarán subir antes de salir; si no se consigue, te lo diremos y podrás cancelar (si sales igualmente, se perderán). Al salir se borran de este móvil los datos de la sesión.';
   }catch(e){}
   document.getElementById('confirm-title').textContent='Cerrar sesión';
   document.getElementById('confirm-msg').textContent=(_sessionName?('Vas a cerrar la sesión de '+_sessionName+' en los dos almacenes.'):'Vas a cerrar la sesión en los dos almacenes.')+aviso;
@@ -3985,10 +3911,7 @@ function enterApp(){
   document.getElementById('app-root').style.display='';
   renderUserBar();
   if(useSbAuth()){
-    try{localStorage.removeItem('almacen_auth_cache');localStorage.removeItem('almacen_login');}catch(e){} // restos del acceso antiguo
-    document.querySelectorAll('[onclick="openChangePass()"],[onclick="openUsers()"]').forEach(b=>{b.style.display='none';});
-    const h=document.getElementById('sec-help');
-    if(h)h.textContent='El acceso lo gestiona Supabase: cada persona entra con su propio usuario y los administradores se marcan allí. Usa el candado 🔒 de la parte superior para activar o quitar el modo administrador.';
+    try{localStorage.removeItem('almacen_auth_cache');localStorage.removeItem('almacen_login');}catch(e){} // restos del acceso antiguo (huellas de contraseñas en caché): se siguen borrando de los móviles que las tengan
   }
   if(!appStarted){appStarted=true;arrancar();}
 }
@@ -4011,9 +3934,53 @@ async function subirAntesDeSalir(){
   catch(e){console.warn('logout: no se pudo subir todo',e);}
   finally{_syncing=false;}
 }
-let _saliendo=false;
+// Vacía una base local por su nombre (artículos con precio y fotos, configuración con las colas de pendientes, movimientos).
+// respetar=true: si guarda cambios sin subir (movimientos sin sincronizar o colas dirty*) NO la toca. Nunca crea una base que no existía.
+// Devuelve 'vaciada', 'pendientes' (respetada), 'noexiste' o 'error'; nunca rechaza.
+function _vaciarBD(nombre,respetar){return new Promise(res=>{
+  let r,nueva=false;
+  try{r=indexedDB.open(nombre);}catch(e){console.warn('Vaciar base local',nombre,e);res('error');return;}
+  r.onupgradeneeded=e=>{nueva=true;try{e.target.transaction.abort();}catch(_){}}; // sin versión: si se pide una upgrade es que no existía; se aborta para no crearla
+  r.onerror=()=>res(nueva?'noexiste':'error');
+  r.onblocked=()=>{};
+  r.onsuccess=()=>{
+    const d=r.result;
+    try{
+      const nom=[STORE,CFG,MOV].filter(n=>d.objectStoreNames.contains(n));
+      if(!nom.length){d.close();res('noexiste');return;}
+      const tx=d.transaction(nom,'readwrite');
+      let estado='vaciada',falta=0,pend=false;
+      const limpiar=()=>nom.forEach(n=>tx.objectStore(n).clear());
+      tx.oncomplete=()=>{d.close();res(estado);};
+      tx.onerror=tx.onabort=()=>{console.warn('Vaciar base local',nombre,tx.error);try{d.close();}catch(_){}res('error');};
+      if(!respetar){limpiar();return;}
+      const listo=()=>{if(--falta>0)return;if(pend)estado='pendientes';else limpiar();};
+      if(nom.includes(MOV)){falta++;const g=tx.objectStore(MOV).getAll();g.onsuccess=()=>{if((g.result||[]).some(m=>m.synced!==true))pend=true;listo();};}
+      if(nom.includes(CFG)){['dirtyIds','dirtyDel','dirtyFields','dirtyCfg'].forEach(k=>{falta++;const g=tx.objectStore(CFG).get(k);g.onsuccess=()=>{const v=g.result&&g.result.value;if(v&&(Array.isArray(v)?v.length:Object.keys(v).length))pend=true;listo();};});}
+      if(!falta)limpiar();
+    }catch(e){console.warn('Vaciar base local',nombre,e);try{d.close();}catch(_){}res('error');}
+  };
+});}
+// Al cerrar sesión: no puede quedar nada de la persona anterior en el móvil (precios, fotos, movimientos, colas ni historial de búsqueda).
+// La base del almacén actual se vacía siempre (ya se subió lo pendiente o la persona aceptó descartarlo); la del OTRO almacén solo si no tiene
+// cambios sin subir (desde aquí no se pueden subir) y nunca se crea una que no existía. Cada fallo se deja en consola, sin impedir el cierre.
+async function borrarDatosLocales(){
+  const actual=DB_NAME,otras=new Set(),claves=new Set();
+  [typeof WAREHOUSE_CONFIG!=='undefined'?WAREHOUSE_CONFIG:null,typeof WAREHOUSE_OTHER_CONFIG!=='undefined'?WAREHOUSE_OTHER_CONFIG:null,WH].forEach(w=>{
+    if(!w)return;
+    if(w.db&&w.db!==actual)otras.add(w.db);
+    if(w.key)claves.add('almacen_search_history_'+w.key);
+  });
+  try{Object.keys(localStorage).filter(k=>/^almacen_search_history_/.test(k)).forEach(k=>claves.add(k));}catch(e){}
+  claves.forEach(k=>{try{localStorage.removeItem(k);}catch(e){}});
+  const r={actual:actual?await _vaciarBD(actual,false):'noexiste'};
+  for(const n of otras)r[n]=await _vaciarBD(n,true);
+  Object.keys(r).forEach(k=>{if(r[k]==='pendientes')console.warn('Cerrar sesión: la base local '+k+' tiene cambios sin subir y se conserva');else if(r[k]==='error')console.warn('Cerrar sesión: no se pudo vaciar la base local '+k);});
+  return r;
+}
+let _saliendo=false,_cerrando=false; // _cerrando: la sesión ya se está cerrando (no arrancan sincronizaciones que reescribirían la base local)
 async function logout(forzar){
-  if(_saliendo)return; // doble pulsación mientras se suben los pendientes
+  if(_saliendo||_cerrando)return; // doble pulsación mientras se suben los pendientes o se cierra
   if(!forzar){
     _saliendo=true;
     try{
@@ -4024,15 +3991,16 @@ async function logout(forzar){
         pend=await contarPendientes();
       }
       if(pend>0){
-        // Siguen sin subirse (sin conexión, sesión caducada...): el cierre exige confirmación explícita. NO se borran: quedarían a nombre de quien entre después.
+        // Siguen sin subirse (sin conexión, sesión caducada...): el cierre exige confirmación explícita. Si se acepta, se borran con el resto de datos locales (si no, se subirían a nombre de quien entre después).
         document.getElementById('confirm-title').textContent='Hay cambios sin subir';
-        document.getElementById('confirm-msg').textContent='Quedan '+pend+' cambio(s) sin subir a la nube. Si cierras sesión ahora, se subirán más adelante a nombre de la persona que entre después en este móvil. Lo mejor es cancelar, esperar a tener conexión y salir cuando el indicador diga "Sincronizado".';
+        document.getElementById('confirm-msg').textContent='Quedan '+pend+' cambio(s) sin subir a la nube. Si cierras sesión ahora SE PERDERÁN: se borran de este móvil junto con el resto de los datos de la sesión. Lo mejor es cancelar, esperar a tener conexión y salir cuando el indicador diga "Sincronizado".';
         document.getElementById('confirm-ok').onclick=()=>{closeModal('modal-confirm');logout(true);};
         openModal('modal-confirm');
         return;
       }
     }finally{_saliendo=false;}
   }
+  _cerrando=true; // desde aquí no arrancan sincronizaciones (reescribirían la base local que se va a vaciar)
   // Se borra la sesión y el desbloqueo de administrador de LOS DOS almacenes
   try{
     localStorage.removeItem(sesStorageKey());
@@ -4050,6 +4018,12 @@ async function logout(forzar){
     // Aunque falle la red, se elimina el token guardado en el navegador
     try{Object.keys(localStorage).filter(k=>/^sb-.*-auth-token/.test(k)).forEach(k=>localStorage.removeItem(k));}catch(e){}
   }
+  // Se espera (como mucho 3 s) a que acabe una sincronización o un cambio de stock en curso y se vacía la base local
+  try{
+    const t0=Date.now();
+    while((_syncing||_stockBusy)&&Date.now()-t0<3000)await new Promise(r=>setTimeout(r,50));
+    await borrarDatosLocales();
+  }catch(e){console.warn('Cerrar sesión: no se pudieron borrar los datos locales',e);}
   location.reload();
 }
 // Sincronización automática (así se ven los cambios de otras personas sin tocar nada)
@@ -4081,14 +4055,8 @@ if(typeof window!=='undefined'&&window.addEventListener){
 }
 
 
-// ===== CONTRASEÑA ÚNICA / DESBLOQUEO DE SESIÓN =====
-const ADMIN_PASS_DEFAULT='';
-let adminPass=ADMIN_PASS_DEFAULT, adminUnlocked=false, pendingAdminAction=null;
-// Huella (hash) de la contraseña de administrador; si no hay ninguna guardada, usa la de app_auth
-async function adminHash(){
-  if(adminPass)return adminPass.length===64?adminPass:await sha256(adminPass);
-  return (_authCredentials&&_authCredentials.admin_pass)||'';
-}
+// ===== DESBLOQUEO DEL MODO ADMINISTRADOR (rol de Supabase) =====
+let adminUnlocked=false, pendingAdminAction=null;
 
 // ¿El usuario con sesión es administrador? (rol puesto en Supabase: app_metadata.role = 'admin')
 async function isAdminRole(){
@@ -4104,13 +4072,7 @@ async function isAdminRole(){
 function requireAdmin(action){
   if(adminUnlocked){if(action)action();return;}
   pendingAdminAction=action;
-  if(useSbAuth()){showRoleUnlock();return;}
-  document.getElementById('unlock-pass').parentElement.style.display='';
-  const ub=document.getElementById('unlock-btn');if(ub)ub.style.display='';
-  document.getElementById('unlock-msg').textContent='Introduce la contraseña de Ajustes para continuar. Una vez desbloqueado, no te la volverá a pedir mientras tengas la app abierta.';
-  document.getElementById('unlock-pass').value='';
-  openModal('modal-unlock');
-  setTimeout(()=>document.getElementById('unlock-pass').focus(),120);
+  showRoleUnlock(); // sin Supabase Auth isAdminRole() da false: nadie puede desbloquear
 }
 // Con Supabase Auth no hay contraseña de administrador: el admin solo confirma que quiere desbloquear
 async function showRoleUnlock(){
@@ -4138,15 +4100,7 @@ function toggleAdminLock(){
   if(adminUnlocked)lockAdmin();else requireAdmin(null);
 }
 async function submitUnlock(){
-  if(useSbAuth()){
-    if(!(await isAdminRole())){toast('Tu usuario no es administrador');return;}
-    finishUnlock();return;
-  }
-  const p=document.getElementById('unlock-pass').value;
-  const ph=await sha256(p);
-  const storedHash=await adminHash();
-  if(!storedHash){toast('No hay contraseña de administrador configurada');return;}
-  if(ph!==storedHash){toast('Contraseña incorrecta');return;}
+  if(!(await isAdminRole())){toast('Tu usuario no es administrador');return;}
   finishUnlock();
 }
 function lockAdmin(){
@@ -4162,52 +4116,6 @@ function lockAdmin(){
 }
 function goAjustes(){ requireAdmin(()=>showPage('ajustes')); }
 function goCostes(){ requireAdmin(()=>showPage('costes')); }
-
-// Cambiar la contraseña única de Ajustes
-function openChangePass(){
-  ['cp-cur','cp-new','cp-new2'].forEach(id=>document.getElementById(id).value='');
-  openModal('modal-change-pass');
-}
-async function saveAdminPass(){
-  const cur=document.getElementById('cp-cur').value, nu=document.getElementById('cp-new').value, n2=document.getElementById('cp-new2').value;
-  const curH=await sha256(cur);
-  const adminH=await adminHash();
-  if(!adminH||curH!==adminH){toast('La contraseña actual no es correcta');return;}
-  if(nu.length<4){toast('La nueva debe tener al menos 4 caracteres');return;}
-  if(nu!==n2){toast('Las dos contraseñas nuevas no coinciden');return;}
-  adminPass=await sha256(nu); // se guarda solo la huella, nunca la contraseña
-  await cfgPut('adminPass',adminPass);
-  const _okc=await cloudCfgPut('adminPass',adminPass);
-  closeModal('modal-change-pass');
-  toast(_okc?'✓ Contraseña actualizada':'⚠ Contraseña cambiada solo en este dispositivo: no se pudo guardar en la nube (los demás dispositivos conservan la anterior)');
-}
-
-// Usuario y contraseñas de los almacenes (login)
-function getLoginCfg(){
-  let c={};try{c=JSON.parse(localStorage.getItem('almacen_login')||'{}');}catch(e){}
-  return {user:c.user||'',pass_electrico:'',pass_mecanico:''};
-}
-// Ya no se guardan contraseñas en el navegador: se borra cualquier copia antigua
-function setLoginCfg(c){
-  try{localStorage.removeItem('almacen_login');}catch(e){}
-}
-function openUsers(){
-  const c=getLoginCfg();
-  document.getElementById('us-user').value=(_authCredentials&&_authCredentials.user)||c.user||'';
-  ['us-pass-e','us-pass-m'].forEach(id=>{const el=document.getElementById(id);el.value='';el.placeholder='Dejar vacío para no cambiarla';});
-  openModal('modal-users');
-}
-async function saveUsers(){
-  const cfg={
-    user:document.getElementById('us-user').value.trim(),
-    pass_electrico:document.getElementById('us-pass-e').value.trim(),
-    pass_mecanico:document.getElementById('us-pass-m').value.trim()
-  };
-  if(!cfg.user&&!cfg.pass_electrico&&!cfg.pass_mecanico){toast('No hay nada que cambiar');return;}
-  const okAuth=await saveAuthToSupabase({user:cfg.user,raw_pass_electrico:cfg.pass_electrico,raw_pass_mecanico:cfg.pass_mecanico});
-  closeModal('modal-users');
-  toast(okAuth?'✓ Accesos de almacenes actualizados':'⚠ No se pudieron guardar los accesos (¿sin conexión o sin permisos?)');
-}
 
 // ===== MOVER ARTÍCULO ENTRE ALMACENES =====
 function otherWarehouse(){
@@ -4843,6 +4751,7 @@ function newBlockId(){return 'b'+Date.now().toString(36)+Math.floor(Math.random(
 function layAdd(b,k){
   const key=String(b);
   if(!layoutDraft[key])layoutDraft[key]=[];
+  if(layoutDraft[key].length>=MAX_BLOQUES){toast('⚠ Máximo '+MAX_BLOQUES+' bloques por balda');return;}
   if(k==='h')layoutDraft[key].push({id:newBlockId(),k:'h',n:3});
   else layoutDraft[key].push({id:newBlockId(),k:'g',rows:3,cols:4,name:'Gavetero'});
   renderLayoutEditor();
@@ -4850,7 +4759,9 @@ function layAdd(b,k){
 function layStep(b,bi,prop,d){
   const blk=layoutDraft[String(b)][bi]; if(!blk)return;
   const max = prop==='n'?40:12;
-  blk[prop]=Math.max(1,Math.min(max,(blk[prop]||1)+d));
+  const nuevo=Math.max(1,Math.min(max,(blk[prop]||1)+d));
+  if(d>0&&prop!=='n'&&nuevo*(prop==='rows'?(blk.cols||1):(blk.rows||1))>MAX_CAJONES){toast('⚠ Máximo '+MAX_CAJONES+' cajones por gavetero (filas × columnas)');return;}
+  blk[prop]=nuevo;
   renderLayoutEditor();
 }
 function layDel(b,bi){
