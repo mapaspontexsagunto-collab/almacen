@@ -327,21 +327,63 @@ async function cloudDelete(id){
     cloudOK=false;console.warn('cloudDelete error',e);markDirtyDel(id);return false;
   }
 }
-// Lee el stock actual de un artículo en la nube y lo copia al objeto local (evita pisar cambios de otros)
-// Lee el stock actual de la nube (sin modificar nada). Devuelve un número o null.
+// Actualiza SOLO algunas columnas de un artículo ya existente en la nube (ubicación, stock...), sin subir la fila
+// entera: no pisa el stock ni la foto con datos locales viejos y NUNCA recrea un artículo borrado por otra persona.
+// Devuelve true (guardado), false (error: queda en la cola de pendientes) o 'missing' (la fila ya no existe en la nube).
+// Si el artículo ya estaba en la cola de pendientes (cambio local sin subir) se sube entero, como siempre.
+async function cloudUpdateFields(id,fields){
+  const it=items.find(x=>x.id===id);
+  if(!sb){markDirty(id);return false;}
+  if(dirtyIds.has(id)&&it)return cloudPut(it);
+  try{
+    const{data,error}=await withTimeout(sb.from(WH.tblItems).update(fields).eq('id',id).select('id'),15000,'guardar');
+    if(error)throw error;
+    cloudOK=true;
+    if(!data||data.length===0)return 'missing'; // 0 filas: ya no existe (no se recrea)
+    return true;
+  }catch(e){cloudOK=false;console.warn('cloudUpdateFields error',e);markDirty(id);return false;}
+}
+// El artículo ya no existe en la nube (lo borró otra persona): se quita del móvil, se cierra su ficha y no se vuelve a subir
+async function dropMissingItem(id){
+  clearDirty(id);
+  try{await dbDelete(id);}catch(e){console.warn('dropMissingItem',e);}
+  items=items.filter(x=>x.id!==id);
+  if(currentItem&&currentItem.id===id){currentItem=null;pendingDelta=0;closeModal('modal-detail');}
+  try{renderAll();}catch(e){console.warn('dropMissingItem render',e);}
+}
+// Cambia SOLO la ubicación de un artículo: copia local y columnas loc/pos en la nube (no sube stock, foto ni nombre).
+// Devuelve true, false (no se pudo subir: queda en la cola de pendientes), 'missing' (ya no existe en la nube:
+// se quita del móvil) o 'local' (falló guardar en el móvil: se restaura la ubicación anterior y no se sube nada).
+async function setItemLoc(it,loc,pos){
+  const l0=it.loc,p0=it.pos;
+  it.loc=loc;it.pos=pos;
+  try{await dbPut(it);}
+  catch(e){it.loc=l0;it.pos=p0;console.error('setItemLoc',e);return 'local';}
+  let r=false;
+  try{r=await cloudUpdateFields(it.id,{loc,pos});}catch(e){console.warn('setItemLoc nube',e);markDirty(it.id);}
+  if(r==='missing')await dropMissingItem(it.id);
+  return r;
+}
+// Lee el stock actual de la nube (sin modificar nada). Devuelve {ok:true,stock} si lo leyó,
+// {missing:true} si la fila no existe (otra persona borró el artículo) o {error:true} si falló o se agotó el tiempo.
 async function fetchCloudStock(id){
-  if(!sb)return null;
+  if(!sb)return {error:true};
   try{
     const{data,error}=await withTimeout(sb.from(WH.tblItems).select('stock').eq('id',id).maybeSingle(),5000,'stock');
-    if(!error&&data&&typeof data.stock==='number')return data.stock;
+    if(error)throw error;
+    if(!data)return {missing:true};
+    if(typeof data.stock==='number'&&Number.isFinite(data.stock))return {ok:true,stock:data.stock};
   }catch(e){console.warn('fetchCloudStock',e);}
-  return null;
+  return {error:true};
 }
+// Copia el stock de la nube al artículo local. Devuelve 'ok', 'skip' (no aplica o manda lo local pendiente),
+// 'missing' (el artículo ya no existe en la nube) o 'error' (no se pudo comprobar).
 async function refreshStock(item){
-  if(!sb||!item)return;
-  if(dirtyIds.has(item.id))return; // hay un cambio local pendiente de subir: manda el valor local
-  const v=await fetchCloudStock(item.id);
-  if(v!=null)item.stock=v;
+  if(!sb||!item)return 'skip';
+  if(dirtyIds.has(item.id))return 'skip'; // hay un cambio local pendiente de subir: manda el valor local
+  const r=await fetchCloudStock(item.id);
+  if(r.ok){item.stock=r.stock;return 'ok';}
+  return r.missing?'missing':'error';
 }
 // Descarga todas las filas de una consulta paginando (Supabase limita a ~1000 por petición)
 async function fetchAllPages(buildQuery,pageSize=1000,maxPages=200){
@@ -787,8 +829,27 @@ async function cloudPutRetry(item, intentos=3){
 
 // Fuerza la subida de TODOS los datos locales a la nube, EN LOTES pequeños
 // con reintentos. Evita saturar la conexión con 90 fotos de golpe.
+// Antes de sobrescribir la nube: sincroniza (así no se recrean artículos borrados por otras personas ni se pisa
+// stock con datos viejos) y pide confirmación mostrando cuántos artículos se van a subir.
 async function pushToCloud(){
   if(!sb){toast('Sin conexión a la nube');return;}
+  if(_stockBusy||_syncing){toast('Hay una operación en curso. Inténtalo en unos segundos');return;}
+  await syncFromCloud();
+  if(!cloudOK){toast('⚠ No se pudo sincronizar con la nube antes de subir. Inténtalo de nuevo');return;}
+  const n=items.length;
+  document.getElementById('confirm-title').textContent='Subir este dispositivo a la nube';
+  document.getElementById('confirm-msg').textContent='Se van a subir '+n+' artículos de este dispositivo a la nube y se sobrescribirá lo que haya allí con estos datos (ya sincronizados ahora mismo). ¿Continuar?';
+  const ok=document.getElementById('confirm-ok');
+  ok.onclick=async()=>{
+    closeModal('modal-confirm');
+    if(_stockBusy||_syncing){toast('Hay una operación en curso. Inténtalo en unos segundos');return;}
+    if(!(await ensureOnline('subir los datos')))return;
+    _stockBusy=true; // mientras se sube no se sincroniza ni se cambia stock
+    try{await _pushToCloud();}finally{_stockBusy=false;}
+  };
+  openModal('modal-confirm');
+}
+async function _pushToCloud(){
   updateSyncBadge('syncing');
   const total=items.length;
   let ok=0, fallos=[];
@@ -1165,8 +1226,9 @@ function updateDetailStockUI(){
 }
 async function refreshDetailStock(id){
   if(!sb||_stockBusy||dirtyIds.has(id))return;
-  const v=await fetchCloudStock(id);
-  if(v==null||_stockBusy||dirtyIds.has(id))return; // llegó tarde: ya hay un movimiento en curso
+  const r=await fetchCloudStock(id);
+  if(!r.ok||_stockBusy||dirtyIds.has(id))return; // error/artículo borrado (se avisa al cambiar el stock) o llegó tarde: ya hay un movimiento en curso
+  const v=r.stock;
   const it=items.find(x=>x.id===id);
   if(!it||it.stock===v)return;
   it.stock=v;
@@ -1398,7 +1460,11 @@ async function withFreshStock(fn,opts){
     let w=0;while(_syncing&&w<60){await new Promise(r=>setTimeout(r,200));w++;}
     const _it=(opts&&opts.item)||currentItem;
     const antes=currentItem?currentItem.stock:null;
-    await refreshStock(_it);
+    const _rs=await refreshStock(_it);
+    // No se pudo leer el stock de la nube: no se cambia nada a ciegas con un valor local posiblemente viejo
+    if(_rs==='error'){toast('⚠ No se pudo comprobar el stock actual. Inténtalo de nuevo');return;}
+    // Otra persona borró el artículo: se quita aquí y NO se vuelve a subir (no resucita)
+    if(_rs==='missing'){await dropMissingItem(_it.id);toast('El artículo fue eliminado por otra persona');return;}
     // Ajuste a un valor absoluto: si el stock cambió mientras tanto, se avisa en vez de aplicarlo a ciegas
     if(opts&&opts.abortIfChanged&&currentItem&&antes!==null&&currentItem.stock!==antes){
       adjustValue=currentItem.stock;
@@ -1415,6 +1481,24 @@ async function withFreshStock(fn,opts){
 function confirmPending(){return withFreshStock(_confirmPending);}
 function applyAdjust(){return withFreshStock(_applyAdjust,{abortIfChanged:true});}
 function applyPurchase(){return withFreshStock(_applyPurchase);}
+// Guarda un cambio de stock (y de precio si va en extra): movimiento, copia local y SOLO esas columnas en la nube.
+// Si el movimiento falla se restaura el stock y no se guarda nada. Si falla lo local o la nube, el artículo queda
+// en la cola de pendientes y se avisa. Devuelve true (guardado) o false (revertido / el artículo ya no existe).
+async function _commitStock(it,anterior,nuevo,tipo,coste,extra,provider){
+  const precioAnterior=it.precio;
+  it.stock=nuevo;
+  if(extra&&extra.precio!==undefined)it.precio=extra.precio;
+  try{await registrarMovimiento(it,anterior,nuevo,tipo,coste,provider);}
+  catch(e){it.stock=anterior;it.precio=precioAnterior;console.error('registrarMovimiento',e);toast('⚠ Error al registrar el movimiento');return false;}
+  try{await dbPut(it);}
+  catch(e){console.error('guardar stock (móvil)',e);markDirty(it.id);toast('⚠ El movimiento se registró pero no se pudo guardar en el móvil: sincroniza y revísalo');}
+  let r=false;
+  try{r=await cloudUpdateFields(it.id,{stock:nuevo,...(extra||{})});}
+  catch(e){console.error('guardar stock (nube)',e);markDirty(it.id);}
+  if(r==='missing'){await dropMissingItem(it.id);toast('⚠ El artículo fue eliminado por otra persona: el movimiento queda en el historial');return false;}
+  if(r!==true)toast('⚠ Movimiento registrado, pero el stock no se pudo subir: se reintentará al sincronizar');
+  return true;
+}
 async function _confirmPending(){
   if(!currentItem||pendingDelta===0)return;
   const btn=document.getElementById('pending-confirm-btn');
@@ -1427,10 +1511,7 @@ async function _confirmPending(){
   const _txt=btn?btn.innerHTML:'';
   if(btn){btn.disabled=true;btn.innerHTML='Guardando…';}
   try{
-    currentItem.stock=nuevo;
-    await registrarMovimiento(currentItem,anterior,nuevo,tipo,_coste);
-    await dbPut(currentItem);
-    await cloudPut(currentItem);
+    if(!(await _commitStock(currentItem,anterior,nuevo,tipo,_coste)))return; // revertido o artículo borrado: ya se avisó
     document.getElementById('detail-stock').textContent=currentItem.stock;
     adjustValue=currentItem.stock;
     const _av=document.getElementById('adjust-val'); if(_av)_av.textContent=adjustValue;
@@ -1443,7 +1524,7 @@ async function _confirmPending(){
   }
 }
 function stepAdjust(d){adjustValue=Math.max(0,adjustValue+d);document.getElementById('adjust-val').textContent=adjustValue;}
-async function _applyAdjust(){if(!currentItem)return;const anterior=currentItem.stock;const nuevo=adjustValue;if(anterior===nuevo){toast('Sin cambios');return;}const tipo=nuevo>anterior?'Entrada':'Salida';const _coste=(currentItem.precio!=null)?+(Math.abs(nuevo-anterior)*currentItem.precio).toFixed(2):null;currentItem.stock=nuevo;await registrarMovimiento(currentItem,anterior,nuevo,tipo,_coste);await dbPut(currentItem);await cloudPut(currentItem);document.getElementById('detail-stock').textContent=currentItem.stock;renderAll();toast('Stock actualizado: '+nuevo);}
+async function _applyAdjust(){if(!currentItem)return;const anterior=currentItem.stock;const nuevo=adjustValue;if(anterior===nuevo){toast('Sin cambios');return;}const tipo=nuevo>anterior?'Entrada':'Salida';const _coste=(currentItem.precio!=null)?+(Math.abs(nuevo-anterior)*currentItem.precio).toFixed(2):null;if(!(await _commitStock(currentItem,anterior,nuevo,tipo,_coste)))return;document.getElementById('detail-stock').textContent=currentItem.stock;renderAll();toast('Stock actualizado: '+nuevo);}
 function fmtEur(n){return (Number(n)||0).toFixed(2).replace('.',',')+' €';}
 function calcPurNet(){
   const p=parseFloat(document.getElementById('pur-price').value)||0;
@@ -1472,24 +1553,21 @@ function openPurchase(){
 }
 async function _applyPurchase(){
   if(!currentItem)return;
-  const qty=parseInt(document.getElementById('pur-qty').value)||0;
+  const qty=parseFormNum(document.getElementById('pur-qty').value,{miles:true});
   const praw=document.getElementById('pur-price').value.trim();
-  const priceBase=praw===''?null:(parseFloat(praw.replace(',','.'))||0);
+  const priceBase=praw===''?null:parseFormNum(praw);
   const discRaw=document.getElementById('pur-discount').value.trim();
-  const disc=discRaw===''?0:(parseFloat(discRaw.replace(',','.'))||0);
-  const price=priceBase!=null?+(priceBase*(1-disc/100)).toFixed(4):null;
+  const disc=discRaw===''?0:parseFormNum(discRaw);
   const provider=document.getElementById('pur-provider').value.trim();
-  if(qty<1){toast('Indica cuántas unidades entran');return;}
-  if(priceBase!=null&&priceBase<0){toast('Precio no válido');return;}
-  if(disc<0||disc>100){toast('Descuento no válido (0-100)');return;}
+  if(!Number.isFinite(qty)||qty<1||qty>1e9||!Number.isInteger(qty)){toast('Indica cuántas unidades entran');return;}
+  if(campoNumMalo('pur-price')||(priceBase!=null&&(!Number.isFinite(priceBase)||priceBase<0))){toast('Precio no válido');return;}
+  if(campoNumMalo('pur-discount')||!Number.isFinite(disc)||disc<0||disc>100){toast('Descuento no válido (0-100)');return;}
+  const price=priceBase!=null?+(priceBase*(1-disc/100)).toFixed(4):null;
   const anterior=currentItem.stock;
   const precioAnterior=currentItem.precio!=null?currentItem.precio:null;
-  currentItem.stock=anterior+qty;
-  if(price!=null)currentItem.precio=price;
   const _coste=price!=null?+(qty*price).toFixed(2):null;
-  try{await registrarMovimiento(currentItem,anterior,currentItem.stock,'Compra',_coste,provider);}
-  catch(e){currentItem.stock=anterior;if(price!=null)currentItem.precio=precioAnterior;console.error('registrarMovimiento compra',e);toast('⚠ Error al registrar el movimiento');return;}
-  await dbPut(currentItem);await cloudPut(currentItem);
+  // Solo se suben el stock y el precio (no la fila entera ni la foto)
+  if(!(await _commitStock(currentItem,anterior,anterior+qty,'Compra',_coste,price!=null?{precio:price}:null,provider)))return;
   if(price!=null){
     const now=new Date();
     const entry={item_id:currentItem.id, price, previous_price:precioAnterior, qty, provider:provider||null, fecha:now.toLocaleDateString('es-ES'), ts:now.getTime()};
@@ -1700,20 +1778,41 @@ async function _saveItem(){
   if(cat==='__new__')cat=document.getElementById('f-newcat').value.trim();
   const shelf=document.getElementById('f-shelf').value,balda=document.getElementById('f-balda').value;
   if(!name||!cat){toast('⚠ Nombre y categoría obligatorios');return;}
+  // Stock y precio se validan ANTES de guardar nada: un valor vacío o no válido ya no se convierte en 0
+  // (al editar, un stock vacío generaba una "Salida" del stock completo)
+  const _stockRaw=document.getElementById('f-stock').value.trim();
+  let _stockVal=0;
+  if(campoNumMalo('f-stock')){toast('⚠ Stock no válido');return;}
+  if(_stockRaw===''){
+    if(editingId){toast('⚠ Indica el stock (0 si no queda ninguno)');return;}
+  }else{
+    _stockVal=parseFormNum(_stockRaw,{miles:true});
+    if(!Number.isFinite(_stockVal)||_stockVal<0||_stockVal>1e9||!Number.isInteger(_stockVal)){toast('⚠ Stock no válido (número entero, 0 o más)');return;}
+  }
+  let _precio;const _pg=document.getElementById('f-precio-group');
+  if(_pg&&_pg.style.display==='none'){const _prev=editingId?items.find(x=>x.id===editingId):null;_precio=_prev&&_prev.precio!=null?_prev.precio:null;}
+  else{
+    const _precioRaw=document.getElementById('f-precio').value.trim();
+    _precio=_precioRaw===''?null:parseFormNum(_precioRaw);
+    if(campoNumMalo('f-precio')||(_precio!=null&&(!Number.isFinite(_precio)||_precio<0||_precio>INV_MAX_PRICE))){toast('⚠ Precio no válido');return;}
+  }
   if(cat&&!categories.includes(cat)){categories.push(cat);await cfgPut('categories',categories);await cloudCfgPut('categories',categories);}
   // Familias adicionales (sin incluir la principal ni duplicados)
   const extraCats=[...selectedExtraCats].filter(c=>c&&c!==cat);
   const minRaw=document.getElementById('f-min').value.trim();
   const minVal = minRaw==='' ? 2 : (parseInt(minRaw)||0);
   const pos=getFormPos();
-  let _precio;const _pg=document.getElementById('f-precio-group');if(_pg&&_pg.style.display==='none'){const _prev=editingId?items.find(x=>x.id===editingId):null;_precio=_prev&&_prev.precio!=null?_prev.precio:null;}else{const _precioRaw=document.getElementById('f-precio').value.trim();_precio=_precioRaw===''?null:(parseFloat(_precioRaw.replace(',','.'))||0);}
-  const item={id:editingId||('I'+Date.now()+Math.floor(Math.random()*1000)),name,cat,cats:extraCats,loc:shelf+'-'+balda,pos:pos,precio:_precio,stock:Math.max(0,parseInt(document.getElementById('f-stock').value)||0),min:minVal,ref:document.getElementById('f-ref').value.trim(),brand:document.getElementById('f-brand').value.trim(),machine:document.getElementById('f-machine').value.trim(),notes:document.getElementById('f-notes').value.trim(),photo:pendingPhoto};
-  if(item.precio!=null&&(isNaN(item.precio)||item.precio<0)){toast('⚠ Precio no válido');return;}
+  const item={id:editingId||('I'+Date.now()+Math.floor(Math.random()*1000)),name,cat,cats:extraCats,loc:shelf+'-'+balda,pos:pos,precio:_precio,stock:_stockVal,min:minVal,ref:document.getElementById('f-ref').value.trim(),brand:document.getElementById('f-brand').value.trim(),machine:document.getElementById('f-machine').value.trim(),notes:document.getElementById('f-notes').value.trim(),photo:pendingPhoto};
   const _prevStockItem=editingId?items.find(x=>x.id===editingId):null;
   if(_prevStockItem&&!dirtyIds.has(item.id)){
     // Si no se tocó el stock en el formulario, se usa el actual de la nube (puede haber cambiado mientras se editaba)
-    const _v=await fetchCloudStock(item.id);
-    if(_v!=null){if(item.stock===_formStock0)item.stock=_v;_prevStockItem.stock=_v;}
+    const _r=await fetchCloudStock(item.id);
+    // Otra persona borró el artículo mientras se editaba: no se recrea al guardar
+    if(_r.missing){await dropMissingItem(item.id);closeModal('modal-form');toast('El artículo fue eliminado por otra persona: no se ha guardado');return;}
+    // Sin poder comprobar el stock actual no se guarda (se subiría un stock local posiblemente viejo)
+    if(!_r.ok){toast('⚠ No se pudo comprobar el stock actual. Inténtalo de nuevo');return;}
+    if(item.stock===_formStock0)item.stock=_r.stock;
+    _prevStockItem.stock=_r.stock;
   }
   // ¿Es un artículo ya impreso cuya etiqueta ha cambiado?
   // La etiqueta muestra nombre, referencia y ubicación: si alguno cambia, conviene reimprimir.
@@ -2098,15 +2197,18 @@ async function saveEditShelf(){
 
   // Si cambia el código, actualizar los repuestos y guardarlos
   let movedItems=[];
+  let _locFallos=0;
   if(newCode!==oldId){
     s.id=newCode;
     movedItems=items.filter(i=>i.loc&&i.loc.startsWith(oldId+'-'));
     for(const it of movedItems){
       // La balda es todo lo que va tras "oldId-" (respeta códigos con guion)
       const balda=it.loc.slice(oldId.length+1);
-      it.loc=newCode+'-'+balda;
-      await dbPut(it);await cloudPut(it);
+      // Solo se sube la ubicación (no el stock ni la foto, que pueden estar desfasados en este móvil)
+      const r=await setItemLoc(it,newCode+'-'+balda,it.pos);
+      if(r===false||r==='local')_locFallos++;
     }
+    movedItems=movedItems.filter(i=>items.some(x=>x.id===i.id)); // los borrados por otra persona ya no cuentan
   }
 
   // Persistir las estanterías de inmediato (nombre/código/baldas), no solo en el borrador,
@@ -2120,7 +2222,7 @@ async function saveEditShelf(){
   if(movedItems.length){
     items=await dbGetAll();
     renderAll();
-    toast(`✓ Estantería actualizada (${movedItems.length} repuesto(s) reubicados)`);
+    toast(_locFallos?`⚠ Estantería actualizada, pero ${_locFallos} repuesto(s) no se pudieron guardar en la nube (se reintentará al sincronizar)`:`✓ Estantería actualizada (${movedItems.length} repuesto(s) reubicados)`);
   }else{
     toast('✓ Estantería actualizada');
   }
@@ -2541,7 +2643,19 @@ async function doPrintLabels(){
 }
 
 function showQR(){if(!currentItem)return;document.getElementById('qr-item-name').textContent=currentItem.name+' · '+currentItem.loc;const box=document.getElementById('qr-canvas');box.innerHTML='';new QRCode(box,{text:'ALMACEN:'+currentItem.id,width:200,height:200,colorDark:'#1a1916',colorLight:'#ffffff'});openModal('modal-qr');}
-function openScanner(){openModal('modal-scan');scanner=new Html5Qrcode('qr-reader');scanner.start({facingMode:'environment'},{fps:10,qrbox:220},text=>{if(text.startsWith('ALMACEN:')){const id=text.replace('ALMACEN:','');const purpose=scanPurpose;closeScanner();const found=items.find(i=>i.id===id);if(!found){toast('Componente no encontrado');return;}if(purpose==='addhere'&&addHereTarget){const t=addHereTarget;ensureOnline('colocar el artículo').then(ok=>{if(!ok)return;found.loc=t.sid+'-'+t.balda;found.pos=t.cid||'';Promise.resolve(dbPut(found)).then(()=>cloudPut(found)).then(()=>dbGetAll()).then(r=>{items=r;renderItems();});toast('✓ '+found.name+' colocado aquí');});}else{openDetail(id);}}},()=>{}).catch(e=>{toast('No se pudo abrir la cámara');console.error(e);});}
+// QR "colocar aquí": cambia solo la ubicación, espera a que termine y avisa del resultado real (no antes)
+async function placeScannedItem(found,t){
+  const l0=found.loc,p0=found.pos;
+  let r;
+  try{r=await setItemLoc(found,t.sid+'-'+t.balda,t.cid||'');}
+  catch(e){found.loc=l0;found.pos=p0;console.error('colocar aquí',e);toast('⚠ No se pudo colocar el artículo');return;}
+  if(r==='local'){toast('⚠ No se pudo guardar la ubicación en este dispositivo');return;}
+  if(r==='missing'){toast('El artículo fue eliminado por otra persona');return;}
+  try{items=await dbGetAll();}catch(e){console.warn('colocar aquí: releer',e);}
+  try{renderItems();}catch(e){console.warn('colocar aquí: pintar',e);}
+  toast(r===true?'✓ '+found.name+' colocado aquí':'⚠ '+found.name+' colocado aquí, pero no se pudo subir a la nube: se reintentará al sincronizar');
+}
+function openScanner(){openModal('modal-scan');scanner=new Html5Qrcode('qr-reader');scanner.start({facingMode:'environment'},{fps:10,qrbox:220},text=>{if(text.startsWith('ALMACEN:')){const id=text.replace('ALMACEN:','');const purpose=scanPurpose;closeScanner();const found=items.find(i=>i.id===id);if(!found){toast('Componente no encontrado');return;}if(purpose==='addhere'&&addHereTarget){const t=addHereTarget;ensureOnline('colocar el artículo').then(ok=>{if(!ok)return;return placeScannedItem(found,t);});}else{openDetail(id);}}},()=>{}).catch(e=>{toast('No se pudo abrir la cámara');console.error(e);});}
 function closeScanner(){scanPurpose=null;if(scanner){scanner.stop().then(()=>{scanner.clear();scanner=null;}).catch(()=>{scanner=null;});}closeModal('modal-scan');}
 
 async function cloudCfgGetFrom(tbl,key){
@@ -3742,16 +3856,34 @@ function updateAhBtn(){
   const b=document.getElementById('ah-place-btn');
   if(b)b.textContent= addHereSel.size? ('Colocar aquí ('+addHereSel.size+')') : 'Colocar aquí';
 }
+// Cambia la ubicación de varios artículos (solo loc/pos en la nube). Devuelve el recuento por resultado.
+async function _setLocMany(ids,loc,pos){
+  const res={ok:0,pend:0,gone:0,fail:0};
+  for(const id of ids){
+    const it=items.find(x=>x.id===id); if(!it)continue;
+    const r=await setItemLoc(it,loc,pos);
+    if(r===true)res.ok++;else if(r===false)res.pend++;else if(r==='missing')res.gone++;else res.fail++;
+  }
+  return res;
+}
+function _locResumen(res,verbo){
+  const n=res.ok+res.pend;
+  let m=(res.pend||res.gone||res.fail?'⚠ ':'✓ ')+verbo+' '+n+' artículos';
+  if(res.pend)m+='. '+res.pend+' sin subir a la nube (se reintentará al sincronizar)';
+  if(res.gone)m+='. '+res.gone+' ya no existían (borrados por otra persona)';
+  if(res.fail)m+='. '+res.fail+' no se pudieron guardar';
+  return m;
+}
 async function ahPlace(){
   if(!addHereSel.size){toast('Selecciona al menos un artículo (o usa Crear / Escanear)');return;}
   const t=addHereTarget; const ids=[...addHereSel];
   closeModal('modal-addhere');
   toast('⏳ Colocando '+ids.length+' artículos...');
-  for(const id of ids){ const it=items.find(x=>x.id===id); if(!it)continue; it.loc=t.sid+'-'+t.balda; it.pos=t.cid||''; await dbPut(it); await cloudPut(it); }
+  const res=await _setLocMany(ids,t.sid+'-'+t.balda,t.cid||'');
   items=await dbGetAll();
   addHereSel.clear();
   renderItems();
-  toast('✓ Colocados '+ids.length+' artículos');
+  toast(_locResumen(res,'Colocados'));
 }
 function openScannerFor(purpose){ scanPurpose=purpose; openScanner(); }
 function svRow(i){
@@ -3855,15 +3987,16 @@ async function moveItemToCell(id,sid,balda,cid){
     });
     if(decision==='cancel') return;
   }
-  // Actualizar el modelo
-  it.loc=newLoc; it.pos=newPos;
   svSelectedId=null;
-  // Guardar en local + nube
-  await dbPut(it); await cloudPut(it);
+  // Guardar en local + nube (solo ubicación: no se sube el stock ni la foto, y no se recrea un artículo borrado)
+  const r=await setItemLoc(it,newLoc,newPos);
   // Re-renderizar la vista para que el cambio se vea al momento
   renderItems();
   updateOrganizeBanner();
-  toast('✓ Movido');
+  if(r==='local')toast('⚠ No se pudo guardar la ubicación en este dispositivo');
+  else if(r==='missing')toast('El artículo fue eliminado por otra persona');
+  else if(r===false)toast('⚠ Movido, pero no se pudo subir a la nube: se reintentará al sincronizar');
+  else toast('✓ Movido');
 }
 
 function shelfLayoutHTML(sid){
@@ -4222,11 +4355,11 @@ async function applyBulkLoc(){
   const ids=[...selectedIds];
   closeModal('modal-bulkloc');
   toast('⏳ Asignando ubicación a '+ids.length+' artículos...');
-  for(const id of ids){ const it=items.find(x=>x.id===id); if(!it)continue; it.loc=sid+'-'+b; it.pos=pos; await dbPut(it); await cloudPut(it); }
+  const res=await _setLocMany(ids,sid+'-'+b,pos);
   items=await dbGetAll();
   selectedIds.clear();
   renderItems(); updateSelBar();
-  toast('✓ Ubicación asignada a '+ids.length+' artículos');
+  toast(_locResumen(res,'Ubicación asignada a'));
 }
 
 // Mover varios a otro almacén (protegido)
@@ -4459,6 +4592,18 @@ function parseNumES(v,opts){
   }
   const n=Number(s);
   return Number.isFinite(n)?n:NaN;
+}
+// Valor de un campo <input type="number">: el navegador ya lo da en formato canónico ("0.125"), que parseNumES
+// rechazaría o malinterpretaría (puntos de millar). Si no es canónico se recurre a parseNumES. NaN si no es válido.
+function parseFormNum(raw,opts){
+  const s=String(raw==null?'':raw).trim();
+  if(/^-?\d+(\.\d+)?$/.test(s))return Number(s);
+  return parseNumES(s,opts);
+}
+// ¿El navegador descartó lo escrito en este campo numérico (texto no numérico)? Entonces .value llega vacío
+function campoNumMalo(id){
+  const e=document.getElementById(id);
+  return !!(e&&e.validity&&e.validity.badInput);
 }
 // Limpia lo que devuelve la IA: tipos, longitudes, números válidos y como máximo INV_MAX_LINES líneas
 function _invSanitize(parsed){
@@ -4826,8 +4971,10 @@ async function _assignInvoiceLine(idx,itemId){
   try{await dbPut(it);}
   catch(e){console.error('guardar stock factura (móvil)',e);markDirty(it.id);toast('⚠ La entrada se registró pero no se pudo guardar en el móvil: sincroniza y revísalo');}
   try{
-    const subido=await cloudPut(it,{photo:false});
-    if(!subido)toast('⚠ Entrada registrada, pero el stock no se pudo subir: se reintentará al sincronizar');
+    // Solo stock (y precio): no se sube la fila entera ni la foto, y nunca se recrea un artículo borrado
+    const subido=await cloudUpdateFields(it.id,price!=null?{stock:newStock,precio:price}:{stock:newStock});
+    if(subido==='missing'){await dropMissingItem(it.id);toast('⚠ Entrada registrada, pero el artículo fue eliminado por otra persona');}
+    else if(subido!==true)toast('⚠ Entrada registrada, pero el stock no se pudo subir: se reintentará al sincronizar');
   }catch(e){console.error('guardar stock factura (nube)',e);markDirty(it.id);toast('⚠ Entrada registrada, pero el stock no se pudo subir: se reintentará al sincronizar');}
   // Lo siguiente no es crítico: si falla no se deshace la entrada
   try{
@@ -4840,7 +4987,7 @@ async function _assignInvoiceLine(idx,itemId){
   try{items=await dbGetAll();}catch(e){}
   closeModal('modal-inv-search');
   renderInvoiceLines();
-  toast(`✓ ${it.name} · +${qty} ud`);
+  if(items.some(x=>x.id===it.id))toast(`✓ ${it.name} · +${qty} ud`); // si el artículo ya no existe se conserva el aviso anterior
 }
 
 function openInvoiceCreate(idx){

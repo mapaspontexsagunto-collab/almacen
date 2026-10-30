@@ -327,7 +327,7 @@ test('artículos: cleanItem quita < y > de nombre, referencia, marca, máquina y
 });
 
 test('escáner: registrar una línea suma el stock UNA vez, valida, exige admin y no repite', async () => {
-  const guardar = vm.runInContext('({rm:registrarMovimiento,dp:dbPut,cp:cloudPut,pa:cloudPriceAdd,ap:addProvider,dg:dbGetAll,cm:closeModal,rl:renderInvoiceLines,rv:refreshVisiblePage})', ctx);
+  const guardar = vm.runInContext('({rm:registrarMovimiento,dp:dbPut,cp:cloudPut,cu:cloudUpdateFields,pa:cloudPriceAdd,ap:addProvider,dg:dbGetAll,cm:closeModal,rl:renderInvoiceLines,rv:refreshVisiblePage})', ctx);
   const dummy = { classList: { add() {}, remove() {} }, style: {}, textContent: '', innerHTML: '' };
   const getAntes = ctx.document.getElementById;
   ctx.document.getElementById = () => dummy;
@@ -336,7 +336,7 @@ test('escáner: registrar una línea suma el stock UNA vez, valida, exige admin 
       __movs=[];__precios=[];
       registrarMovimiento=async(it,a,n,tipo,c,prov)=>{__movs.push([a,n,tipo,c,prov]);};
       __nube=5;
-      dbPut=async()=>{};cloudPut=async it=>{__nube=it.stock;return true;};cloudPriceAdd=async e=>{__precios.push(e);return true;};addProvider=async()=>{};
+      dbPut=async()=>{};cloudPut=async it=>{__nube=it.stock;return true;};cloudUpdateFields=async(id,f)=>{__nube=f.stock;return true;};cloudPriceAdd=async e=>{__precios.push(e);return true;};addProvider=async()=>{};
       dbGetAll=async()=>items;closeModal=()=>{};renderInvoiceLines=()=>{};refreshVisiblePage=()=>{};
       WH={tblCfg:'config',tblItems:'items'};
       sb={from:()=>({select:()=>({limit:async()=>({error:null}),eq:()=>({maybeSingle:async()=>({data:{stock:__nube},error:null})})})})};
@@ -382,7 +382,7 @@ test('escáner: registrar una línea suma el stock UNA vez, valida, exige admin 
     ctx.navigator = {};
     ctx.document.getElementById = getAntes;
     ctx.__g = guardar;
-    vm.runInContext('registrarMovimiento=__g.rm;dbPut=__g.dp;cloudPut=__g.cp;cloudPriceAdd=__g.pa;addProvider=__g.ap;dbGetAll=__g.dg;closeModal=__g.cm;renderInvoiceLines=__g.rl;refreshVisiblePage=__g.rv;sb=null;adminUnlocked=false;_invLines=[];items=[];_invProvider="";WH=null;', ctx);
+    vm.runInContext('registrarMovimiento=__g.rm;dbPut=__g.dp;cloudPut=__g.cp;cloudUpdateFields=__g.cu;cloudPriceAdd=__g.pa;addProvider=__g.ap;dbGetAll=__g.dg;closeModal=__g.cm;renderInvoiceLines=__g.rl;refreshVisiblePage=__g.rv;sb=null;adminUnlocked=false;_invLines=[];items=[];_invProvider="";WH=null;', ctx);
   }
 });
 
@@ -473,4 +473,371 @@ test('no quedan contraseñas por defecto en el código', () => {
     const s = fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
     assert.ok(!/Mapamsi01|'Electrico'|'Mecanico'|fallbackPass/.test(s), f);
   }
+});
+
+// ===== Integridad del stock (bloque R1) =====
+// Entorno simulado: nube (sb) configurable, base local y avisos registrados. Todo se restaura al terminar.
+const NOMBRES_R1 = 'registrarMovimiento,dbPut,dbDelete,dbGetAll,cfgPut,cloudCfgPut,closeModal,openModal,renderAll,renderItems,renderMap,refreshVisiblePage,updateOrganizeBanner,toast,syncFromCloud,_pushToCloud,_invoiceAfterSave,updateSyncBadge';
+async function conNube(opciones, fn) {
+  const orig = vm.runInContext('({' + NOMBRES_R1.split(',').map(n => n + ':' + n).join(',') + ',sb:sb,WH:WH,items:items,cur:currentItem,pd:pendingDelta,di:dirtyIds,ok:cloudOK,ed:editingId,sbusy:_stockBusy})', ctx);
+  const getAntes = ctx.document.getElementById;
+  const dom = Object.assign({}, opciones.dom || {});
+  const dummy = () => ({ classList: { add() {}, remove() {}, contains: () => false }, style: {}, textContent: '', innerHTML: '', value: '', onclick: null });
+  const cache = {};
+  ctx.document.getElementById = id => (cache[id] = cache[id] || Object.assign(dummy(), dom[id] || {}));
+  ctx.__dom = cache;
+  try {
+    vm.runInContext(String.raw`
+      __calls=[];__toasts=[];__movs=[];__closed=[];__opened=[];__dbDel=[];__dbPuts=[];
+      __stock=()=>({data:{stock:5},error:null});   // lectura del stock en la nube
+      __upd=()=>({data:[{id:'x'}],error:null});    // respuesta de update
+      registrarMovimiento=async(it,a,n,tipo,c,prov)=>{__movs.push([a,n,tipo,c,prov]);};
+      dbPut=async it=>{__dbPuts.push(it.id);};dbDelete=async id=>{__dbDel.push(id);};dbGetAll=async()=>items;
+      cfgPut=async()=>{};cloudCfgPut=async()=>true;
+      closeModal=id=>{__closed.push(id);};openModal=id=>{__opened.push(id);};
+      renderAll=()=>{};renderItems=()=>{};renderMap=()=>{};refreshVisiblePage=()=>{};updateOrganizeBanner=()=>{};updateSyncBadge=()=>{};
+      toast=m=>{__toasts.push(String(m));};
+      WH={tblCfg:'config',tblItems:'items'};
+      dirtyIds=new Set();pendingDelta=0;currentItem=null;cloudOK=true;_stockBusy=false;
+      sb={from:()=>({
+        select:()=>({limit:async()=>({error:null}),eq:()=>({maybeSingle:async()=>__stock()})}),
+        update:f=>({eq:(c,id)=>({select:async()=>{__calls.push(['update',f,id]);return __upd();}})}),
+        upsert:async o=>{__calls.push(['upsert',o]);return {error:null};}
+      })};
+    `, ctx);
+    await fn();
+  } finally {
+    ctx.document.getElementById = getAntes;
+    ctx.__o = orig;
+    vm.runInContext(NOMBRES_R1.split(',').map(n => n + '=__o.' + n).join(';') + ';sb=__o.sb;WH=__o.WH;items=__o.items;currentItem=__o.cur;pendingDelta=__o.pd;dirtyIds=__o.di;cloudOK=__o.ok;editingId=__o.ed;_stockBusy=__o.sbusy;', ctx);
+  }
+}
+const ev = s => vm.runInContext(s, ctx);
+const evj = s => JSON.parse(vm.runInContext('JSON.stringify(' + s + ')', ctx)); // objetos/listas del contexto -> normales
+
+test('stock: fetchCloudStock distingue artículo borrado, error y tiempo agotado', async () => {
+  await conNube({}, async () => {
+    ev("__stock=()=>({data:{stock:7},error:null})");
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(await ev('fetchCloudStock("I1")'))), { ok: true, stock: 7 });
+    ev("__stock=()=>({data:null,error:null})");
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(await ev('fetchCloudStock("I1")'))), { missing: true });
+    ev("__stock=()=>({data:null,error:{message:'rls'}})");
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(await ev('fetchCloudStock("I1")'))), { error: true });
+    ev("__stock=()=>{throw new Error('red')}");
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(await ev('fetchCloudStock("I1")'))), { error: true });
+    ev("__stock=()=>({data:{stock:null},error:null})"); // fila sin stock legible: no es "borrado"
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(await ev('fetchCloudStock("I1")'))), { error: true });
+    ev('sb=null');
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(await ev('fetchCloudStock("I1")'))), { error: true });
+  });
+});
+
+test('stock: cloudUpdateFields actualiza solo las columnas, nunca recrea y encola los fallos', async () => {
+  await conNube({}, async () => {
+    ev("items=[{id:'I1',name:'A',stock:3,photo:'data:image/png;base64,AAAA'}]");
+    assert.strictEqual(await ev("cloudUpdateFields('I1',{loc:'01-2',pos:''})"), true);
+    assert.deepStrictEqual(JSON.parse(ev("JSON.stringify(__calls)")), [['update', { loc: '01-2', pos: '' }, 'I1']]);
+    // 0 filas: el artículo ya no existe -> 'missing', sin upsert y sin encolar
+    ev("__calls=[];__upd=()=>({data:[],error:null})");
+    assert.strictEqual(await ev("cloudUpdateFields('I1',{stock:1})"), 'missing');
+    assert.strictEqual(ev("__calls.filter(c=>c[0]==='upsert').length"), 0);
+    assert.strictEqual(ev("dirtyIds.has('I1')"), false);
+    // error de red: false y queda en la cola de pendientes
+    ev("__upd=()=>({data:null,error:{message:'red'}})");
+    assert.strictEqual(await ev("cloudUpdateFields('I1',{stock:1})"), false);
+    assert.strictEqual(ev("dirtyIds.has('I1')"), true);
+    // artículo ya pendiente de subir (alta/cambio local): se sube entero como siempre (sin foto que no toque)
+    ev("__calls=[];__upd=()=>({data:[{id:'I1'}],error:null})");
+    assert.strictEqual(await ev("cloudUpdateFields('I1',{stock:1})"), true);
+    const c = JSON.parse(ev("JSON.stringify(__calls)"));
+    assert.strictEqual(c.length, 1);
+    assert.strictEqual(c[0][0], 'upsert');
+    assert.strictEqual(ev("dirtyIds.has('I1')"), false, 'el volcado entero limpia la cola');
+    // sin nube: cola
+    ev("sb=null;dirtyIds=new Set()");
+    assert.strictEqual(await ev("cloudUpdateFields('I1',{stock:1})"), false);
+    assert.strictEqual(ev("dirtyIds.has('I1')"), true);
+  });
+});
+
+test('stock: si la lectura del stock falla no se cambia nada a ciegas (fail-closed)', async () => {
+  await conNube({}, async () => {
+    ev("items=[{id:'I1',name:'A',stock:99,photo:null}];currentItem=items[0];pendingDelta=-2");
+    ev("__stock=()=>{throw new Error('Tiempo agotado: stock')}");
+    await ev('confirmPending()');
+    assert.strictEqual(ev('items[0].stock'), 99);
+    assert.strictEqual(ev('__movs.length'), 0, 'sin movimiento');
+    assert.strictEqual(ev('__calls.length'), 0, 'sin escritura en la nube');
+    assert.ok(ev('__toasts').some(m => m.includes('No se pudo comprobar el stock')));
+    assert.strictEqual(ev('_stockBusy'), false, 'se libera el bloqueo');
+    // lo mismo con el ajuste a un valor y con la compra
+    ev("adjustValue=50");
+    await ev('applyAdjust()');
+    assert.strictEqual(ev('__movs.length'), 0);
+    assert.strictEqual(ev('__calls.length'), 0);
+  });
+});
+
+test('stock: si otro administrador borró el artículo, restar stock NO lo resucita', async () => {
+  await conNube({}, async () => {
+    ev("items=[{id:'I1',name:'A',stock:9,photo:'data:image/png;base64,AAAA'},{id:'I2',name:'B',stock:1}];currentItem=items[0];pendingDelta=-1");
+    ev("__stock=()=>({data:null,error:null})"); // la fila ya no existe
+    await ev('confirmPending()');
+    assert.strictEqual(ev('__calls.length'), 0, 'ni update ni upsert');
+    assert.strictEqual(ev('__movs.length'), 0);
+    assert.deepStrictEqual(evj('items.map(i=>i.id)'), ['I2'], 'se quita de la lista local');
+    assert.deepStrictEqual(evj('__dbDel'), ['I1']);
+    assert.ok(ev('__closed').includes('modal-detail'), 'se cierra la ficha');
+    assert.strictEqual(ev('currentItem'), null);
+    assert.ok(ev('__toasts').some(m => m.includes('eliminado')));
+    assert.strictEqual(ev("dirtyIds.has('I1')"), false);
+  });
+});
+
+test('stock: restar stock sube SOLO el stock (sin foto ni nombre) y se registra el movimiento', async () => {
+  await conNube({}, async () => {
+    ev("items=[{id:'I1',name:'A',stock:99,precio:2,photo:'data:image/png;base64,AAAA',loc:'01-1'}];currentItem=items[0];pendingDelta=-2");
+    await ev('confirmPending()'); // la nube dice 5 -> 3
+    assert.strictEqual(ev('items[0].stock'), 3);
+    assert.deepStrictEqual(evj('__movs'), [[5, 3, 'Salida', 4, null]], 'anterior de la nube (5), no el local (99)');
+    assert.deepStrictEqual(JSON.parse(ev('JSON.stringify(__calls)')), [['update', { stock: 3 }, 'I1']]);
+    assert.strictEqual(ev("dirtyIds.has('I1')"), false);
+  });
+});
+
+test('stock: si el artículo se borra justo entre la lectura y la subida tampoco se recrea', async () => {
+  await conNube({}, async () => {
+    ev("items=[{id:'I1',name:'A',stock:5}];currentItem=items[0];pendingDelta=1");
+    ev("__upd=()=>({data:[],error:null})"); // el update no afecta a ninguna fila
+    await ev('confirmPending()');
+    assert.strictEqual(ev("__calls.filter(c=>c[0]==='upsert').length"), 0);
+    assert.deepStrictEqual(ev('items.length'), 0);
+    assert.ok(ev('__toasts').some(m => m.includes('eliminado')));
+  });
+});
+
+test('stock: _confirmPending y _applyAdjust restauran el stock si falla el movimiento y avisan si falla lo demás', async () => {
+  await conNube({}, async () => {
+    ev("items=[{id:'I1',name:'A',stock:5}];currentItem=items[0];pendingDelta=-1");
+    ev("registrarMovimiento=async()=>{throw new Error('idb')}");
+    await ev('confirmPending()'); // no debe lanzar
+    assert.strictEqual(ev('items[0].stock'), 5, 'stock restaurado');
+    assert.strictEqual(ev('__calls.length'), 0, 'nada se sube');
+    assert.ok(ev('__toasts').some(m => m.includes('Error al registrar')));
+    ev("adjustValue=2;__toasts=[]");
+    await ev('applyAdjust()');
+    assert.strictEqual(ev('items[0].stock'), 5);
+    assert.strictEqual(ev('__calls.length'), 0);
+    assert.ok(ev('__toasts').some(m => m.includes('Error al registrar')));
+    // el movimiento va bien pero falla guardar en el móvil: aviso y el artículo queda en la cola
+    ev("registrarMovimiento=async(it,a,n,t)=>{__movs.push([a,n,t]);};dbPut=async()=>{throw new Error('cuota')};__toasts=[];__movs=[];pendingDelta=-1");
+    await ev('confirmPending()');
+    assert.strictEqual(ev('__movs.length'), 1);
+    assert.ok(ev('__toasts').some(m => m.includes('no se pudo guardar en el móvil')));
+    // y si falla la subida: aviso y cola
+    ev("dbPut=async()=>{};dirtyIds=new Set();__upd=()=>({data:null,error:{message:'red'}});__toasts=[];pendingDelta=-1");
+    await ev('confirmPending()');
+    assert.strictEqual(ev("dirtyIds.has('I1')"), true);
+    assert.ok(ev('__toasts').some(m => m.includes('no se pudo subir')));
+  });
+});
+
+test('ubicación: colocar/mover solo envía loc y pos, no recrea borrados y avisa del resultado', async () => {
+  await conNube({}, async () => {
+    ev("items=[{id:'I1',name:'A',stock:3,loc:'',pos:''},{id:'I2',name:'B',stock:4,loc:'',pos:''},{id:'I3',name:'C',stock:5,loc:'',pos:''}]");
+    ev("__upd=()=>(__calls[__calls.length-1][2]==='I2'?{data:[],error:null}:(__calls[__calls.length-1][2]==='I3'?{data:null,error:{message:'red'}}:{data:[{id:'x'}],error:null}))");
+    ev("addHereTarget={sid:'01',balda:'2',cid:'g1'};addHereSel.clear();['I1','I2','I3'].forEach(i=>addHereSel.add(i));");
+    await ev('ahPlace()');
+    const llamadas = JSON.parse(ev('JSON.stringify(__calls)'));
+    assert.deepStrictEqual(llamadas.map(c => c[0]), ['update', 'update', 'update']);
+    for (const c of llamadas) assert.deepStrictEqual(c[1], { loc: '01-2', pos: 'g1' });
+    assert.deepStrictEqual(evj('items.map(i=>i.id)'), ['I1', 'I3'], 'I2 (borrado por otra persona) se quita');
+    assert.strictEqual(ev("dirtyIds.has('I3')"), true, 'el fallo de red queda en la cola');
+    const aviso = ev('__toasts').pop();
+    assert.ok(aviso.includes('sin subir') && aviso.includes('ya no existían'), aviso);
+    // mover una celda: solo loc/pos
+    ev("__calls=[];__upd=()=>({data:[{id:'I1'}],error:null});__toasts=[]");
+    await ev("moveItemToCell('I1','02','3','')");
+    assert.deepStrictEqual(JSON.parse(ev('JSON.stringify(__calls)')), [['update', { loc: '02-3', pos: '' }, 'I1']]);
+    assert.strictEqual(ev("__toasts.pop()"), '✓ Movido');
+    // si la fila no existe, tampoco se recrea
+    ev("__calls=[];__upd=()=>({data:[],error:null});__toasts=[]");
+    await ev("moveItemToCell('I1','02','4','')");
+    assert.strictEqual(ev("__calls.filter(c=>c[0]==='upsert').length"), 0);
+    assert.ok(ev('__toasts').pop().includes('eliminado'));
+  });
+});
+
+test('ubicación: renombrar el código de una estantería reubica con update parcial', async () => {
+  await conNube({ dom: { 'es-name': { value: 'Nueva' }, 'es-code': { value: '02' }, 'es-baldas': { value: '3' } } }, async () => {
+    ev("items=[{id:'I1',name:'A',stock:3,loc:'01-1',pos:'g1',photo:'data:image/png;base64,AAAA'},{id:'I2',name:'B',stock:2,loc:'01-2'},{id:'I3',name:'C',stock:1,loc:'05-1'}]");
+    ev("mapDraftShelves=[{id:'01',name:'E1',baldas:3}];editShelfIdx=0;");
+    await ev('saveEditShelf()');
+    const llamadas = JSON.parse(ev('JSON.stringify(__calls)'));
+    assert.deepStrictEqual(llamadas.map(c => c[2]), ['I1', 'I2'], 'solo los de esa estantería');
+    assert.strictEqual(llamadas[0][1].loc, '02-1');
+    assert.strictEqual(llamadas[0][1].pos, 'g1');
+    assert.strictEqual(llamadas[1][1].loc, '02-2');
+    for (const c of llamadas) assert.ok(!('stock' in c[1]) && !('photo' in c[1]) && !('name' in c[1]), 'sin stock, foto ni nombre');
+    assert.strictEqual(ev("__calls.filter(c=>c[0]==='upsert').length"), 0);
+    assert.strictEqual(ev("items.find(i=>i.id==='I1').loc"), '02-1');
+  });
+});
+
+test('QR "colocar aquí": espera a la cadena, revierte si falla lo local y avisa al final', async () => {
+  await conNube({}, async () => {
+    const t = "{sid:'01',balda:'2',cid:''}";
+    ev("items=[{id:'I1',name:'Rodamiento',stock:3,loc:'05-1',pos:'x'}]");
+    // fallo local: se restaura la ubicación y no se sube nada
+    ev("dbPut=async()=>{throw new Error('cuota')}");
+    await ev("placeScannedItem(items[0]," + t + ")");
+    assert.strictEqual(ev('items[0].loc'), '05-1');
+    assert.strictEqual(ev('items[0].pos'), 'x');
+    assert.strictEqual(ev('__calls.length'), 0);
+    assert.ok(ev('__toasts').pop().includes('No se pudo guardar'));
+    assert.ok(!ev('__toasts').some(m => m.includes('colocado aquí')), 'sin toast de éxito');
+    // éxito: update parcial y toast de éxito SOLO al terminar
+    ev("dbPut=async()=>{};__toasts=[]");
+    const p = ev("placeScannedItem(items[0]," + t + ")");
+    assert.strictEqual(ev('__toasts.length'), 0, 'aún no hay aviso de éxito');
+    await p;
+    assert.deepStrictEqual(JSON.parse(ev('JSON.stringify(__calls)')), [['update', { loc: '01-2', pos: '' }, 'I1']]);
+    assert.strictEqual(ev('__toasts.pop()'), '✓ Rodamiento colocado aquí');
+    // la nube falla: se conserva en local, queda en la cola y el aviso lo dice
+    ev("__upd=()=>({data:null,error:{message:'red'}});__toasts=[]");
+    await ev("placeScannedItem(items[0],{sid:'03',balda:'1',cid:''})");
+    assert.strictEqual(ev("dirtyIds.has('I1')"), true);
+    assert.ok(ev('__toasts.pop()').includes('no se pudo subir'));
+    // artículo borrado por otra persona
+    ev("__upd=()=>({data:[],error:null});__toasts=[];dirtyIds=new Set()");
+    await ev("placeScannedItem(items[0],{sid:'04',balda:'1',cid:''})");
+    assert.strictEqual(ev('items.length'), 0);
+    assert.ok(ev('__toasts.pop()').includes('eliminado'));
+  });
+});
+
+test('formulario: stock y precio se validan, vacío/NaN al editar no guarda ni registra salidas', async () => {
+  const form = (o) => Object.assign({ 'f-name': { value: 'Tornillo' }, 'f-cat': { value: 'Tornillería' }, 'f-shelf': { value: '01' }, 'f-balda': { value: '1' }, 'f-stock': { value: '7' }, 'f-min': { value: '2' }, 'f-precio': { value: '' }, 'f-precio-group': { style: { display: '' } } }, o);
+  // parseFormNum: valor canónico del navegador, sin la ambigüedad de los puntos de millar
+  assert.strictEqual(ev("parseFormNum('0.125')"), 0.125);
+  assert.strictEqual(ev("parseFormNum('12')"), 12);
+  assert.strictEqual(ev("parseFormNum('1.234,50')"), 1234.5);
+  assert.ok(Number.isNaN(ev("parseFormNum('abc')")));
+  assert.ok(Number.isNaN(ev("parseFormNum('')")));
+  const intenta = async (campos, edit, extra) => {
+    let r;
+    await conNube({ dom: form(campos) }, async () => {
+      ev("categories=['Tornillería'];selectedExtraCats=new Set();_invCreateIdx=null;pendingPhoto=null;photoRemoved=false;_formStock0=4;_invoiceAfterSave=async()=>{};cloudPut=async it=>{__calls.push(['put',it]);return true;};");
+      ev("items=[{id:'I1',name:'Tornillo',stock:4,precio:1,loc:'01-1'}];editingId=" + (edit ? "'I1'" : 'null'));
+      if (extra) ev(extra);
+      await ev('_saveItem()');
+      r = { calls: JSON.parse(ev('JSON.stringify(__calls)')), movs: ev('__movs.length'), toasts: ev('__toasts.slice()'), closed: ev('__closed.slice()') };
+    });
+    return r;
+  };
+  const cp = ev('cloudPut'); ctx.__cp0 = cp;
+  try {
+    // editar con stock vacío: aviso, no guarda, ninguna "Salida"
+    let r = await intenta({ 'f-stock': { value: '' } }, true);
+    assert.strictEqual(r.calls.length, 0); assert.strictEqual(r.movs, 0);
+    assert.ok(r.toasts.some(m => m.includes('Indica el stock')));
+    // texto no numérico descartado por el navegador (badInput)
+    r = await intenta({ 'f-stock': { value: '', validity: { badInput: true } } }, true);
+    assert.strictEqual(r.calls.length, 0); assert.ok(r.toasts.some(m => m.includes('Stock no válido')));
+    // decimal, negativo
+    for (const v of ['1.5', '-3']) {
+      r = await intenta({ 'f-stock': { value: v } }, true);
+      assert.strictEqual(r.calls.length, 0, v); assert.strictEqual(r.movs, 0, v);
+      assert.ok(r.toasts.some(m => m.includes('Stock no válido')), v);
+    }
+    // precio no válido (antes se guardaba como 0)
+    r = await intenta({ 'f-precio': { value: 'abc' } }, true);
+    assert.strictEqual(r.calls.length, 0); assert.ok(r.toasts.some(m => m.includes('Precio no válido')));
+    r = await intenta({ 'f-precio': { value: '', validity: { badInput: true } } }, true);
+    assert.strictEqual(r.calls.length, 0); assert.ok(r.toasts.some(m => m.includes('Precio no válido')));
+    r = await intenta({ 'f-precio': { value: '-2' } }, true);
+    assert.strictEqual(r.calls.length, 0);
+    // nada inválido se ha guardado: la categoría no se escribió antes de validar
+    // válido al editar: el stock de la nube (5) y el formulario (7): Entrada de 2 y precio 0.125 intacto
+    r = await intenta({ 'f-precio': { value: '0.125' } }, true);
+    assert.strictEqual(r.calls.filter(c => c[0] === 'put').length, 1);
+    const it = r.calls.find(c => c[0] === 'put')[1];
+    assert.strictEqual(it.stock, 7); assert.strictEqual(it.precio, 0.125);
+    assert.strictEqual(r.movs, 1, 'una sola entrada (de 5 en la nube a 7)');
+    // alta nueva con stock vacío: se permite (0), con valor no válido no
+    r = await intenta({ 'f-stock': { value: '' } }, false);
+    assert.strictEqual(r.calls.filter(c => c[0] === 'put')[0][1].stock, 0);
+    assert.strictEqual(r.movs, 0);
+    r = await intenta({ 'f-stock': { value: 'abc' } }, false);
+    assert.strictEqual(r.calls.length, 0);
+    // artículo borrado por otra persona mientras se editaba: no se recrea al guardar
+    r = await intenta({}, true, "__stock=()=>({data:null,error:null})");
+    assert.strictEqual(r.calls.length, 0); assert.ok(r.toasts.some(m => m.includes('eliminado')));
+    assert.ok(r.closed.includes('modal-form'));
+    // no se pudo leer el stock: no se guarda
+    r = await intenta({}, true, "__stock=()=>{throw new Error('t')}");
+    assert.strictEqual(r.calls.length, 0); assert.strictEqual(r.movs, 0);
+    assert.ok(r.toasts.some(m => m.includes('No se pudo comprobar')));
+  } finally {
+    vm.runInContext('cloudPut=__cp0;', ctx); // (conNube ya restaura _invoiceAfterSave y el resto)
+  }
+});
+
+test('compra: cantidad, precio y descuento se validan y solo se sube stock y precio', async () => {
+  const dom = (o) => Object.assign({ 'pur-qty': { value: '3' }, 'pur-price': { value: '1.234' }, 'pur-discount': { value: '' }, 'pur-provider': { value: '' } }, o);
+  const compra = async (campos) => {
+    let r;
+    await conNube({ dom: dom(campos) }, async () => {
+      ev("items=[{id:'I1',name:'A',stock:99,precio:1,photo:'data:image/png;base64,AAAA'}];currentItem=items[0];cloudPriceAdd=async()=>true;addProvider=async()=>{};renderPriceHistory=()=>{};");
+      await ev('applyPurchase()');
+      r = { calls: JSON.parse(ev('JSON.stringify(__calls)')), movs: JSON.parse(ev('JSON.stringify(__movs)')), toasts: ev('__toasts.slice()') };
+    });
+    return r;
+  };
+  const g = ev('({pa:cloudPriceAdd,ap:addProvider,rp:renderPriceHistory})'); ctx.__gc = g;
+  try {
+    let r = await compra({});
+    assert.deepStrictEqual(r.calls, [['update', { stock: 8, precio: 1.234 }, 'I1']], 'stock de la nube (5)+3, precio con 3 decimales respetado, sin foto');
+    assert.strictEqual(r.movs.length, 1);
+    for (const v of [{ 'pur-qty': { value: '' } }, { 'pur-qty': { value: '0' } }, { 'pur-qty': { value: '1.5' } }, { 'pur-price': { value: 'abc' } }, { 'pur-price': { value: '-1' } }, { 'pur-discount': { value: '150' } }, { 'pur-price': { value: '', validity: { badInput: true } } }]) {
+      r = await compra(v);
+      assert.strictEqual(r.calls.length, 0, JSON.stringify(v));
+      assert.strictEqual(r.movs.length, 0, JSON.stringify(v));
+    }
+  } finally {
+    vm.runInContext('cloudPriceAdd=__gc.pa;addProvider=__gc.ap;renderPriceHistory=__gc.rp', ctx);
+  }
+});
+
+test('pushToCloud: sincroniza primero, pide confirmación con el número de artículos y respeta el bloqueo', async () => {
+  await conNube({}, async () => {
+    ev("items=[{id:'I1'},{id:'I2'},{id:'I3'}];__sync=0;__push=0;__ordenOK=false;_stockBusy=false;_syncing=false;");
+    ev("syncFromCloud=async()=>{__sync++;cloudOK=true;};_pushToCloud=async()=>{__push++;__busyDuring=_stockBusy;};");
+    assert.ok(ev('pushToCloud.toString()').includes('ensureOnline'), 'sigue protegida sin conexión');
+    await ev('pushToCloud()');
+    assert.strictEqual(ev('__sync'), 1, 'sincroniza antes');
+    assert.strictEqual(ev('__push'), 0, 'no sube nada hasta confirmar');
+    assert.ok(ev('__opened').includes('modal-confirm'));
+    assert.ok(ev("document.getElementById('confirm-msg').textContent").includes('3 artículos'));
+    // confirmar: sube con el bloqueo puesto y lo libera al acabar
+    await ev("document.getElementById('confirm-ok').onclick()");
+    assert.strictEqual(ev('__push'), 1);
+    assert.strictEqual(ev('__busyDuring'), true);
+    assert.strictEqual(ev('_stockBusy'), false);
+    // si hay un cambio de stock o sincronización en curso no empieza
+    ev("__sync=0;__opened=[];_stockBusy=true");
+    await ev('pushToCloud()');
+    assert.strictEqual(ev('__sync'), 0); assert.strictEqual(ev('__opened.length'), 0);
+    ev("_stockBusy=false;_syncing=true");
+    await ev('pushToCloud()');
+    assert.strictEqual(ev('__sync'), 0); assert.strictEqual(ev('__opened.length'), 0);
+    ev("_syncing=false");
+    // si la sincronización previa falla, no se ofrece subir
+    ev("syncFromCloud=async()=>{cloudOK=false;}");
+    await ev('pushToCloud()');
+    assert.strictEqual(ev('__opened.length'), 0);
+    assert.ok(ev('__toasts.pop()').includes('No se pudo sincronizar'));
+    // cancelar (no pulsar confirmar) no sube nada
+    assert.strictEqual(ev('__push'), 1);
+  });
 });
