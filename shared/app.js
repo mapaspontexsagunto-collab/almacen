@@ -1875,7 +1875,9 @@ function aiErrorMsg(err){
 // Llama a la función de IA (Edge Function de Supabase) con reintento automático.
 // Reintenta ante errores típicos de saturación o límite (429/500/502/503/504/529).
 // Devuelve {data} si va bien, o lanza un error con {status} para mostrar un mensaje claro.
-async function aiBuscar(b64, prompt){
+// purpose: 'factura' (solo administradores: la función lo comprueba) o 'foto' (por defecto: ficha y búsqueda por foto).
+async function aiBuscar(b64, prompt, purpose){
+  const proposito=purpose==='factura'?'factura':'foto';
   // OJO: NO se reintenta el 429 (límite). Reintentar un límite solo gasta más cupo
   // y provoca más 429. Solo reintentamos errores de servidor transitorios.
   const reintentables=[500,502,503,504];
@@ -1887,7 +1889,7 @@ async function aiBuscar(b64, prompt){
       resp=await fetch(EDGE_URL,{
         method:'POST',
         headers:{'Content-Type':'application/json','Authorization':'Bearer '+await authBearer(),'apikey':SUPABASE_KEY},
-        body:JSON.stringify({image:b64, prompt}),
+        body:JSON.stringify({image:b64, prompt, purpose:proposito}),
         signal:_ctl.signal
       });
       clearTimeout(_t);
@@ -5246,7 +5248,7 @@ async function handleInvoiceFile(e){
     for(let k=0;k<paginas.length;k++){
       estado('Analizando factura… (página '+(k+1)+' de '+paginas.length+')');
       let data;
-      try{data=await aiBuscar(paginas[k],_invPrompt());}
+      try{data=await aiBuscar(paginas[k],_invPrompt(),'factura');}
       catch(err){
         if(k>0&&todas.length){fallo=err;_invPagesBad+=paginas.length-k;break;} // se conservan las páginas ya leídas
         throw err;

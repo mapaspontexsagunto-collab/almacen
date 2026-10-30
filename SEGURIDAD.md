@@ -29,6 +29,12 @@ Un corte momentáneo (cambio de repetidor wifi) se reintenta una vez antes de av
 - `supabase_admin_roles.sql`: permisos por rol. **Es la política vigente.**
 - `supabase_usuario_movimientos.sql`: columna `usuario` rellenada por la base de datos.
 - `supabase_movimientos_unicos.sql`: evita movimientos duplicados.
+- `supabase_endurecimiento.sql` (ejecutar **después** de los tres anteriores; es idempotente y no borra ni modifica filas): corrige el disparador de `usuario`
+  (solo escribe el correo si el rol es `authenticated`; con SQL Editor o restauraciones se respeta el valor), crea índices del histórico de precios,
+  quita permisos que sobran (anon sin ninguno en las tablas del almacén; sin TRUNCATE/TRIGGER/REFERENCES para authenticated; EXECUTE de las funciones
+  auxiliares solo para authenticated), cierra `app_auth`, añade límites de tamaño NOT VALID (config < 200000 bytes, foto < 1000000, notas < 2000 caracteres)
+  y termina con una tabla de comprobación (OK / REVISAR). Si se vuelve a ejecutar `supabase_usuario_movimientos.sql`, repetir este fichero, porque
+  reinstala la versión antigua del disparador.
 - `supabase_setup.sql`: heredado, no hace falta.
 - Se eliminó `supabase_seguridad.sql`: volver a ejecutarlo habría deshecho los permisos de administrador.
 
@@ -97,8 +103,16 @@ Un corte momentáneo (cambio de repetidor wifi) se reintenta una vez antes de av
 - En los textos de los artículos (nombre, referencia, marca, máquina, notas) se eliminan los caracteres < y > al leerlos.
 - Los PDF se leen con pdf.js 3.11.174 fijado: el script lleva control de integridad (SRI), el worker se verifica por huella antes de usarlo,
   y se abre con `isEvalSupported:false` (mitigación de CVE-2024-4367). Máximo 15 MB y 3 páginas por documento.
-- La función `bright-worker` no está en este repositorio: hoy basta una sesión de usuario (no solo administradores) y debe limitar
-  el tamaño de la imagen. Si se quiere que solo la usen administradores, hay que comprobar el rol dentro de la función.
+- La función `bright-worker` tiene ahora su código de referencia en `supabase/functions/bright-worker/index.ts` (con README de despliegue), pero
+  **la que responde de verdad vive en el panel de Supabase y hay que desplegarla a mano** (`supabase functions deploy bright-worker`); hasta entonces
+  sigue valiendo la versión antigua. La versión del repositorio verifica el token contra Supabase Auth, exige `app_metadata.role = 'admin'` cuando la app
+  manda `purpose: 'factura'` (la app lo manda desde el escáner de facturas y manda `'foto'` en el resto), limita el tamaño (imagen 2,5 M de caracteres,
+  prompt 4000), fija el máximo de salida, rechaza campos desconocidos y limita el uso por usuario y hora **en memoria, de mejor esfuerzo** (cada instancia
+  lleva su cuenta y se reinicia al reciclarse; no frena a un atacante decidido). `purpose` lo envía el cliente: un usuario normal que lo omita no obtiene
+  el rol de administrador, pero sí podría mandar un prompt propio con una foto; por eso a quien no es administrador se le aplica una instrucción fija
+  (mejor esfuerzo) que limita la función a fotos de componentes. La función acepta el prompt que manda el cliente (necesario para las facturas).
+  Fotos de artículos y consultas de búsqueda también salen hacia Gemini y Brave. Antes de esta versión bastaba una sesión de usuario y debía limitar
+  el tamaño de la imagen; el rol de administrador no se comprobaba dentro de la función.
 - La seguridad real de los datos es RLS y el rol de administrador en Supabase, no el candado de la pantalla: cualquier usuario con
   sesión podría escribir artículos y movimientos llamando a la API; la base de datos reserva a los administradores el histórico de precios
   y, además, borrar artículos y modificar o borrar movimientos.

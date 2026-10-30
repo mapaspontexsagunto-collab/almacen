@@ -2697,3 +2697,205 @@ test('avisos L11: la duración crece con el texto (2,5 s + 40 ms por carácter, 
   } finally { ctx.document.getElementById = getAntes; ctx.setTimeout = stAntes; }
   assert.deepStrictEqual(esperas, [2500 + 100 * 40, 2500]);
 });
+
+// ===== SQL y funcion de IA (bloque R6) =====
+test('R6 cliente: aiBuscar envia purpose (factura solo si se pide; el resto es foto)', async () => {
+  const fetchAntes = ctx.fetch, abortAntes = ctx.AbortController;
+  ctx.AbortController = AbortController; // aiBuscar lo usa para el tiempo maximo
+  const peticiones = [];
+  ctx.fetch = async (url, op) => { peticiones.push({ url, op, body: JSON.parse(op.body) }); return { ok: true, json: async () => ({ text: 'x' }) }; };
+  try {
+    await ev('aiBuscar("QUJD", "p", "factura")');
+    await ev('aiBuscar("QUJD", "p")');
+    await ev('aiBuscar("QUJD", "p", "foto")');
+    await ev('aiBuscar("QUJD", "p", "admin")'); // un valor raro nunca se convierte en factura
+    assert.deepStrictEqual(peticiones.map(p => p.body.purpose), ['factura', 'foto', 'foto', 'foto']);
+    assert.strictEqual(peticiones[0].body.image, 'QUJD');
+    assert.strictEqual(peticiones[0].body.prompt, 'p');
+    assert.deepStrictEqual(Object.keys(peticiones[0].body).sort(), ['image', 'prompt', 'purpose']);
+    assert.ok(String(peticiones[0].url).endsWith('/functions/v1/bright-worker'));
+  } finally { ctx.fetch = fetchAntes; if (abortAntes === undefined) delete ctx.AbortController; else ctx.AbortController = abortAntes; }
+  // El escaner de facturas pasa 'factura' (todas las demas llamadas son de foto)
+  assert.ok(/aiBuscar\(paginas\[k\],\s*_invPrompt\(\),\s*'factura'\)/.test(src), 'el escaner de facturas pide purpose factura');
+  assert.strictEqual((src.match(/aiBuscar\(/g) || []).length, 4, 'definicion + 3 llamadas');
+});
+
+test('R6 SQL: supabase_endurecimiento.sql es idempotente y no destruye datos', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '..', 'supabase_endurecimiento.sql'), 'utf8');
+  const codigo = sql.split(/\r?\n/).filter(l => !/^\s*--/.test(l)).join('\n');
+  assert.ok(!/\bDELETE\s+FROM\b|\bDROP\s+(TABLE|SCHEMA|POLICY|COLUMN|CONSTRAINT)\b|\bTRUNCATE\s+(TABLE\s+)?[a-z_."]+\s*;|\bVALIDATE\s+CONSTRAINT\b|\bSET\s+NOT\s+NULL\b/i.test(codigo), 'sin sentencias destructivas');
+  assert.ok(!/\bUPDATE\s+public\./i.test(codigo) && !/\bINSERT\s+INTO\b/i.test(codigo), 'no modifica filas');
+  // todos los CREATE INDEX llevan IF NOT EXISTS
+  const indices = codigo.match(/CREATE\s+(UNIQUE\s+)?INDEX\b[^']*/gi) || [];
+  assert.ok(indices.length >= 2 && indices.every(i => /IF\s+NOT\s+EXISTS/i.test(i)), 'indices con IF NOT EXISTS');
+  assert.ok(!/CONCURRENTLY/i.test(codigo), 'sin CONCURRENTLY (no vale dentro de una transaccion)');
+  // trigger corregido (DB-M2)
+  assert.ok(/ELSIF\s*\(auth\.jwt\(\)\s*->>\s*'role'\)\s*=\s*'authenticated'\s*THEN\s*NEW\.usuario\s*:=\s*auth\.jwt\(\)\s*->>\s*'email'/.test(codigo));
+  assert.ok(/IF\s+TG_OP\s*=\s*'UPDATE'\s+THEN\s+NEW\.usuario\s*:=\s*OLD\.usuario/.test(codigo));
+  // indices (DB-LOW3), permisos (DB-LOW4), RLS (DB-M1), limites (SEC-M1)
+  assert.ok(/\(item_id, ts DESC\)/.test(codigo) && /\(ts DESC\)/.test(codigo));
+  assert.ok(/REVOKE ALL ON TABLE public\.%I FROM anon/.test(codigo));
+  assert.ok(/REVOKE TRUNCATE, TRIGGER, REFERENCES ON TABLE public\.%I FROM authenticated/.test(codigo));
+  assert.ok(/REVOKE EXECUTE ON FUNCTION public\.set_movimiento_usuario\(\) FROM PUBLIC, anon, authenticated/.test(codigo));
+  assert.ok(/REVOKE EXECUTE ON FUNCTION public\.es_admin\(\) FROM PUBLIC, anon/.test(codigo) && /GRANT EXECUTE ON FUNCTION public\.es_admin\(\) TO authenticated/.test(codigo));
+  assert.ok(/pg_tables WHERE schemaname = 'public' AND NOT rowsecurity/.test(sql));
+  assert.ok(/CHECK \(%s\) NOT VALID/.test(codigo));
+  assert.ok(/pg_column_size\(value\) < 200000/.test(codigo) && /length\(photo\) < 1000000/.test(codigo) && /length\(notes\) < 2000/.test(codigo));
+  // nunca se quitan a authenticated los permisos que la app necesita
+  assert.ok(!/REVOKE\s+(ALL|SELECT|INSERT|UPDATE|DELETE)[^;]*FROM[^;]*authenticated/i.test(codigo.replace(/REVOKE ALL ON TABLE public\.%I FROM anon, authenticated/g, '')), 'no quita SELECT/INSERT/UPDATE/DELETE a authenticated en las tablas del almacen');
+  assert.ok(/^SELECT orden, comprobacion/m.test(sql), 'termina con la tabla de comprobacion');
+});
+
+test('R6 funcion bright-worker: sin claves en el codigo, exige admin para factura y CORS limitado', () => {
+  const dir = path.join(__dirname, '..', 'supabase', 'functions', 'bright-worker');
+  const f = fs.readFileSync(path.join(dir, 'index.ts'), 'utf8');
+  const readme = fs.readFileSync(path.join(dir, 'README.md'), 'utf8');
+  for (const [nombre, s] of [['index.ts', f], ['README.md', readme]]) {
+    assert.ok(!/AIza[0-9A-Za-z_-]{20,}|sk-[A-Za-z0-9_-]{20,}|BSA[0-9A-Za-z_-]{20,}|eyJ[0-9A-Za-z_-]{20,}|sb_(publishable|secret)_[0-9A-Za-z_-]{10,}/.test(s), 'sin claves en ' + nombre);
+  }
+  assert.ok(/Deno\.env\.get\(/.test(f) && /entorno\('GEMINI_API_KEY'\)/.test(f) && /entorno\('BRAVE_API_KEY'\)/.test(f));
+  assert.ok(/purpose === 'factura' && !usuario\.admin/.test(f) && /app_metadata\?\.role === 'admin'/.test(f), 'factura exige app_metadata.role admin');
+  assert.ok(/\/auth\/v1\/user/.test(f), 'verifica el token con Supabase Auth');
+  assert.ok(/mapaspontexsagunto-collab\.github\.io/.test(f) && !/Allow-Origin['"]\s*:\s*['"]\*/.test(f), 'CORS restringido al origen de la app');
+  assert.ok(/MAX_IMAGEN = 2_500_000/.test(f) && /MAX_PROMPT = 4000/.test(f) && /maxOutputTokens/.test(f));
+  assert.ok(/supabase functions deploy bright-worker/.test(readme));
+  for (const n of ['GEMINI_API_KEY', 'BRAVE_API_KEY']) assert.ok(readme.includes(n), n);
+});
+
+// Comportamiento real de la funcion (Deno simulado): solo si Node sabe ejecutar TypeScript
+const SECRETO_G = 'G-secreto-de-prueba-111', SECRETO_B = 'B-secreto-de-prueba-222';
+async function conFuncion(fn, env) {
+  const { pathToFileURL } = require('url');
+  const entorno = Object.assign({ SUPABASE_URL: 'https://x.supabase.co', SUPABASE_ANON_KEY: 'anon-de-prueba', GEMINI_API_KEY: SECRETO_G, BRAVE_API_KEY: SECRETO_B }, env || {});
+  const denoAntes = globalThis.Deno, fetchAntes = globalThis.fetch;
+  globalThis.Deno = { env: { get: n => entorno[n] }, serve() {} };
+  const llamadas = [];
+  const usuarios = {
+    ['n'.repeat(30)]: { id: 'normal-' + Math.random(), app_metadata: {} },
+    ['a'.repeat(30)]: { id: 'admin-' + Math.random(), app_metadata: { role: 'admin' } },
+    ['o'.repeat(30)]: { id: 'anon-' + Math.random(), app_metadata: {}, is_anonymous: true },
+  };
+  const upstream = { gemini: () => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'hola' }, { text: ' mundo' }] } }] }), { status: 200 }), brave: null };
+  upstream.brave = () => new Response(JSON.stringify({ web: { results: [{ title: '<b>Ficha</b>', url: 'https://a.com/x', description: 'd <i>x</i>', meta_url: { hostname: 'a.com' } }, { title: 'mala', url: 'javascript:alert(1)' }] } }), { status: 200 });
+  globalThis.fetch = async (u, op) => {
+    u = String(u); llamadas.push({ u, op });
+    if (u.endsWith('/auth/v1/user')) { const u2 = usuarios[String(op.headers.Authorization).slice(7)]; return u2 ? new Response(JSON.stringify(u2), { status: 200 }) : new Response('{}', { status: 401 }); }
+    if (u.includes('generativelanguage')) return upstream.gemini();
+    if (u.includes('api.search.brave.com')) return upstream.brave();
+    throw new Error('llamada inesperada ' + u);
+  };
+  try {
+    const { handler } = await import(pathToFileURL(path.join(__dirname, '..', 'supabase', 'functions', 'bright-worker', 'index.ts')).href);
+    const ORIGEN = 'https://mapaspontexsagunto-collab.github.io';
+    const pedir = (body, tok, cab) => handler(new Request('https://f.supabase.co/functions/v1/bright-worker', { method: 'POST', headers: Object.assign({ 'content-type': 'application/json', origin: ORIGEN }, tok === null ? {} : { authorization: 'Bearer ' + (tok || 'n'.repeat(30)) }, cab || {}), body: typeof body === 'string' ? body : JSON.stringify(body) }));
+    await fn({ handler, pedir, llamadas, upstream, ORIGEN, ext: n => llamadas.filter(l => l.u.includes(n)) });
+  } finally { globalThis.Deno = denoAntes; globalThis.fetch = fetchAntes; if (denoAntes === undefined) delete globalThis.Deno; }
+}
+const sinTs = !process.features.typescript;
+const IMG = '/9j/4AAQSkZJRg==';
+
+test('R6 funcion: autenticacion, CORS y validacion de la peticion', { skip: sinTs && 'Node sin soporte de TypeScript' }, async () => {
+  await conFuncion(async ({ handler, pedir, llamadas, ORIGEN }) => {
+    // sin token, token invalido, sesion anonima: 401 y no se llama a Gemini
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p' }, null)).status, 401);
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p' }, 'x'.repeat(30))).status, 401);
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p' }, 'o'.repeat(30))).status, 401);
+    assert.strictEqual(llamadas.filter(l => l.u.includes('generativelanguage')).length, 0);
+    // origen no permitido: 403 sin cabecera Allow-Origin; origen de la app: eco del origen
+    const mal = await pedir({ image: IMG, prompt: 'p' }, null, { origin: 'https://evil.example' });
+    assert.strictEqual(mal.status, 403);
+    assert.strictEqual(mal.headers.get('access-control-allow-origin'), null);
+    const bien = await pedir({ image: IMG, prompt: 'p' });
+    assert.strictEqual(bien.status, 200);
+    assert.strictEqual(bien.headers.get('access-control-allow-origin'), ORIGEN);
+    assert.deepStrictEqual(await bien.json(), { text: 'hola mundo' });
+    // preflight
+    const pre = await handler(new Request('https://f/x', { method: 'OPTIONS', headers: { origin: ORIGEN } }));
+    assert.strictEqual(pre.status, 204);
+    assert.strictEqual(pre.headers.get('access-control-allow-origin'), ORIGEN);
+    assert.strictEqual((await handler(new Request('https://f/x', { method: 'GET', headers: { origin: ORIGEN } }))).status, 405);
+    // validacion: campos desconocidos, tipos, purpose raro, imagen demasiado grande, formato, JSON roto
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p', extra: 1 })).status, 400);
+    assert.strictEqual((await pedir({ image: 5, prompt: 'p' })).status, 400);
+    assert.strictEqual((await pedir({ image: IMG })).status, 400);
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p', purpose: 'otra' })).status, 400);
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p', purpose: ['factura'] })).status, 400);
+    assert.strictEqual((await pedir({ image: '/9j/' + 'A'.repeat(2_500_000), prompt: 'p' })).status, 413);
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p'.repeat(4001) })).status, 413);
+    assert.strictEqual((await pedir({ image: 'AAAA', prompt: 'p' })).status, 415);
+    assert.strictEqual((await pedir('{no es json')).status, 400);
+    assert.strictEqual((await pedir('[1]')).status, 400);
+  });
+});
+
+test('R6 funcion: purpose factura exige administrador; maxOutputTokens fijo; la clave solo va en cabecera', { skip: sinTs && 'Node sin soporte de TypeScript' }, async () => {
+  await conFuncion(async ({ pedir, ext }) => {
+    const r403 = await pedir({ image: IMG, prompt: 'p', purpose: 'factura' }); // usuario normal
+    assert.strictEqual(r403.status, 403);
+    assert.deepStrictEqual(await r403.json(), { error: 'forbidden' });
+    assert.strictEqual(ext('generativelanguage').length, 0, 'no se llama a Gemini');
+    const ok = await pedir({ image: IMG, prompt: 'p', purpose: 'factura' }, 'a'.repeat(30)); // administrador
+    assert.strictEqual(ok.status, 200);
+    const gem = ext('generativelanguage');
+    assert.strictEqual(gem.length, 1);
+    const cuerpo = JSON.parse(gem[0].op.body);
+    assert.strictEqual(cuerpo.generationConfig.maxOutputTokens, 8192);
+    assert.ok(/solo datos/.test(cuerpo.systemInstruction.parts[0].text), 'instruccion fija contra instrucciones dentro del documento');
+    assert.strictEqual(gem[0].op.headers['x-goog-api-key'], SECRETO_G);
+    assert.ok(!gem[0].u.includes(SECRETO_G), 'la clave no va en la URL');
+    // foto de un usuario normal: instruccion restringida y tope de salida menor
+    await pedir({ image: IMG, prompt: 'p', purpose: 'foto' });
+    const foto = JSON.parse(ext('generativelanguage')[1].op.body);
+    assert.strictEqual(foto.generationConfig.maxOutputTokens, 4096);
+    assert.ok(/factura/.test(foto.systemInstruction.parts[0].text), 'instruccion restringida a componentes');
+    assert.strictEqual(foto.contents[0].parts[1].inline_data.mime_type, 'image/jpeg');
+    // un administrador sin purpose (app antigua en cache) no queda restringido
+    await pedir({ image: IMG, prompt: 'p' }, 'a'.repeat(30));
+    const antigua = JSON.parse(ext('generativelanguage')[2].op.body);
+    assert.ok(!/responde únicamente \{\}/.test(antigua.systemInstruction.parts[0].text));
+  });
+});
+
+test('R6 funcion: limite por usuario (429 con Retry-After), busqueda web saneada y errores sin filtrar secretos', { skip: sinTs && 'Node sin soporte de TypeScript' }, async () => {
+  await conFuncion(async ({ pedir, ext, upstream }) => {
+    // limite de IA: con 2 por hora, la tercera da 429
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p' })).status, 200);
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p' })).status, 200);
+    const lim = await pedir({ image: IMG, prompt: 'p' });
+    assert.strictEqual(lim.status, 429);
+    assert.ok(Number(lim.headers.get('retry-after')) >= 1);
+    assert.strictEqual(ext('generativelanguage').length, 2, 'la peticion limitada no llega a Gemini');
+    // otro usuario no se ve afectado; la busqueda web tiene su propio contador
+    assert.strictEqual((await pedir({ image: IMG, prompt: 'p' }, 'a'.repeat(30))).status, 200);
+    const web = await pedir({ mode: 'web', query: 'siemens 3RT2015', num: 2 });
+    assert.strictEqual(web.status, 200);
+    assert.deepStrictEqual(await web.json(), { results: [{ title: 'Ficha', link: 'https://a.com/x', display: 'a.com', snippet: 'd x' }] });
+    const brave = ext('api.search.brave.com')[0];
+    assert.strictEqual(brave.op.headers['X-Subscription-Token'], SECRETO_B);
+    assert.ok(!brave.u.includes(SECRETO_B) && brave.u.includes('count=2') && brave.u.includes('q=siemens'));
+    // validacion web
+    assert.strictEqual((await pedir({ mode: 'web', query: '' })).status, 400);
+    assert.strictEqual((await pedir({ mode: 'web', query: 'x'.repeat(201) })).status, 400);
+    assert.strictEqual((await pedir({ mode: 'web', query: 'x', num: 99 })).status, 400);
+    assert.strictEqual((await pedir({ mode: 'web', query: 'x', foo: 1 })).status, 400);
+    assert.strictEqual((await pedir({ mode: 'otro', query: 'x' })).status, 400);
+    // fallo del proveedor: 502 generico, sin cuerpo ni claves del proveedor
+    upstream.brave = () => new Response('detalle interno con ' + SECRETO_B, { status: 500 });
+    const e = await pedir({ mode: 'web', query: 'x' }, 'a'.repeat(30));
+    const t = await e.text();
+    assert.strictEqual(e.status, 502);
+    assert.ok(!t.includes(SECRETO_B) && !t.includes('detalle'));
+    upstream.brave = () => new Response('{}', { status: 429 });
+    assert.strictEqual((await pedir({ mode: 'web', query: 'x' }, 'a'.repeat(30))).status, 429);
+    upstream.gemini = () => { throw Object.assign(new Error('boom ' + SECRETO_G), { name: 'TimeoutError' }); };
+    const g = await pedir({ image: IMG, prompt: 'p' }, 'a'.repeat(30));
+    assert.strictEqual(g.status, 504);
+    assert.ok(!(await g.text()).includes(SECRETO_G));
+  }, { RATE_LIMIT_AI_PER_HOUR: '2' });
+});
+
+test('R6: SEGURIDAD.md documenta el SQL de endurecimiento y el despliegue de bright-worker', () => {
+  const s = fs.readFileSync(path.join(__dirname, '..', 'SEGURIDAD.md'), 'utf8');
+  assert.ok(s.includes('supabase_endurecimiento.sql') && s.includes('supabase functions deploy bright-worker'));
+  assert.ok(/mejor esfuerzo/.test(s) && /purpose/.test(s));
+});
