@@ -4561,20 +4561,26 @@ async function assignInvoiceLine(idx,itemId){
   const line=_invLines[idx];
   const it=items.find(x=>x.id===itemId);
   if(!it){toast('⚠ Artículo no encontrado');return;}
-  // Registrar entrada con datos de la factura
-  const qty=line.qty??1;
-  const price=line.price??null;
-  const coste=price!=null?+(Math.abs(qty)*price).toFixed(2):null;
+  const qty=+(line.qty??1);
+  const price=line.price!=null?+(+line.price).toFixed(4):null;
   const prevStock=it.stock??0;
+  const prevPrecio=it.precio??null;
   const newStock=prevStock+qty;
+  const coste=price!=null?+(qty*price).toFixed(2):null;
   it.stock=newStock;
+  if(price!=null)it.precio=price;
   try{
     await registrarMovimiento(it,prevStock,newStock,'Compra',coste,_invProvider||null);
     await dbPut(it);await cloudPut(it,{photo:false});
-    if(price!=null){await cloudPriceAdd({itemId:it.id,price:+price,ts:Date.now(),provider:_invProvider||''});}
+    if(price!=null){
+      const now=new Date();
+      const entry={item_id:it.id,price,previous_price:prevPrecio,qty,provider:_invProvider||null,fecha:now.toLocaleDateString('es-ES'),ts:now.getTime()};
+      await cloudPriceAdd(entry);
+    }
+    if(_invProvider)await addProvider(_invProvider);
     items=await dbGetAll();
   }catch(e){
-    it.stock=prevStock;toast('⚠ Error al registrar: '+(e.message||e));return;
+    it.stock=prevStock;it.precio=prevPrecio;toast('⚠ Error al registrar: '+(e.message||e));return;
   }
   _invLines[idx].status='assigned';
   _invLines[idx].itemId=itemId;
@@ -4611,7 +4617,12 @@ async function _invoiceAfterSave(savedId){
   if(it){
     const qty=_invLines[idx].qty??1;
     const price=_invLines[idx].price??null;
-    if(price!=null){await cloudPriceAdd({itemId:it.id,price:+price,ts:Date.now(),provider:''});}
+    if(price!=null){
+      const now=new Date();
+      const entry={item_id:it.id,price:+(+price).toFixed(4),previous_price:null,qty:+(qty??1),provider:_invProvider||null,fecha:now.toLocaleDateString('es-ES'),ts:now.getTime()};
+      await cloudPriceAdd(entry);
+      if(_invProvider)await addProvider(_invProvider);
+    }
     // stock was already set via saveItem, just show toast
     toast(`✓ ${it.name} creado y asignado a la factura`);
   }
