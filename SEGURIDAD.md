@@ -72,11 +72,14 @@ Un corte momentáneo (cambio de repetidor wifi) se reintenta una vez antes de av
 - Historial e informes: el Excel de movimientos, los costes del mes y su PDF leen la nube de forma estricta; si no se puede leer
   el historial se aborta con "No se pudo leer el historial de la nube" (nunca salen informes parciales). Inicio sí muestra lo local
   pero con un aviso visible. Solo se consulta la ventana necesaria (6 meses en Inicio, el mes en Costes, el rango pedido al exportar).
-- Borrar una línea del historial solo borra la copia local si la nube la borró (o ya no existía); un fallo de red lo avisa y no toca nada.
-  El proveedor de un movimiento solo se descarta si la tabla no tiene la columna `provider`; cualquier otro fallo lo deja pendiente.
+- Borrar una línea del historial solo borra la copia local si la nube la borró (o ya no existía, comprobado con una lectura que sí devuelve filas:
+  con la sesión caducada la base de datos devuelve 0 filas sin error y eso NO cuenta como borrado; igual al borrar artículos); un fallo de red lo avisa y no toca nada.
+  El proveedor de un movimiento solo se descarta si la tabla no tiene la columna `provider` (se avisa en el toast final de la compra, una vez por sesión,
+  y en el aviso de Inicio); cualquier otro fallo lo deja pendiente.
 - Mover entre almacenes lee el stock actual de la nube antes de copiar y solo quita el artículo de aquí si la copia se subió y el borrado
   en la nube tuvo éxito; si no, avisa "queda en los dos almacenes" (el borrado pendiente se reintenta al sincronizar). "Borrar todo" y
-  "mover varios" informan de cuántos salieron bien y fallaron.
+  "mover varios" informan de cuántos salieron bien y fallaron. "Borrar todo" exige conexión, no corre a la vez que otra operación, se para en el
+  primer fallo y no deja borrados en cola (el resto sigue en el inventario; nada se borra solo al sincronizar sin una nueva confirmación).
 - Cerrar sesión intenta primero subir lo pendiente (movimientos, artículos, borrados, columnas y configuración), esperando a que acabe
   una sincronización en curso. Si con conexión no se consigue, o no hay conexión, pide confirmación explícita; si se acepta, lo pendiente
   NO se borra y se subirá más adelante a nombre de quien entre después en este móvil (la limpieza de la base local al salir no está hecha).

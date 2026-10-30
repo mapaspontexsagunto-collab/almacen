@@ -419,6 +419,8 @@ async function cloudDelete(id){
       const chk=await withTimeout(sb.from(WH.tblItems).select('id').eq('id',id).maybeSingle(),15000,'borrar');
       if(chk.error)throw chk.error;
       if(chk.data){const d=new Error('borrado denegado');d.denied=true;throw d;}
+      // Con la sesión caducada la RLS también oculta la fila (0 filas sin error): "ya no existía" solo si la sesión puede leer
+      if(!(await cloudPuedeLeer()))throw new Error('sin acceso de lectura a la nube');
     }
     cloudOK=true;clearDirtyDel(id);return true;
   }catch(e){
@@ -611,7 +613,7 @@ async function cloudMovPut(mov){
         const{error:error2}=await withTimeout(sb.from(WH.tblMov).insert(m2),15000,'movimiento');
         if(error2)throw error2;
         console.warn('cloudMovPut: se subió sin el campo "provider" (revisa que la columna exista en Supabase)');
-        if(!_provAviso){_provAviso=true;try{toast('⚠ Falta la columna "provider" en la tabla de movimientos de Supabase: los movimientos se guardan sin proveedor');}catch(e3){}}
+        _provFalta=true; // NO se avisa con toast aquí (el toast de éxito del llamante lo taparía): lo añade sufijoHist() al toast final
         return true;
       }catch(e2){
         if(e2&&e2.code==='23505')return true; // ya existía en la nube
@@ -621,7 +623,8 @@ async function cloudMovPut(mov){
     return false;
   }
 }
-let _provAviso=false; // el aviso de columna "provider" ausente se da una sola vez por sesión
+let _provFalta=false; // la tabla de movimientos de la nube no tiene la columna "provider" (se detectó en esta sesión)
+let _provAviso=false; // el aviso de columna "provider" ausente en un toast se da una sola vez por sesión
 // Lee los movimientos de la nube. rango={desde,hasta} (ms, opcional) limita la consulta a esa ventana (el resto de la
 // tabla no se descarga). strict=true devuelve null si falla; si no, []. Paginación ordenada por el par único (ts,itemId).
 async function cloudMovGetAll(strict,rango){
@@ -647,6 +650,8 @@ async function cloudMovDelete(ts,itemId){
       const chk=await withTimeout(sb.from(WH.tblMov).select('ts').eq('ts',ts).eq('itemId',itemId).limit(1),15000,'borrar movimiento');
       if(chk.error)throw chk.error;
       if(chk.data&&chk.data.length)return false; // la línea sigue ahí: borrado denegado
+      // Con la sesión caducada la RLS también oculta la fila (0 filas sin error): "ya no existía" solo si la sesión puede leer
+      if(!(await cloudPuedeLeer()))return null;
     }
     return true;
   }catch(e){
@@ -661,7 +666,12 @@ async function cloudPriceAdd(entry){
   catch(e){console.warn('cloudPriceAdd error',e);return false;}
 }
 // Sufijo de aviso para los toasts de éxito cuando el historial de precios o el proveedor no se pudieron guardar
-function sufijoHist(precioOk,provOk){return (precioOk===false?' · ⚠ historial de precios no guardado':'')+(provOk===false?' · ⚠ proveedor no guardado en la nube':'');}
+// Si falta la columna "provider" en la nube se añade UNA vez por sesión (no si ya se avisa de que el proveedor no se guardó)
+function sufijoHist(precioOk,provOk){
+  let s=(precioOk===false?' · ⚠ historial de precios no guardado':'')+(provOk===false?' · ⚠ proveedor no guardado en la nube':'');
+  if(_provFalta&&!_provAviso&&provOk!==false){_provAviso=true;s+=' · ⚠ proveedor no guardado (falta la columna provider en la nube)';}
+  return s;
+}
 async function cloudPriceGetForItem(itemId,limit){
   if(!sb||!WH?.tblPrice)return[];
   try{
@@ -1076,7 +1086,7 @@ async function _pushToCloud(){
 function refreshVisiblePage(){
   try{renderAll();}catch(e){console.warn('refreshVisiblePage',e);}
   if(document.getElementById('page-inicio')?.classList.contains('active'))Promise.resolve(renderHomeMovements(true)).catch(()=>{});
-  if(document.getElementById('page-costes')?.classList.contains('active'))Promise.resolve(renderCostes()).catch(()=>{});
+  if(document.getElementById('page-costes')?.classList.contains('active'))Promise.resolve(renderCostes(true)).catch(()=>{});
 }
 function renderAll(){updateStats();renderCats();renderItems();renderMap();renderCatManage();renderShelfSummary();}
 
@@ -1170,6 +1180,9 @@ async function checkPendingMovs(){
   const pend=all.filter(m=>m.synced!==true);
   if(pend.length){
     w.textContent='⚠️ '+pend.length+' movimiento(s) de este dispositivo no se han podido subir a la nube. Revisa la conexión o que la tabla de movimientos en Supabase tenga todas las columnas (incluida "provider").';
+    w.style.display='';
+  }else if(_provFalta){ // los movimientos suben, pero sin proveedor: se recuerda mientras dure la sesión
+    w.textContent='⚠️ Falta la columna "provider" en la tabla de movimientos de Supabase: los movimientos se guardan sin proveedor.';
     w.style.display='';
   }else{
     w.style.display='none';
@@ -1536,8 +1549,13 @@ async function syncAndRenderCostes(){
   if(warn)warn.style.display=(sb&&cloudOK)?'none':'';
   await renderCostes();
 }
-async function renderCostes(){
+let _costSeq=0; // número de la última actualización de Costes (una lenta de otro mes no pisa a una más reciente)
+// silent=true: refresco automático (tras guardar stock): si falla solo se muestra el aviso de la página, sin toast
+// (el toast taparía el "pendiente de subir" del toast de éxito). Cambiar de mes o abrir la página sí avisan con toast.
+async function renderCostes(silent){
+  const seq=++_costSeq;
   const calc=await calcCostesMes();
+  if(seq!==_costSeq)return; // otra actualización más reciente ya está en marcha: esta se descarta (no toca la pantalla ni lastCostesCalc)
   const aviso=document.getElementById('cos-hist-warn');
   if(calc===null){ // no se pudo leer el historial de la nube: no se muestran cifras parciales
     lastCostesCalc=null;
@@ -1546,7 +1564,7 @@ async function renderCostes(){
     const msg='<div class="mov-empty">No se pudo leer el historial de la nube.</div>';
     document.getElementById('cos-entradas').innerHTML=msg;
     document.getElementById('cos-salidas').innerHTML=msg;
-    toast('⚠ No se pudo leer el historial de la nube');
+    if(!silent)toast('⚠ No se pudo leer el historial de la nube');
     return;
   }
   if(aviso)aviso.style.display='none';
@@ -1568,7 +1586,7 @@ async function exportCostesPDF(){
   const {m,y}=costesRango();
   // Se recalcula si no hay datos o son de otro mes; si no se puede leer la nube, renderCostes ya avisó y no se genera el PDF
   if(!lastCostesCalc||lastCostesCalc.m!==m||lastCostesCalc.y!==y){await renderCostes();}
-  if(!lastCostesCalc)return;
+  if(!lastCostesCalc||lastCostesCalc.m!==m||lastCostesCalc.y!==y)return; // sin datos del mes elegido (o la lectura quedó obsoleta): no se genera un PDF de otro mes
   const {valIn,valOut,valCompras,porCat}=lastCostesCalc;
   const btn=document.getElementById('btn-costes-pdf');
   if(btn){btn.disabled=true;btn.style.opacity='0.6';}
@@ -3613,7 +3631,8 @@ function exportMovimientos(){
   // Prerellenar: del día 1 del mes actual a hoy
   const now=new Date();
   const first=new Date(now.getFullYear(),now.getMonth(),1);
-  const fmt=d=>d.toISOString().slice(0,10);
+  const p2=n=>String(n).padStart(2,'0');
+  const fmt=d=>d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate()); // componentes locales: toISOString() (UTC) daba el último día del mes anterior en UTC+1/+2
   const fEl=document.getElementById('mov-from');
   const tEl=document.getElementById('mov-to');
   if(fEl)fEl.value=fmt(first);
@@ -3689,24 +3708,33 @@ function askWipe(){
 }
 // Borra el inventario: primero en la nube, artículo a artículo, y en el móvil SOLO lo que de verdad se borró allí.
 // Si todo se borró también se vacían las categorías; si algo falló se conservan (los artículos que quedan las usan).
+// Exige conexión (sin conexión solo se consulta) y mantiene _stockBusy: no se sincroniza ni se cambia stock mientras borra.
+// Se para en el PRIMER fallo (con una conexión colgada cada artículo costaría 15 s) y ese artículo NO queda en la cola de
+// borrados (dirtyDel): si quedara, la siguiente sincronización borraría todo sin una nueva confirmación.
 async function wipeAll(){
-  const ids=items.map(i=>i.id);
-  const borrados=[];
-  let fallo=0;
-  for(const id of ids){
-    if(await cloudDelete(id))borrados.push(id);else fallo++;
-  }
-  for(const id of borrados){try{await dbDelete(id);}catch(e){console.warn('wipeAll dbDelete',e);}}
-  let _okc=true;
-  if(!fallo){
-    categories=[];
-    try{await cfgPut('categories',[]);}catch(e){console.warn('wipeAll cfgPut',e);}
-    _okc=await cloudCfgPut('categories',[]);
-  }
-  try{items=await dbGetAll();}catch(e){console.warn('wipeAll dbGetAll',e);items=items.filter(i=>!borrados.includes(i.id));}
-  renderAll();
-  if(fallo)toast('⚠ Borrados '+borrados.length+' de '+ids.length+'. Fallaron '+fallo+' (siguen en el inventario'+(ids.some(id=>dirtyDel.has(id))?'; se reintentará el borrado al sincronizar':'')+')');
-  else toast('Inventario borrado'+(_okc?'':' · ⚠ las categorías solo se vaciaron en este dispositivo (se subirá al sincronizar)'));
+  if(_stockBusy){toast('Procesando…');return;}
+  _stockBusy=true;
+  try{
+    if(!(await ensureOnline('borrar el inventario')))return;
+    const ids=items.map(i=>i.id);
+    const borrados=[];
+    let fallo=false;
+    for(const id of ids){
+      if(await cloudDelete(id)){borrados.push(id);continue;}
+      fallo=true;clearDirtyDel(id);break; // cloudDelete lo había encolado: se quita, sigue en el inventario
+    }
+    for(const id of borrados){try{await dbDelete(id);}catch(e){console.warn('wipeAll dbDelete',e);}}
+    let _okc=true;
+    if(!fallo){
+      categories=[];
+      try{await cfgPut('categories',[]);}catch(e){console.warn('wipeAll cfgPut',e);}
+      _okc=await cloudCfgPut('categories',[]);
+    }
+    try{items=await dbGetAll();}catch(e){console.warn('wipeAll dbGetAll',e);items=items.filter(i=>!borrados.includes(i.id));}
+    renderAll();
+    if(fallo)toast('⚠ No se pudo borrar todo: '+borrados.length+' borrados, el resto sigue en el inventario');
+    else toast('Inventario borrado'+(_okc?'':' · ⚠ las categorías solo se vaciaron en este dispositivo (se subirá al sincronizar)'));
+  }finally{_stockBusy=false;}
 }
 
 async function loadDemo(){
