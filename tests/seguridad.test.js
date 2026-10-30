@@ -3108,6 +3108,237 @@ test('R4 SF-B: flushDirty espera a que se guarde la cola', () => {
   assert.ok(/await persistDirty\(\)/.test(ev('flushDirty.toString()')));
 });
 
+// ===== Revisión ECC (bloque R5): recarga del SW, escáner, cierre de sesión, aviso de sesión y de arranque =====
+test('R5 M-A: controllerchange no recarga con el editor del mapa abierto (se perdería el borrador) y recarga una vez al cerrarlo', async () => {
+  const locAntes = ctx.location, stAntes = ctx.setTimeout;
+  ctx.__rl = 0; ctx.__t10 = [];
+  ctx.location = { reload() { ctx.__rl++; } };
+  ctx.document.querySelector = () => null;
+  ctx.setTimeout = (f, ms, ...a) => { if (ms === 10000) { ctx.__t10.push(f); return 1; } return stAntes(f, ms, ...a); };
+  try {
+    await conNube({}, async () => {
+      ev('_swRecarga=false;_swEspera=null;_stockBusy=false;_syncing=false;_saliendo=false');
+      ev("mapEditing=true;mapDraftShelves=[{id:'01'}];mapDraftAisles=[]");
+      ev('_swControllerChange()');
+      assert.strictEqual(ctx.__rl, 0, 'con el editor del mapa abierto no recarga');
+      assert.strictEqual(ctx.__t10.length, 1, 'se programa el reintento');
+      ctx.__t10.shift()();
+      assert.strictEqual(ctx.__rl, 0, 'sigue editando: sigue sin recargar');
+      assert.strictEqual(ev('mapDraftShelves.length'), 1, 'el borrador sigue intacto');
+      ev('mapEditing=false;mapDraftShelves=null;mapDraftAisles=null');
+      ctx.__t10.shift()();
+      assert.strictEqual(ctx.__rl, 1, 'al cerrar el editor, el reintento recarga una sola vez');
+    });
+  } finally {
+    ctx.location = locAntes; ctx.setTimeout = stAntes; delete ctx.document.querySelector;
+    ev('_swRecarga=false;_swEspera=null;mapEditing=false;mapDraftShelves=null;mapDraftAisles=null');
+  }
+});
+
+test('R5 M-B: en la primera instalación del SW (sin controlador previo) no se escucha controllerchange (no hay recarga); con controlador previo sí', () => {
+  const ini = src.indexOf("if('serviceWorker' in navigator){"), fin = src.indexOf('// ===== GRÁFICO DASHBOARD');
+  assert.ok(ini > 0 && fin > ini, 'se localiza el bloque real de registro del SW');
+  const bloque = src.slice(ini, fin);
+  const navAntes = ctx.navigator, teniaAEL = Object.prototype.hasOwnProperty.call(ctx.window, 'addEventListener'), aelAntes = ctx.window.addEventListener;
+  const ejecutar = controller => {
+    const r = { oyentes: [], registros: [], cargas: [] };
+    ctx.navigator = { serviceWorker: { controller, addEventListener: (t, f) => r.oyentes.push([t, f]), register: u => { r.registros.push(u); return Promise.resolve(); } } };
+    ctx.window.addEventListener = (t, f) => r.cargas.push([t, f]);
+    vm.runInContext(bloque, ctx);
+    return r;
+  };
+  try {
+    let r = ejecutar(null);
+    assert.deepStrictEqual(r.oyentes, [], 'primera instalación: no se escucha controllerchange');
+    r.cargas.find(c => c[0] === 'load')[1]();
+    assert.deepStrictEqual(r.registros, ['sw.js'], 'el registro del SW sí ocurre');
+    r = ejecutar({});
+    assert.strictEqual(r.oyentes.length, 1);
+    assert.strictEqual(r.oyentes[0][0], 'controllerchange');
+    assert.strictEqual(r.oyentes[0][1], ev('_swControllerChange'));
+  } finally {
+    ctx.navigator = navAntes;
+    if (teniaAEL) ctx.window.addEventListener = aelAntes; else delete ctx.window.addEventListener;
+  }
+});
+
+// Escáner simulado: la clase se pone en ctx.Html5Qrcode, el modal de escaneo cuenta como abierto y openDetail se registra en __od
+async function conEscaner(Clase, fn) {
+  const guardada = ctx.Html5Qrcode;
+  ctx.__detalleReal = ev('openDetail');
+  ctx.__od = []; ctx.__n = 0; ctx.__log = [];
+  ctx.Html5Qrcode = Clase;
+  try {
+    await conNube({ dom: { 'modal-scan': { classList: { add() {}, remove() {}, contains: () => true } } } }, async () => {
+      ev('closeModal=__cmReal;openModal=__omReal');
+      ev("openDetail=id=>{__od.push(id)};items=[{id:'I1',name:'Tornillo'}];scanPurpose=null");
+      await fn();
+    });
+  } finally {
+    ctx.Html5Qrcode = guardada;
+    ev('openDetail=__detalleReal;scanner=null;scanPurpose=null;_scannerStop=Promise.resolve()');
+  }
+}
+
+test('R5 M-B: una lectura tardía del QR, con el escáner ya cerrado, se ignora (con el escáner abierto sí se procesa)', async () => {
+  const cbs = [];
+  await conEscaner(class {
+    constructor() { ctx.__n++; }
+    start(cfg, cfg2, ok) { cbs.push(ok); return Promise.resolve(); }
+    stop() { return Promise.resolve(); }
+    clear() {}
+  }, async () => {
+    await ev('openScanner()');
+    cbs[0]('ALMACEN:I1');
+    await ev('_scannerStop');
+    assert.deepStrictEqual(evj('__od'), ['I1'], 'con el escáner abierto la lectura abre el artículo');
+    assert.strictEqual(ev('scanner'), null);
+    await ev('openScanner()');
+    ev("closeModal('modal-scan')");
+    await ev('_scannerStop');
+    cbs[1]('ALMACEN:I1'); // la cámara aún entregaba un fotograma
+    assert.deepStrictEqual(evj('__od'), ['I1'], 'la lectura tardía no abre nada');
+    assert.ok(!ev('__toasts').some(m => m.includes('no encontrado')), 'ni avisa de nada');
+  });
+});
+
+test('R5 M-B: si la cámara no se puede abrir (start rechaza) avisa y se puede volver a abrir el escáner', async () => {
+  const rec = recogerAvisos();
+  try {
+    await conEscaner(class {
+      constructor() { this.n = ++ctx.__n; ctx.__log.push('new' + this.n); }
+      start() { ctx.__log.push('start' + this.n); return Promise.reject(new Error('NotAllowedError')); }
+      stop() { ctx.__log.push('stop' + this.n); return Promise.resolve(); }
+      clear() { ctx.__log.push('clear' + this.n); }
+    }, async () => {
+      await ev('openScanner()');
+      await ev('scanner._arranque'); // no rechaza: el error se captura y se avisa
+      assert.ok(ev('__toasts').some(m => m.includes('No se pudo abrir la cámara')));
+      assert.ok(rec.avisos.some(a => a.includes('NotAllowedError')), 'el motivo queda en consola');
+      ev("closeModal('modal-scan')");
+      await ev('_scannerStop');
+      assert.deepStrictEqual(evj('__log'), ['new1', 'start1', 'stop1', 'clear1']);
+      assert.strictEqual(ev('scanner'), null);
+      await ev('openScanner()');
+      assert.ok(evj('__log').includes('new2'), 'el siguiente escaneo abre otra instancia');
+    });
+  } finally { rec.restaurar(); }
+});
+
+test('R5 M-B: si stop() rechaza al cerrar, el visor se limpia igualmente, queda constancia y el siguiente escaneo funciona', async () => {
+  const rec = recogerAvisos();
+  try {
+    await conEscaner(class {
+      constructor() { this.n = ++ctx.__n; ctx.__log.push('new' + this.n); }
+      start() { return Promise.resolve(); }
+      stop() { ctx.__log.push('stop' + this.n); return Promise.reject(new Error('stop fallido')); }
+      clear() { ctx.__log.push('clear' + this.n); }
+    }, async () => {
+      await ev('openScanner()');
+      ev("closeModal('modal-scan')");
+      await ev('_scannerStop'); // la promesa no rechaza
+      assert.deepStrictEqual(evj('__log'), ['new1', 'stop1', 'clear1']);
+      assert.ok(rec.avisos.some(a => a.includes('detenerScanner') && a.includes('stop fallido')));
+      assert.strictEqual(ev('scanner'), null);
+      await ev('openScanner()');
+      assert.ok(evj('__log').includes('new2'));
+    });
+  } finally { rec.restaurar(); }
+});
+
+test('R5 L-A: un permiso de cámara sin contestar no bloquea el siguiente escaneo, y esa cámara se apaga cuando por fin arranca', async () => {
+  const rec = recogerAvisos(), res = [];
+  try {
+    await conEscaner(class {
+      constructor() { this.n = ++ctx.__n; ctx.__log.push('new' + this.n); }
+      start() { ctx.__log.push('start' + this.n); return new Promise(r => res.push(r)); } // el aviso de permiso sigue sin contestarse
+      stop() { ctx.__log.push('stop' + this.n); return Promise.resolve(); }
+      clear() { ctx.__log.push('clear' + this.n); }
+    }, async () => {
+      ev('SCANNER_ARRANQUE_MS=50');
+      try {
+        await ev('openScanner()');
+        ev("closeModal('modal-scan')");
+        const t0 = Date.now();
+        const r = await Promise.race([ev('openScanner()').then(() => 'abierto'), esperar(1500).then(() => 'bloqueado')]);
+        assert.strictEqual(r, 'abierto', 'el siguiente escaneo no se queda esperando para siempre');
+        assert.ok(Date.now() - t0 < 1000);
+        assert.ok(evj('__log').includes('new2') && evj('__log').includes('clear1'));
+        assert.ok(!evj('__log').includes('stop1'), 'aún no se puede parar: no ha arrancado');
+        res[0](); // el usuario acepta el permiso tarde: la primera cámara no puede quedar encendida
+        await esperar(20);
+        assert.ok(evj('__log').includes('stop1'), 'la cámara tardía se apaga');
+      } finally { ev('SCANNER_ARRANQUE_MS=3000'); }
+    });
+  } finally { rec.restaurar(); }
+});
+
+test('R5 M-B: una segunda pulsación de "Salir" mientras se suben los pendientes se ignora (se sube y se cierra la sesión una sola vez)', async () => {
+  await conSalida(async () => {
+    const p1 = ev('logout()'), p2 = ev('logout()');
+    await Promise.all([p1, p2]);
+    assert.deepStrictEqual(evj('__orden'), ['push', 'flush', 'cfg', 'signOut']);
+    assert.strictEqual(ctx.__rl, 1, 'una sola recarga');
+    assert.ok(!evj('__opened').includes('modal-confirm'), 'sin confirmación espuria');
+    assert.strictEqual(ev('_saliendo'), false);
+  });
+});
+
+test('R5 L-B: un límite de peticiones (429), un fallo del servidor o la red al renovar el token NO se anuncian como "sesión caducada"', async () => {
+  await conR2({}, async () => {
+    ev(WH_R4);
+    try {
+      const sbCon = err => "sb={auth:{getSession:async()=>({data:{session:null},error:" + err + "})},from:()=>({select:()=>({limit:async()=>({data:[],error:null})})})}";
+      const caso = async err => { ev(sbCon(err)); const ok = await ev('pingCloud()'); assert.strictEqual(ok, false); return ev('_pingSinSesion'); };
+      // la sesión de verdad ya no vale
+      assert.strictEqual(await caso('null'), true, 'sin sesión y sin error');
+      assert.strictEqual(await caso("{name:'AuthApiError',status:400,code:'refresh_token_not_found',message:'x'}"), true);
+      assert.strictEqual(await caso("{name:'AuthApiError',status:400,code:'invalid_grant',message:'x'}"), true);
+      assert.strictEqual(await caso("{name:'AuthApiError',status:403,code:'session_not_found',message:'x'}"), true);
+      assert.strictEqual(await caso("{name:'AuthApiError',status:400,message:'Invalid Refresh Token'}"), true);
+      // no es la sesión: límite de peticiones, servidor caído o red
+      assert.strictEqual(await caso("{name:'AuthApiError',status:429,code:'over_request_rate_limit',message:'x'}"), false, '429');
+      assert.strictEqual(await caso("{name:'AuthApiError',status:503,message:'x'}"), false, '5xx');
+      assert.strictEqual(await caso("{name:'AuthRetryableFetchError',status:0,message:'fetch'}"), false, 'red');
+      // lo que ve el usuario con un 429: el aviso de falta de conexión, no el de sesión caducada
+      ev(sbCon("{name:'AuthApiError',status:429,code:'over_request_rate_limit',message:'x'}"));
+      ev('__toasts=[]');
+      assert.strictEqual(await ev("ensureOnline('guardar')"), false);
+      assert.ok(!ev('__toasts').some(m => m.includes('sesión ha caducado')), ev('__toasts').join('|'));
+      assert.ok(ev('__toasts').some(m => m.includes('Sin conexión')));
+    } finally { quitarWH(); }
+  });
+});
+
+test('R5 L-C: el aviso de arranque solo habla de "los datos de este móvil" si falla openDB; otros fallos dicen que la app no ha podido arrancar', async () => {
+  const idbAntes = ctx.indexedDB, ini = ev('init');
+  ctx.__ini = ini;
+  const rec = recogerAvisos();
+  try {
+    await conNube({ dom: { 'init-error': { style: { display: 'none' } }, 'init-error-msg': { textContent: '' } } }, async () => {
+      // un fallo que no viene de la base local
+      ev("init=async()=>{throw new Error('Fallo de red al cargar')}");
+      await ev('arrancar()');
+      let m = ctx.__dom['init-error-msg'].textContent;
+      assert.ok(m.includes('Fallo de red al cargar'), m);
+      assert.ok(m.includes('La aplicación no ha podido arrancar'), m);
+      assert.ok(!m.includes('datos de este móvil'), m);
+      // un fallo de openDB (init real)
+      ev('init=__ini');
+      ctx.indexedDB = { open: () => { throw new Error('modo privado'); } };
+      await ev('arrancar()');
+      m = ctx.__dom['init-error-msg'].textContent;
+      assert.ok(m.includes('modo privado') && m.includes('datos de este móvil') && m.includes('modo privado del navegador'), m);
+      assert.ok(!m.includes('La aplicación no ha podido arrancar'), m);
+      // el siguiente fallo, ya sin relación con la base, vuelve al texto genérico
+      ev("init=async()=>{throw new Error('otro fallo')}");
+      await ev('arrancar()');
+      m = ctx.__dom['init-error-msg'].textContent;
+      assert.ok(m.includes('otro fallo') && m.includes('La aplicación no ha podido arrancar') && !m.includes('datos de este móvil'), m);
+    });
+  } finally { ctx.indexedDB = idbAntes; ev('init=__ini'); rec.restaurar(); }
+});
+
 // Service workers: se cargan en un contexto aislado con caches/fetch simulados
 function cargarSW(carpeta, { fallan = [], putFalla = false, fetchFalla = false } = {}) {
   const codigo = fs.readFileSync(path.join(__dirname, '..', carpeta, 'sw.js'), 'utf8');

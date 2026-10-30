@@ -84,11 +84,11 @@ Un corte momentáneo (cambio de repetidor wifi) se reintenta una vez antes de av
   una sincronización en curso. Si con conexión no se consigue, o no hay conexión, pide confirmación explícita; si se acepta, lo pendiente
   NO se borra y se subirá más adelante a nombre de quien entre después en este móvil (la limpieza de la base local al salir no está hecha).
 - Con Supabase Auth, la comprobación de conexión de antes de cada cambio exige también una sesión viva: con la sesión caducada la app
-  avisa "La sesión ha caducado" y funciona solo para consultar. Si la nube devuelve 0 artículos y hay artículos locales, se conservan
+  avisa "La sesión ha caducado" y funciona solo para consultar (solo si el servidor rechaza la sesión; un límite de peticiones, un fallo del servidor o la red se avisan como "Sin conexión"). Si la nube devuelve 0 artículos y hay artículos locales, se conservan
   los locales y el indicador queda en "Sin conexión" (no puede saberse si está de verdad vacía o es una sesión caducada).
-- Al desplegar una versión nueva, la app abierta se recarga sola cuando no hay ventanas abiertas ni cambios de stock o sincronización
+- Al desplegar una versión nueva, la app abierta se recarga sola cuando no hay ventanas abiertas, ni editor del mapa abierto (borrador sin guardar), ni cambios de stock o sincronización
   en curso. El service worker falla la instalación si no puede guardar `index.html` o `app.js`, y busca solo en la caché de su almacén.
-- Si la base de datos del móvil no se puede abrir (modo privado, bloqueada, sin espacio) aparece un aviso rojo con el botón Reintentar.
+- Si la base de datos del móvil no se puede abrir (modo privado, bloqueada, sin espacio) aparece un aviso rojo con el botón Reintentar (si el fallo es otro, el aviso dice que la aplicación no ha podido arrancar). Un aviso de permiso de cámara sin contestar no bloquea el siguiente escaneo (espera máxima de 3 s).
 
 ## Escáner de facturas (IA)
 - Solo para administradores (modo administrador activado) y con conexión. Al bloquear el modo administrador se cierra y se olvida la factura.

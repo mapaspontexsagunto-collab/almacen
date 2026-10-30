@@ -729,19 +729,21 @@ function renderProviderList(){
 }
 
 // Arranque con aviso visible: si falla (modo privado, base bloqueada, sin espacio...) la app no se queda en blanco sin explicación
+let _falloBD=false; // true si el último fallo de arranque vino de abrir la base local (openDB)
 function arrancar(){
+  _falloBD=false;
   const b=document.getElementById('init-error');
   if(b)b.style.display='none';
   return init().catch(e=>{
     console.error('init',e);
     const m=document.getElementById('init-error-msg');
-    if(m)m.textContent='('+String((e&&(e.message||e.name))||e||'error desconocido').slice(0,160)+') Los datos de este móvil no se han podido abrir. Si usas el modo privado del navegador, sal de él.';
+    if(m)m.textContent='('+String((e&&(e.message||e.name))||e||'error desconocido').slice(0,160)+') '+(_falloBD?'Los datos de este móvil no se han podido abrir. Si usas el modo privado del navegador, sal de él.':'La aplicación no ha podido arrancar. Si sigue igual, ciérrala del todo y vuelve a abrirla.');
     if(b)b.style.display='';
     try{toast('⚠ No se pudo iniciar la app: toca Reintentar');}catch(_){}
   });
 }
 async function init(){
-  await openDB();
+  try{await openDB();}catch(e){_falloBD=true;throw e;}
   initSupabase();
   // Cargar primero lo local (rápido), luego intentar la nube
   categories=strArr(await cfgGet('categories'));
@@ -2922,10 +2924,21 @@ async function placeScannedItem(found,t){
 // Para la cámara y limpia el visor (idempotente). Si el arranque aún no ha terminado, espera a que termine para poder pararla
 // (si no, la cámara quedaría encendida). Devuelve una promesa que no rechaza; openScanner la espera antes de crear otro escáner.
 let _scannerStop=Promise.resolve();
+// Si el aviso de permiso de la cámara sigue sin contestarse, start() no termina nunca: se espera como máximo este tiempo para no bloquear el siguiente escaneo
+let SCANNER_ARRANQUE_MS=3000;
+function _esperarArranque(s){
+  let t;
+  const limite=new Promise(r=>{t=setTimeout(()=>r(false),SCANNER_ARRANQUE_MS);});
+  return Promise.race([Promise.resolve(s._arranque).then(()=>true,()=>true),limite]).then(listo=>{
+    clearTimeout(t);
+    if(!listo){console.warn('detenerScanner: la cámara no ha arrancado (¿permiso sin contestar?); se parará cuando arranque');Promise.resolve(s._arranque).then(()=>s.stop()).catch(()=>{});}
+    return listo;
+  });
+}
 function detenerScanner(){
   const s=scanner;scanner=null;
   if(!s)return _scannerStop;
-  _scannerStop=_scannerStop.then(()=>Promise.resolve(s._arranque).catch(()=>{})).then(()=>s.stop()).catch(e=>console.warn('detenerScanner',e)).then(()=>{try{s.clear();}catch(e){console.warn('detenerScanner (limpiar)',e);}});
+  _scannerStop=_scannerStop.then(()=>_esperarArranque(s)).then(listo=>listo?s.stop():null).catch(e=>console.warn('detenerScanner',e)).then(()=>{try{s.clear();}catch(e){console.warn('detenerScanner (limpiar)',e);}});
   return _scannerStop;
 }
 async function openScanner(){
@@ -5015,8 +5028,8 @@ async function pingCloud(ms){
   try{
     if(useSbAuth()){
       const{data,error:eSes}=await withTimeout(sb.auth.getSession(),ms||6000,'sesion');
-      // sin sesión: si el motivo es de red (no pudo renovar el token) es "sin conexión", no "sesión caducada"
-      if(!(data&&data.session)){_pingSinSesion=!(eSes&&motivoErrorLogin(eSes)==='red');return false;}
+      // sin sesión: solo es "caducada" si no hay error o el servidor la rechaza de verdad; 429, 5xx o red son "sin conexión"
+      if(!(data&&data.session)){_pingSinSesion=!eSes||eSes.status===400||eSes.code==='invalid_grant'||eSes.code==='refresh_token_not_found'||eSes.code==='session_not_found';return false;}
     }
     const{error}=await withTimeout(sb.from(WH.tblCfg).select('key').limit(1),ms||6000,'ping');
     return !error;
@@ -5079,7 +5092,7 @@ if(typeof window!=='undefined'&&window.addEventListener){
 // si ahora no toca, se reintenta cada 10 s (sin acumular temporizadores). Nunca recarga la primera vez que se instala el SW.
 let _swRecarga=false,_swEspera=null;
 function _swPuedeRecargar(){
-  return !document.querySelector('.modal-bg.open')&&!_stockBusy&&!_syncing&&!_saliendo;
+  return !document.querySelector('.modal-bg.open')&&!_stockBusy&&!_syncing&&!_saliendo&&!mapEditing; // editando el mapa hay un borrador sin guardar que la recarga perdería
 }
 function _swControllerChange(){
   if(_swRecarga)return;
