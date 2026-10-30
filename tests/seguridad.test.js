@@ -1718,7 +1718,7 @@ const norm = x => JSON.parse(JSON.stringify(x));
 const QB = String.raw`
   __mqs=[];__movRes=()=>({data:[],error:null});
   __qb=t=>{const st={t,ops:[]};const b={};
-    ['select','gte','lte','order','range','eq','limit','delete','insert'].forEach(k=>{b[k]=(...a)=>{st.ops.push([k,...a]);return b;};});
+    ['select','gte','lte','order','range','eq','limit','delete','insert','maybeSingle'].forEach(k=>{b[k]=(...a)=>{st.ops.push([k,...a]);return b;};});
     b.then=(res,rej)=>{__mqs.push(st);return Promise.resolve().then(()=>__movRes(st)).then(res,rej);};
     return b;};
   sb={from:t=>__qb(t)};`;
@@ -1796,8 +1796,15 @@ test('borrado de línea: cloudMovDelete devuelve true / false (denegado) / null 
     const esDelete = "st.ops.some(o=>o[0]==='delete')";
     ev("__movRes=st=>(" + esDelete + "?{data:[{ts:5}],error:null}:{data:[],error:null})");
     assert.strictEqual(await borrar(), true, 'borrada de verdad');
+    // L1: el borrado filtra por ts Y por itemId (sin el filtro de itemId borraría las líneas de TODOS los artículos de ese instante)
+    const qDel = norm(ev("__mqs.find(q=>q.ops.some(o=>o[0]==='delete'))"));
+    assert.strictEqual(qDel.t, 'movements');
+    assert.deepStrictEqual(qDel.ops.filter(o => o[0] === 'eq'), [['eq', 'ts', 5], ['eq', 'itemId', 'A']], 'ambos filtros presentes');
+    assert.ok(qDel.ops.findIndex(o => o[0] === 'delete') < qDel.ops.findIndex(o => o[0] === 'eq'), 'los filtros se aplican sobre el delete');
     ev("__movRes=()=>({data:[],error:null})");
-    assert.strictEqual(await borrar(), true, '0 filas y la comprobación no la encuentra: ya no existía');
+    assert.strictEqual(await borrar(), null, '0 filas sin poder confirmar el acceso (sesión caducada: la RLS también oculta la fila): no se da por borrada (M1)');
+    ev("__movRes=st=>(st.t==='config'?{data:[{key:'k'}],error:null}:{data:[],error:null})");
+    assert.strictEqual(await borrar(), true, '0 filas, la comprobación no la encuentra y la sesión sí puede leer: ya no existía');
     ev("__movRes=st=>(" + esDelete + "?{data:[],error:null}:{data:[{ts:5}],error:null})");
     assert.strictEqual(await borrar(), false, '0 filas pero sigue ahí: denegado por RLS');
     ev("__movRes=()=>({data:null,error:{code:'42501',message:'rls'}})");
@@ -1812,6 +1819,53 @@ test('borrado de línea: cloudMovDelete devuelve true / false (denegado) / null 
     assert.strictEqual(await borrar(), null, 'tiempo agotado');
     ev('withTimeout=__o2.withTimeout;sb=null');
     assert.strictEqual(await borrar(), null, 'sin conexión no se puede borrar en la nube');
+  });
+});
+
+test('borrado de línea (M1): con la sesión caducada confirmDeleteMov no borra la copia local ni dice "Línea borrada"', async () => {
+  await conR2({}, async () => {
+    await conStubs(['movDeleteLocal', 'renderHomeMovements', 'renderCostes', 'pendingMovDel'], async () => {
+      ev(QB);
+      // la RLS solo concede 'authenticated': DELETE, comprobación y prueba de lectura devuelven 0 filas SIN error
+      ev("__movRes=()=>({data:[],error:null});__locales=[];movDeleteLocal=async(ts,id)=>{__locales.push([ts,id]);};renderHomeMovements=async()=>{};renderCostes=async()=>{};pendingMovDel={ts:5,itemId:'A'};__toasts=[]");
+      await ev('confirmDeleteMov()');
+      assert.deepStrictEqual(norm(ev('__locales')), [], 'la fila local se conserva');
+      assert.ok(!ev('__toasts').some(m => m.includes('Línea borrada')), ev('__toasts.join("|")'));
+      assert.ok(ev('__toasts').some(m => m.includes('No se pudo borrar')), ev('__toasts.join("|")'));
+      // con la sesión válida (la prueba de lectura devuelve filas) y la línea ya inexistente sí se da por borrada
+      ev("__movRes=st=>(st.t==='config'?{data:[{key:'k'}],error:null}:{data:[],error:null});pendingMovDel={ts:5,itemId:'A'};__toasts=[]");
+      await ev('confirmDeleteMov()');
+      assert.deepStrictEqual(norm(ev('__locales')), [[5, 'A']]);
+      assert.strictEqual(ev('__toasts.pop()'), 'Línea borrada');
+    });
+  });
+});
+
+test('borrado de artículo (M1): cloudDelete con 0 filas solo cuenta como "ya no existía" si la sesión puede leer; si no, falla y queda en cola', async () => {
+  await conR2({}, async () => {
+    ev(QB);
+    ev("dirtyDel=new Set();cloudOK=true");
+    const esDelete = "st.ops.some(o=>o[0]==='delete')";
+    // borrado normal
+    ev("__movRes=st=>(" + esDelete + "?{data:[{id:'I1'}],error:null}:{data:null,error:null})");
+    assert.strictEqual(await ev("cloudDelete('I1')"), true);
+    const qDel = norm(ev("__mqs.find(q=>q.ops.some(o=>o[0]==='delete'))"));
+    assert.strictEqual(qDel.t, 'items');
+    assert.deepStrictEqual(qDel.ops.filter(o => o[0] === 'eq'), [['eq', 'id', 'I1']]);
+    // 0 filas, la comprobación no la encuentra y la sesión puede leer: ya no existía
+    ev("__movRes=st=>(st.t==='config'?{data:[{key:'k'}],error:null}:(" + esDelete + "?{data:[],error:null}:{data:null,error:null}))");
+    assert.strictEqual(await ev("cloudDelete('I1')"), true);
+    assert.strictEqual(ev("dirtyDel.has('I1')"), false);
+    // 0 filas pero la sesión no puede leer (caducada: la RLS oculta todo): NO es "ya no existía", queda pendiente
+    ev("__movRes=st=>(st.t==='config'?{data:[],error:null}:(" + esDelete + "?{data:[],error:null}:{data:null,error:null}))");
+    assert.strictEqual(await ev("cloudDelete('I1')"), false);
+    assert.strictEqual(ev("dirtyDel.has('I1')"), true, 'se encola como cualquier otro fallo de red');
+    assert.strictEqual(ev('cloudOK'), false);
+    // 0 filas pero la fila sigue ahí: denegado (no se encola)
+    ev("dirtyDel=new Set();__movRes=st=>(" + esDelete + "?{data:[],error:null}:{data:{id:'I1'},error:null});__toasts=[]");
+    assert.strictEqual(await ev("cloudDelete('I1')"), false);
+    assert.strictEqual(ev("dirtyDel.has('I1')"), false);
+    assert.ok(ev('__toasts').some(m => m.includes('Sin permisos')));
   });
 });
 
@@ -1842,11 +1896,11 @@ test('borrado de línea: confirmDeleteMov no toca la fila local si falla la red 
   });
 });
 
-test('movimientos: cloudMovPut reintenta sin provider SOLO si falta la columna (PGRST204 / 42703) y avisa una vez (SF-A16)', async () => {
+test('movimientos: cloudMovPut reintenta sin provider SOLO si falta la columna (PGRST204 / 42703) y deja la marca del aviso (SF-A16, M2)', async () => {
   await conR2({}, async () => {
-    await conStubs(['_provAviso'], async () => {
+    await conStubs(['_provAviso', '_provFalta'], async () => {
       ev(QB);
-      ev("_provAviso=false;__movRes=st=>__ins(st.ops.find(o=>o[0]==='insert')[1]);__ins=()=>({error:null})");
+      ev("_provAviso=false;_provFalta=false;__movRes=st=>__ins(st.ops.find(o=>o[0]==='insert')[1]);__ins=()=>({error:null})");
       const mov = '({itemId:"A",ts:1,provider:"ACME",synced:false,id:3})';
       const inserts = () => ev('__mqs.filter(q=>q.ops.some(o=>o[0]==="insert")).length');
       // columna inexistente: segundo intento sin provider
@@ -1856,7 +1910,8 @@ test('movimientos: cloudMovPut reintenta sin provider SOLO si falta la columna (
         assert.strictEqual(inserts(), 2, code);
         assert.ok(!('provider' in norm(ev('__mqs[1].ops.find(o=>o[0]==="insert")[1]'))), 'el reintento va sin provider');
       }
-      assert.strictEqual(ev('__toasts.filter(m=>m.includes("provider")).length'), 1, 'aviso una sola vez');
+      assert.strictEqual(ev('__toasts.filter(m=>m.includes("provider")).length'), 0, 'cloudMovPut ya no avisa por su cuenta: el toast de éxito del llamante lo taparía (M2)');
+      assert.strictEqual(ev('_provFalta'), true, 'queda la marca para que el aviso salga en el toast final');
       // cualquier otro error: NO se reintenta sin provider y el movimiento sigue pendiente
       for (const err of ["{message:'red'}", "{code:'42501',message:'rls'}", "{code:'PGRST301'}", "{code:'08006'}"]) {
         ev("__mqs=[];__ins=()=>({error:" + err + "})");
@@ -1878,6 +1933,38 @@ test('movimientos: cloudMovPut reintenta sin provider SOLO si falta la columna (
       ev("__mqs=[];__movRes=()=>({error:{code:'PGRST204'}})");
       assert.strictEqual(await ev('cloudMovPut({itemId:"A",ts:2,synced:false})'), false);
       assert.strictEqual(inserts(), 1);
+    });
+  });
+});
+
+test('movimientos (M2): el aviso de la columna "provider" ausente sale UNA vez en el toast FINAL de la compra y en el aviso de Inicio', async () => {
+  const dom = { 'pur-qty': { value: '3' }, 'pur-price': { value: '2' }, 'pur-discount': { value: '' }, 'pur-provider': { value: 'ACME' }, 'home-pending-warn': { style: { display: 'none' }, textContent: '' } };
+  await conR2({ dom }, async () => {
+    await conStubs(['_provAviso', '_provFalta', 'cloudPriceAdd', 'addProvider', 'renderPriceHistory', 'renderInvoiceModal', 'adminUnlocked', 'refreshStock', 'cloudUpdateFields', 'movGetAll'], async () => {
+      ev(QB);
+      ev("_provAviso=false;_provFalta=false;items=[{id:'I1',name:'A',stock:5,precio:1}];currentItem=items[0];renderPriceHistory=()=>{};renderInvoiceModal=()=>{};cloudPriceAdd=async()=>true;addProvider=async()=>true;refreshStock=async()=>'skip';cloudUpdateFields=async()=>true;movGetAll=async()=>[];");
+      // la nube no tiene la columna provider; el resto de consultas (prueba de conexión) responden bien
+      ev("__movRes=st=>{const i=st.ops.find(o=>o[0]==='insert');return i?(('provider' in i[1])?{error:{code:'PGRST204'}}:{error:null}):{data:[{key:'k'}],error:null};}");
+      // cloudMovPut corre dentro de registrarMovimiento, dentro de _commitStock (igual que en la app real)
+      ev("registrarMovimiento=async(it,a,n,tipo,c,prov)=>{await cloudMovPut({itemId:it.id,ts:1,tipo,provider:prov,synced:false});};");
+      await ev('applyPurchase()');
+      assert.ok(ev('__mqs.some(q=>q.ops.some(o=>o[0]==="insert"&&!("provider" in o[1])))'), 'el movimiento se subió sin provider');
+      let t = ev('__toasts.pop()');
+      assert.ok(t.startsWith('✓ Entrada de compra: +3'), t);
+      assert.ok(t.includes('⚠ proveedor no guardado (falta la columna provider en la nube)'), 'el aviso va en el TOAST FINAL, no en uno anterior que se tapa: ' + t);
+      assert.ok(!ev('__toasts').some(m => m.includes('provider')), 'no hay otro toast con el aviso que se pierda');
+      // solo una vez por sesión
+      ev("items=[{id:'I1',name:'A',stock:5,precio:1}];currentItem=items[0];__mqs=[];");
+      await ev('applyPurchase()');
+      t = ev('__toasts.pop()');
+      assert.ok(t.startsWith('✓ Entrada de compra: +3') && !t.includes('provider'), t);
+      // el aviso de movimientos de Inicio lo recuerda mientras dure la sesión (aunque no haya pendientes)
+      await ev('checkPendingMovs()');
+      assert.strictEqual(ctx.__dom['home-pending-warn'].style.display, '');
+      assert.ok(ctx.__dom['home-pending-warn'].textContent.includes('"provider"'), ctx.__dom['home-pending-warn'].textContent);
+      ev('_provFalta=false');
+      await ev('checkPendingMovs()');
+      assert.strictEqual(ctx.__dom['home-pending-warn'].style.display, 'none');
     });
   });
 });
@@ -1966,6 +2053,66 @@ test('Costes: lectura estricta de solo el mes elegido; si falla no hay cifras pa
   });
 });
 
+test('Costes (M3): una lectura lenta de otro mes no pisa la pantalla ni lastCostesCalc de la selección más reciente', async () => {
+  const dom = { 'cos-month': { value: '2' }, 'cos-year': { value: '2026' }, 'cos-hist-warn': { style: { display: 'none' } } };
+  await conNube({ dom }, async () => {
+    await conStubs(['getMergedMovements', 'lastCostesCalc', 'pushPendingMovements', 'homeMovsCache', '_costSeq'], async () => {
+      const marzo = new Date(2026, 2, 10, 12).getTime(), abril = new Date(2026, 3, 10, 12).getTime();
+      ev("items=[];pushPendingMovements=async()=>{};homeMovsCache=[];lastCostesCalc=null;__toasts=[];__marFalla=false;");
+      // marzo (mes 2) tarda hasta que se libera; abril responde al momento
+      ev("getMergedMovements=async(s,r)=>{const mar=r.desde===new Date(2026,2,1).getTime();if(mar)await new Promise(x=>{__rel=x;});if(mar&&__marFalla)return null;return [{ts:mar?" + marzo + ":" + abril + ",diferencia:1,coste:5,tipo:'Entrada',cat:'C',nombre:mar?'MARZO':'ABRIL'}];}");
+      const lenta = ev('renderCostes()'); // el usuario elige marzo...
+      await new Promise(r => setTimeout(r, 10));
+      ctx.__dom['cos-month'].value = '3'; // ...y enseguida abril
+      await ev('renderCostes()');
+      ev('__rel()'); // marzo termina el último
+      await lenta;
+      assert.strictEqual(ev('lastCostesCalc.m'), 3, 'lastCostesCalc sigue siendo el de abril (el selector dice abril)');
+      assert.deepStrictEqual(norm(ev('lastCostesCalc.movs.map(m=>m.nombre)')), ['ABRIL']);
+      const html = ctx.__dom['cos-entradas'].innerHTML;
+      assert.ok(html.includes('ABRIL') && !html.includes('MARZO'), 'la pantalla muestra abril: ' + html);
+      // una lectura lenta que además FALLA tampoco pisa ni avisa si ya hay una selección más reciente
+      ev("__marFalla=true");
+      ctx.__dom['cos-month'].value = '2';
+      const lenta2 = ev('renderCostes()');
+      await new Promise(r => setTimeout(r, 10));
+      ctx.__dom['cos-month'].value = '3';
+      await ev('renderCostes()');
+      ev('__rel()');
+      await lenta2;
+      assert.strictEqual(ev('lastCostesCalc.m'), 3);
+      assert.ok(ctx.__dom['cos-entradas'].innerHTML.includes('ABRIL'));
+      assert.strictEqual(ctx.__dom['cos-hist-warn'].style.display, 'none', 'el fallo de una lectura obsoleta no enciende el aviso');
+      assert.ok(!ev('__toasts').some(m => m.includes('No se pudo leer')), ev('__toasts.join("|")'));
+    });
+  });
+});
+
+test('Costes (M3): el refresco automático tras guardar stock no usa toast (taparía "pendiente de subir"); el cambio de mes sí avisa', async () => {
+  const refrescar = ev('refreshVisiblePage'); // la real, antes de que conNube la sustituya
+  ctx.__refrescar = refrescar;
+  const dom = { 'cos-month': { value: '3' }, 'cos-year': { value: '2026' }, 'cos-hist-warn': { style: { display: 'none' } }, 'page-costes': { classList: { contains: () => true, add() {}, remove() {} } } };
+  try {
+    await conNube({ dom }, async () => {
+      await conStubs(['getMergedMovements', 'lastCostesCalc', 'pushPendingMovements', 'homeMovsCache', '_costSeq'], async () => {
+        ev("items=[];pushPendingMovements=async()=>{};homeMovsCache=[];lastCostesCalc=null;getMergedMovements=async()=>null;__toasts=[];");
+        ev("toast('+3 uds · stock: 8 · ⚠ pendiente de subir')"); // el toast de éxito de _commitStock
+        ev('__refrescar()');
+        await new Promise(r => setTimeout(r, 20));
+        assert.deepStrictEqual(norm(ev('__toasts')), ['+3 uds · stock: 8 · ⚠ pendiente de subir'], 'el refresco no tapa el aviso con otro toast');
+        assert.strictEqual(ctx.__dom['cos-hist-warn'].style.display, '', 'pero el aviso en la página sí se muestra');
+        assert.strictEqual(ctx.__dom['cos-in'].textContent, '—');
+        assert.strictEqual(ev('lastCostesCalc'), null);
+        // acción del usuario (cambiar de mes / abrir la página): sí hay toast
+        await ev('renderCostes()');
+        assert.ok(ev('__toasts').some(m => m.includes('No se pudo leer el historial de la nube')), ev('__toasts.join("|")'));
+      });
+    });
+  } finally {
+    delete ctx.__refrescar;
+  }
+});
+
 test('informe de costes PDF: usa los movimientos del mes (lastCostesCalc), no la caché de Inicio, y no sale si no se pudo leer (E-L10)', async () => {
   const dom = { 'cos-month': { value: '3' }, 'cos-year': { value: '2026' } };
   await conNube({ dom }, async () => {
@@ -1989,6 +2136,27 @@ test('informe de costes PDF: usa los movimientos del mes (lastCostesCalc), no la
       }
     });
   });
+});
+
+test('exportar movimientos (L2): "Desde" por defecto es el día 1 del mes en hora local (en UTC+1/+2 no cae en el último día del mes anterior)', async () => {
+  const tzAntes = process.env.TZ;
+  process.env.TZ = 'Europe/Madrid'; // con toISOString(), la medianoche local del día 1 es el día anterior en UTC
+  try {
+    const dom = { 'mov-from': { value: '' }, 'mov-to': { value: '' } };
+    await conNube({ dom }, async () => {
+      await conStubs(['setMovRange'], async () => {
+        ev('setMovRange=()=>{}');
+        ev('exportMovimientos()');
+        const d = new Date();
+        const p2 = n => String(n).padStart(2, '0');
+        assert.strictEqual(ctx.__dom['mov-from'].value, d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-01');
+        assert.strictEqual(ctx.__dom['mov-to'].value, d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()), 'Hasta = hoy en hora local');
+        assert.ok(ev('__opened').includes('modal-mov-range'));
+      });
+    });
+  } finally {
+    if (tzAntes === undefined) delete process.env.TZ; else process.env.TZ = tzAntes;
+  }
 });
 
 test('exportar movimientos: lectura estricta, aborta con aviso si no se puede leer la nube y consulta solo el rango pedido (SF-A5)', async () => {
@@ -2190,13 +2358,17 @@ test('borrar todo: cuenta aciertos y fallos y solo limpia en local (y las catego
     await ev('askWipe()');
     await ctx.__dom['confirm-ok'].onclick();
     let t = ev('__toasts.pop()');
-    assert.ok(t.includes('Borrados 2 de 3') && t.includes('Fallaron 1') && t.includes('se reintentará'), t);
-    assert.deepStrictEqual(norm(ev('__dbDel')), ['I1', 'I3'], 'I2 sigue en el móvil');
-    assert.deepStrictEqual(norm(ev('items.map(i=>i.id)')), ['I2']);
+    assert.ok(t.includes('No se pudo borrar todo: 1 borrados, el resto sigue en el inventario'), t);
+    assert.ok(!t.includes('se reintentará'), 'ya no queda un borrado en cola que se ejecute solo al sincronizar (M4)');
+    assert.deepStrictEqual(norm(ev('__borrados')), ['I1', 'I2'], 'se para en el primer fallo: I3 ni se intenta');
+    assert.strictEqual(ev('dirtyDel.size'), 0, 'el borrado fallido no queda en cola (M4)');
+    assert.deepStrictEqual(norm(ev('__dbDel')), ['I1'], 'I2 sigue en el móvil');
+    assert.deepStrictEqual(norm(ev('items.map(i=>i.id)')), ['I2', 'I3']);
+    assert.strictEqual(ev('_stockBusy'), false, 'se libera la marca de "operación en curso"');
     assert.deepStrictEqual(norm(ev('categories')), ['Cat'], 'con fallos no se vacían las categorías');
     assert.ok(!('categories' in norm(ev('__cfg'))));
     // sin fallos: se borra todo, se vacían las categorías y se avisa de si no subieron
-    ev("items=['I1','I2'].map(id=>({id,name:id,stock:1}));__noBorra=[];__dbDel=[];__toasts=[];cloudCfgPut=async()=>false");
+    ev("items=['I1','I2'].map(id=>({id,name:id,stock:1}));__noBorra=[];__borrados=[];__dbDel=[];__toasts=[];cloudCfgPut=async()=>false");
     await ev('wipeAll()');
     t = ev('__toasts.pop()');
     assert.ok(t.startsWith('Inventario borrado') && t.includes('categorías solo se vaciaron en este dispositivo'), t);
@@ -2205,6 +2377,58 @@ test('borrar todo: cuenta aciertos y fallos y solo limpia en local (y las catego
     ev("items=['I1'].map(id=>({id,name:id,stock:1}));__dbDel=[];__toasts=[];cloudCfgPut=async()=>true");
     await ev('wipeAll()');
     assert.strictEqual(ev('__toasts.pop()'), 'Inventario borrado');
+  });
+});
+
+test('borrar todo (M4): sin conexión no toca nada y con otra operación en curso no arranca', async () => {
+  await conMover(async () => {
+    ev("items=['I1','I2'].map(id=>({id,name:id,stock:1}));categories=['Cat'];__toasts=[];__cfg={};");
+    ctx.navigator = { onLine: false };
+    try {
+      await ev('wipeAll()');
+    } finally {
+      ctx.navigator = {};
+    }
+    assert.deepStrictEqual(norm(ev('__borrados')), [], 'ninguna petición de borrado');
+    assert.deepStrictEqual(norm(ev('__dbDel')), []);
+    assert.deepStrictEqual(norm(ev('items.map(i=>i.id)')), ['I1', 'I2']);
+    assert.deepStrictEqual(norm(ev('categories')), ['Cat']);
+    assert.strictEqual(ev('dirtyDel.size'), 0);
+    assert.ok(ev('__toasts').some(m => m.includes('Sin conexión') && m.includes('borrar el inventario')), ev('__toasts.join("|")'));
+    assert.strictEqual(ev('_stockBusy'), false, 'la marca de ocupado se libera aunque no haya conexión');
+    // otra operación en curso (movimiento de stock, subida...): no se mezcla
+    ev("__toasts=[];_stockBusy=true");
+    await ev('wipeAll()');
+    assert.deepStrictEqual(norm(ev('__borrados')), []);
+    assert.deepStrictEqual(norm(ev('items.map(i=>i.id)')), ['I1', 'I2']);
+    assert.deepStrictEqual(norm(ev('__toasts')), ['Procesando…']);
+    assert.strictEqual(ev('_stockBusy'), true, 'no libera la marca de la operación que ya estaba en curso');
+  });
+});
+
+test('borrar todo (M4): mantiene la marca de ocupado mientras borra y para en el primer fallo sin dejar borrados en cola', async () => {
+  await conMover(async () => {
+    ev("items=['I1','I2','I3','I4'].map(id=>({id,name:id,stock:1}));categories=['Cat'];__toasts=[];__cfg={};__ocupado=[];__noBorra=['I2','I3'];");
+    // el stub de cloudDelete anota si _stockBusy está activo en cada petición
+    ev("cloudDelete=async id=>{__borrados.push(id);__ocupado.push(_stockBusy);if(__noBorra.includes(id)){markDirtyDel(id);return false;}return true;};");
+    await ev('wipeAll()');
+    assert.deepStrictEqual(norm(ev('__borrados')), ['I1', 'I2'], 'tras el primer fallo (I2) no se intenta I3 ni I4');
+    assert.deepStrictEqual(norm(ev('__ocupado')), [true, true]);
+    assert.deepStrictEqual(norm(ev('[...dirtyDel]')), [], 'ni I2 ni los no intentados quedan en cola: no se borrarán solos al sincronizar');
+    assert.deepStrictEqual(norm(ev('__dbDel')), ['I1']);
+    assert.deepStrictEqual(norm(ev('items.map(i=>i.id)')), ['I2', 'I3', 'I4']);
+    assert.deepStrictEqual(norm(ev('categories')), ['Cat'], 'con un fallo no se vacían las categorías');
+    assert.ok(!('categories' in norm(ev('__cfg'))));
+    assert.strictEqual(ev('__toasts.pop()'), '⚠ No se pudo borrar todo: 1 borrados, el resto sigue en el inventario');
+    assert.strictEqual(ev('_stockBusy'), false);
+    // un borrado en cola de ANTES (otro artículo) no se toca
+    ev("dirtyDel=new Set(['OLD']);__borrados=[];__noBorra=['I2'];");
+    await ev('wipeAll()');
+    assert.deepStrictEqual(norm(ev('[...dirtyDel]')), ['OLD'], 'solo se limpia el artículo que falló en este borrado');
+    // cloudDelete que lanza una excepción inesperada: la marca de ocupado se libera igualmente
+    ev("cloudDelete=async()=>{throw new Error('boom')};");
+    await assert.rejects(() => ev('wipeAll()'));
+    assert.strictEqual(ev('_stockBusy'), false);
   });
 });
 
