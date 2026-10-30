@@ -1,6 +1,7 @@
 -- Evita movimientos duplicados: no puede haber dos con el mismo instante (ts) y el mismo artículo.
 -- Ejecutar UNA VEZ en Supabase → SQL Editor. Es seguro repetirlo.
--- 1) Borra los duplicados que ya existan (se conserva uno de cada).
+-- 1) BORRA los duplicados que ya existan (se conserva uno de cada): es lo único de estos ficheros que
+--    elimina filas. Si hace falta, haz antes una copia de seguridad desde Ajustes.
 -- 2) Crea el índice único. Si la app reintenta subir un movimiento que ya está, la base de datos lo rechaza
 --    y la app lo da por subido.
 
