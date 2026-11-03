@@ -5868,6 +5868,9 @@ async function _demoLoadFile(e){
     for(const it of limpios)await dbPut(it);
     if(Array.isArray(data.categories)&&data.categories.length){categories=cleanNames(data.categories);await cfgPut('categories',categories);}
     if(Array.isArray(data.providers)&&data.providers.length){providers=cleanNames(data.providers);await cfgPut('providers',providers);}
+    if(Array.isArray(data.shelves)&&data.shelves.length){shelves=cleanShelves(data.shelves);await cfgPut('shelves',shelves);}
+    if(data.aisles!=null){aisles=cleanAisles(data.aisles);await cfgPut('aisles',aisles);}
+    if(data.mapSize&&data.mapSize.w&&data.mapSize.h){mapSize={...data.mapSize};await cfgPut('mapSize',mapSize);}
     if(Array.isArray(data.movements)&&data.movements.length){
       await movClear();
       for(const m of data.movements)await movPut({...m,synced:true});
