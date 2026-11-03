@@ -48,11 +48,14 @@ async function saveAuthToSupabase(cfg){
 let _authCredentials=null;
 document.addEventListener('DOMContentLoaded',async function(){
   if(typeof WAREHOUSE_CONFIG!=='undefined'){
-    WH=WAREHOUSE_CONFIG;DB_NAME=WH.db;applyBranding();
+    WH=WAREHOUSE_CONFIG;DB_NAME=WH.db+(DEMO_MODE?'_demo':'');applyBranding();
     document.getElementById('warehouse-screen').style.display='none';
-    const ok=await authSessionOk();
-    if(ok){document.getElementById('login-screen').style.display='none';enterApp();}
-    else{document.getElementById('login-error').textContent='';document.getElementById('login-pass').value='';document.getElementById('login-screen').style.display='flex';setTimeout(()=>document.getElementById('login-user').focus(),100);}
+    if(DEMO_MODE){document.getElementById('login-screen').style.display='none';enterApp();}
+    else{
+      const ok=await authSessionOk();
+      if(ok){document.getElementById('login-screen').style.display='none';enterApp();}
+      else{document.getElementById('login-error').textContent='';document.getElementById('login-pass').value='';document.getElementById('login-screen').style.display='flex';setTimeout(()=>document.getElementById('login-user').focus(),100);}
+    }
   }else{showWarehouseSelector();}
   _authCredentials=await loadAuthCredentials();
 });
@@ -94,6 +97,8 @@ async function sha256(msg){
 }
 let db;
 let DB_NAME=(typeof WAREHOUSE_CONFIG!=='undefined'?WAREHOUSE_CONFIG.db:'almacen_db');const STORE='items',CFG='config',MOV='movements';
+const DEMO_MODE=new URLSearchParams(location.search).has('demo');
+if(DEMO_MODE)DB_NAME=DB_NAME+'_demo';
 function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB_NAME,2);r.onupgradeneeded=e=>{const d=e.target.result;if(!d.objectStoreNames.contains(STORE))d.createObjectStore(STORE,{keyPath:'id'});if(!d.objectStoreNames.contains(CFG))d.createObjectStore(CFG,{keyPath:'key'});if(!d.objectStoreNames.contains(MOV))d.createObjectStore(MOV,{keyPath:'id',autoIncrement:true});};r.onsuccess=e=>{db=e.target.result;res();};r.onerror=e=>rej(e);});}
 // Ejecuta una operación y resuelve SOLO cuando la transacción termina; rechaza si falla o se aborta
 function idbRun(store,mode,fn){return new Promise((res,rej)=>{try{const tx=db.transaction(store,mode);const req=fn(tx.objectStore(store));tx.oncomplete=()=>res(req?req.result:undefined);tx.onerror=()=>rej(tx.error||new Error('IndexedDB error'));tx.onabort=()=>rej(tx.error||new Error('IndexedDB abortado'));}catch(e){rej(e);}});}
@@ -298,6 +303,7 @@ async function authBearer(){
 // La foto solo se envía si tiene valor (o si opts.photo=true), para no borrar la de la nube
 // con un null cuando la foto local aún no se ha descargado.
 async function cloudPut(item,opts){
+  if(DEMO_MODE)return true;
   if(!sb){markDirty(item.id);return false;}
   // Mapear el campo local 'cats' a la columna 'categories' de la tabla
   const cloudItem={...item};
@@ -308,6 +314,7 @@ async function cloudPut(item,opts){
   catch(e){cloudOK=false;console.warn('cloudPut error',e);markDirty(item.id);return false;}
 }
 async function cloudDelete(id){
+  if(DEMO_MODE)return true;
   if(!sb){markDirtyDel(id);return false;}
   try{
     const{data,error}=await withTimeout(sb.from(WH.tblItems).delete().eq('id',id).select('id'),15000,'borrar');
@@ -518,7 +525,7 @@ function renderProviderList(){
 
 async function init(){
   await openDB();
-  initSupabase();
+  if(!DEMO_MODE)initSupabase();
   // Cargar primero lo local (rápido), luego intentar la nube
   categories=strArr(await cfgGet('categories'));
   providers=strArr(await cfgGet('providers'));
@@ -530,20 +537,22 @@ async function init(){
   if(!shelves||!shelves.length){shelves=defaultShelves();}
   adminPass=(await cfgGet('adminPass'))||ADMIN_PASS_DEFAULT;
   const _lc=await cfgGet('loginCfg'); if(_lc)setLoginCfg(_lc);
-  try{adminUnlocked=sessionStorage.getItem('almacen_admin_'+WH.key)==='1';}catch(e){}
-  if(adminUnlocked&&useSbAuth()&&!(await isAdminRole()))adminUnlocked=false;
+  if(DEMO_MODE){adminUnlocked=true;}
+  else{try{adminUnlocked=sessionStorage.getItem('almacen_admin_'+WH.key)==='1';}catch(e){}
+  if(adminUnlocked&&useSbAuth()&&!(await isAdminRole()))adminUnlocked=false;}
   renderUserBar();
+  if(DEMO_MODE)await _seedDemoData();
   items=await dbGetAll();
   try{dirtyIds=new Set((await cfgGet('dirtyIds'))||[]);dirtyDel=new Set((await cfgGet('dirtyDel'))||[]);}catch(e){}
   appReady=true;
   renderAll();
   renderHomeMovements();
   // Sincronizar desde la nube
-  await syncFromCloud();
+  if(!DEMO_MODE)await syncFromCloud();
   // Tras sincronizar, refrescamos lo que esté visible para que aparezcan
   // los movimientos/datos metidos desde otros dispositivos (PC, otro móvil, etc.)
   renderAll();
-  const wHome=document.getElementById('home-sync-warn'); if(wHome)wHome.style.display=(sb&&cloudOK)?'none':'';
+  const wHome=document.getElementById('home-sync-warn'); if(wHome)wHome.style.display=(sb&&cloudOK||DEMO_MODE)?'none':'';
   if(document.getElementById('page-inicio')?.classList.contains('active'))renderHomeMovements();
   if(document.getElementById('page-costes')?.classList.contains('active'))renderCostes();
   const _invBtn=document.getElementById('btn-scan-invoice');
@@ -3303,6 +3312,7 @@ function enterApp(){
     if(h)h.textContent='El acceso lo gestiona Supabase: cada persona entra con su propio usuario y los administradores se marcan allí. Usa el candado 🔒 de la parte superior para activar o quitar el modo administrador.';
   }
   if(!appStarted){appStarted=true;init();}
+  if(DEMO_MODE)_showDemoBanner();
 }
 
 async function logout(){
@@ -3411,6 +3421,7 @@ function toggleAdminLock(){
   if(adminUnlocked)lockAdmin();else requireAdmin(null);
 }
 async function submitUnlock(){
+  if(DEMO_MODE){finishUnlock();return;}
   if(useSbAuth()){
     if(!(await isAdminRole())){toast('Tu usuario no es administrador');return;}
     finishUnlock();return;
@@ -4646,4 +4657,81 @@ function cancelInvoiceCreate(){
     closeModal('modal-form');
     renderInvoiceModal();
   }
+}
+
+// ===== MODO DEMO =====
+function _showDemoBanner(){
+  if(document.getElementById('demo-banner'))return;
+  const b=document.createElement('div');
+  b.id='demo-banner';
+  b.innerHTML='<span style="font-weight:700;letter-spacing:.5px;">🎯 MODO DEMO</span>'
+    +'<span style="opacity:.85;font-size:11px;">Datos de muestra · cambios solo locales · bloquea 🔒 para ver vista de usuario</span>';
+  b.style.cssText='position:fixed;bottom:0;left:0;right:0;z-index:9999;'
+    +'background:linear-gradient(135deg,#1a1a2e,#16213e);color:#e8d5a3;'
+    +'padding:10px 18px;padding-bottom:calc(10px + env(safe-area-inset-bottom));'
+    +'display:flex;justify-content:space-between;align-items:center;gap:8px;'
+    +'font-family:DM Sans,sans-serif;font-size:12px;'
+    +'border-top:2px solid rgba(232,213,163,0.4);box-shadow:0 -4px 20px rgba(0,0,0,.4);';
+  document.body.appendChild(b);
+  // Ajustar padding del app-root para que el banner no tape contenido
+  const root=document.getElementById('app-root');
+  if(root)root.style.paddingBottom='calc(44px + env(safe-area-inset-bottom))';
+}
+
+async function _seedDemoData(){
+  const existing=await dbGetAll();
+  if(existing.length)return; // ya hay datos de una sesión demo anterior
+  const isElec=WH&&(WH.key||'').toLowerCase().includes('elec');
+  const now=new Date();
+  const fecha=now.toLocaleDateString('es-ES');
+  const ts=now.getTime();
+  const demoItems=isElec?[
+    {id:'demo-001',name:'Contactor 24V DC 9A',cat:'Accionamiento',ref:'LC1-D09BD',brand:'Schneider',stock:12,min:3,precio:18.50},
+    {id:'demo-002',name:'Relé térmico 7-10A',cat:'Protección',ref:'LRD14',brand:'Schneider',stock:5,min:2,precio:22.00},
+    {id:'demo-003',name:'Interruptor automático 16A',cat:'Protección',ref:'iC60N-C16',brand:'Schneider',stock:8,min:2,precio:14.90},
+    {id:'demo-004',name:'Cable H07V-K 1.5mm² rojo',cat:'Cables',ref:'H07V-K-1.5R',brand:'Prysmian',stock:200,min:50,precio:0.85},
+    {id:'demo-005',name:'Cable H07V-K 2.5mm² AV',cat:'Cables',ref:'H07V-K-2.5AV',brand:'Prysmian',stock:150,min:30,precio:1.20},
+    {id:'demo-006',name:'Regleta de bornas 4mm²',cat:'Conexión',ref:'SAKR-4',brand:'Phoenix Contact',stock:50,min:10,precio:1.45},
+    {id:'demo-007',name:'Fusible 6A 10×38mm',cat:'Protección',ref:'FUS-6A',brand:'Legrand',stock:30,min:10,precio:0.80},
+    {id:'demo-008',name:'Piloto LED 24V verde',cat:'Señalización',ref:'XB4-BVM3',brand:'Schneider',stock:6,min:2,precio:8.90},
+    {id:'demo-009',name:'Sensor inductivo M12 NPN',cat:'Sensores',ref:'NBN4-12GM50',brand:'Pepperl+Fuchs',stock:4,min:1,precio:35.00},
+    {id:'demo-010',name:'Variador 0.37kW 230V',cat:'Accionamiento',ref:'ATV12H037M2',brand:'Schneider',stock:2,min:1,precio:185.00},
+    {id:'demo-011',name:'PLC Modicon M221 16E/S',cat:'Automatización',ref:'TM221CE16R',brand:'Schneider',stock:1,min:1,precio:320.00},
+    {id:'demo-012',name:'Fuente 24V DC 5A',cat:'Alimentación',ref:'PULS-SL5.100',brand:'PULS',stock:3,min:1,precio:89.00},
+  ]:[
+    {id:'demo-001',name:'Rodamiento 6204-2RS',cat:'Rodamientos',ref:'6204-2RS',brand:'SKF',stock:10,min:3,precio:4.20},
+    {id:'demo-002',name:'Rodamiento 6205-2RS',cat:'Rodamientos',ref:'6205-2RS',brand:'SKF',stock:8,min:3,precio:5.10},
+    {id:'demo-003',name:'Correa trapecial XPA-900',cat:'Transmisión',ref:'XPA-900',brand:'Gates',stock:6,min:2,precio:12.50},
+    {id:'demo-004',name:'Retén 30×52×8mm',cat:'Estanqueidad',ref:'30-52-8-HMS5',brand:'SKF',stock:15,min:5,precio:2.80},
+    {id:'demo-005',name:'Tornillo M8×30 DIN912',cat:'Tornillería',ref:'M8x30-DIN912',brand:'',stock:200,min:50,precio:0.12},
+    {id:'demo-006',name:'Tuerca M8 DIN934',cat:'Tornillería',ref:'M8-DIN934',brand:'',stock:300,min:50,precio:0.06},
+    {id:'demo-007',name:'Arandela M8 DIN125',cat:'Tornillería',ref:'M8-DIN125',brand:'',stock:250,min:50,precio:0.04},
+    {id:'demo-008',name:'Grasa de litio SKF 400g',cat:'Lubricantes',ref:'LGMT3-0.4',brand:'SKF',stock:5,min:2,precio:8.50},
+    {id:'demo-009',name:'Cadena 08B-1 (3/4")',cat:'Transmisión',ref:'08B-1',brand:'Renold',stock:12,min:3,precio:4.20},
+    {id:'demo-010',name:'Acoplamiento elástico Ø32',cat:'Transmisión',ref:'HRC-090',brand:'Fenner',stock:3,min:1,precio:28.90},
+    {id:'demo-011',name:'Junta tórica 50×3mm NBR',cat:'Estanqueidad',ref:'OR-50x3-NBR',brand:'',stock:40,min:10,precio:0.35},
+    {id:'demo-012',name:'Llave dinamométrica 20-100Nm',cat:'Herramientas',ref:'DW100',brand:'Stahlwille',stock:2,min:1,precio:145.00},
+  ];
+  const itemsFull=demoItems.map(it=>({...it,cats:it.cat?[it.cat]:[],loc:'',pos:'',notes:'',photo:null,machine:''}));
+  for(const it of itemsFull)await dbPut(it);
+  // Movimientos de demo
+  const demoMovs=[
+    {itemId:itemsFull[0].id,nombre:itemsFull[0].name,ref:itemsFull[0].ref||'',cat:itemsFull[0].cat||'',loc:'',brand:itemsFull[0].brand||'',machine:'',
+      fecha,hora:'08:30',turno:'M',tipo:'Compra',anterior:8,nuevo:12,diferencia:4,ts:ts-86400000*5,coste:isElec?74:16.80,provider:'Distribuciones Demo SL',synced:true},
+    {itemId:itemsFull[1].id,nombre:itemsFull[1].name,ref:itemsFull[1].ref||'',cat:itemsFull[1].cat||'',loc:'',brand:itemsFull[1].brand||'',machine:'',
+      fecha,hora:'10:15',turno:'M',tipo:'Salida',anterior:7,nuevo:5,diferencia:-2,ts:ts-86400000*4,synced:true},
+    {itemId:itemsFull[2].id,nombre:itemsFull[2].name,ref:itemsFull[2].ref||'',cat:itemsFull[2].cat||'',loc:'',brand:itemsFull[2].brand||'',machine:'',
+      fecha,hora:'14:22',turno:'T',tipo:'Salida',anterior:10,nuevo:8,diferencia:-2,ts:ts-86400000*3,synced:true},
+    {itemId:itemsFull[3].id,nombre:itemsFull[3].name,ref:itemsFull[3].ref||'',cat:itemsFull[3].cat||'',loc:'',brand:itemsFull[3].brand||'',machine:'',
+      fecha,hora:'09:00',turno:'M',tipo:'Compra',anterior:10,nuevo:15,diferencia:5,ts:ts-86400000*2,coste:isElec?6:14,provider:'Suministros Técnicos SA',synced:true},
+    {itemId:itemsFull[0].id,nombre:itemsFull[0].name,ref:itemsFull[0].ref||'',cat:itemsFull[0].cat||'',loc:'',brand:itemsFull[0].brand||'',machine:'',
+      fecha,hora:'11:40',turno:'M',tipo:'Salida',anterior:12,nuevo:12,diferencia:0,ts:ts-86400000,synced:true},
+  ];
+  for(const m of demoMovs)await movPut(m);
+  // Categorías y proveedores
+  const cats=[...new Set(demoItems.map(i=>i.cat).filter(Boolean))];
+  categories=cats;
+  await cfgPut('categories',cats);
+  providers=['Distribuciones Demo SL','Suministros Técnicos SA'];
+  await cfgPut('providers',providers);
 }
