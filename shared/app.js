@@ -4736,6 +4736,7 @@ function shelfLayoutHTML(sid){
   if(svViewMode==='schema'){
     // Mostrar toolbar con botón Organizar también en modo esquema
     html+='<div class="sv2-toolbar">';
+    html+='<button class="btn btn-sm" onclick="event.stopPropagation();openShelfScan(\''+sid+'\')">📷 Escanear</button>';
     html+='<button class="btn btn-sm'+(org?' btn-primary':'')+'" onclick="event.stopPropagation();toggleOrganize(\''+sid+'\')">'+(org?'✓ Terminar organizar':'Organizar')+'</button>';
     html+='</div>';
     if(org){
@@ -4758,6 +4759,7 @@ function shelfLayoutHTML(sid){
   }
   html+='<div class="sv2-toolbar">';
   html+='<button class="btn btn-sm" onclick="event.stopPropagation();openLayout(\''+sid+'\')">Distribución</button>';
+  html+='<button class="btn btn-sm" onclick="event.stopPropagation();openShelfScan(\''+sid+'\')">📷 Escanear</button>';
   html+='<button class="btn btn-sm'+(org?' btn-primary':'')+'" onclick="event.stopPropagation();toggleOrganize(\''+sid+'\')">'+(org?'✓ Hecho':'Organizar')+'</button>';
   html+='</div>';
   if(org){
@@ -4919,10 +4921,11 @@ function addHere(){
 }
 
 // ===== EDITOR DE DISTRIBUCIÓN (baldas / huecos / gavetas) =====
-let layoutDraft=null, layoutShelfId=null;
+let layoutDraft=null, layoutShelfId=null, _layoutDraftBaldas=null;
 function openLayout(sid){
   const sh=shelves.find(s=>s.id===sid); if(!sh)return;
   layoutShelfId=sid;
+  _layoutDraftBaldas=null; // no viene de escaneo: usar sh.baldas real
   layoutDraft=JSON.parse(JSON.stringify(sh.layout||{}));
   document.getElementById('layout-title').textContent='Distribución · '+sh.name;
   renderLayoutEditor();
@@ -4930,8 +4933,9 @@ function openLayout(sid){
 }
 function renderLayoutEditor(){
   const sh=shelves.find(s=>s.id===layoutShelfId); if(!sh)return;
+  const totalBaldas=_layoutDraftBaldas!==null?_layoutDraftBaldas:sh.baldas;
   let html='';
-  for(let b=1;b<=sh.baldas;b++){
+  for(let b=1;b<=totalBaldas;b++){
     const blocks=layoutDraft[String(b)]||[];
     html+='<div class="lay-balda"><div class="lay-balda-head"><span>Balda '+b+'</span><span style="font-size:12px;font-weight:400;color:var(--text3);">'+(blocks.length?'':'simple')+'</span></div>';
     if(!blocks.length){html+='<div class="lay-empty">Balda simple (sin huecos ni gavetas).</div>';}
@@ -4977,6 +4981,7 @@ function layDel(b,bi){
 }
 async function saveLayout(){
   const sh=shelves.find(s=>s.id===layoutShelfId); if(!sh)return;
+  if(_layoutDraftBaldas!==null){sh.baldas=_layoutDraftBaldas;_layoutDraftBaldas=null;}
   const clean={};
   Object.keys(layoutDraft).forEach(k=>{if(layoutDraft[k]&&layoutDraft[k].length)clean[k]=layoutDraft[k];});
   sh.layout=clean;
@@ -5939,4 +5944,152 @@ async function _seedDemoData(){
   await cfgPut('categories',cats);
   providers=['Distribuciones Demo SL','Suministros Técnicos SA'];
   await cfgPut('providers',providers);
+}
+
+// ===== ESCANEAR ESTANTERÍA CON IA =====
+function openShelfScan(sid){
+  let m=document.getElementById('modal-shelf-scan');
+  if(!m){
+    m=document.createElement('div');
+    m.id='modal-shelf-scan';
+    m.style.cssText='position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.55);display:none;align-items:flex-end;justify-content:center;';
+    const lblStyle='display:flex;align-items:center;gap:14px;background:var(--surface2);border-radius:12px;padding:16px;cursor:pointer;';
+    const descStyle='font-size:12px;color:var(--text2);margin-top:2px;';
+    m.innerHTML=
+      '<div style="background:var(--surface);border-radius:16px 16px 0 0;width:100%;max-width:480px;padding:20px 20px calc(20px + env(safe-area-inset-bottom));box-shadow:0 -4px 24px rgba(0,0,0,.2);">'
+      +'<div style="width:36px;height:4px;background:var(--surface2);border-radius:2px;margin:0 auto 16px;"></div>'
+      +'<h2 style="font-size:18px;font-weight:700;margin-bottom:6px;">📷 Escanear estantería</h2>'
+      +'<p style="font-size:13px;color:var(--text2);margin-bottom:14px;">La IA detectará baldas, huecos y gaveteros automáticamente.</p>'
+      +'<div id="shelf-scan-status" style="font-size:13px;color:var(--text2);min-height:18px;margin-bottom:12px;"></div>'
+      +'<div style="display:flex;flex-direction:column;gap:10px;">'
+      +'<label style="'+lblStyle+'">'
+        +'<span style="font-size:28px;flex-shrink:0;">📸</span>'
+        +'<div style="flex:1;">'
+          +'<div style="font-weight:600;font-size:15px;">Foto de la estantería real</div>'
+          +'<div style="'+descStyle+'">Foto frontal. Usa cinta negra para marcar separadores si los necesitas.</div>'
+        +'</div>'
+        +'<input type="file" accept="image/*" capture="environment" style="display:none" onchange="_shelfScanFile(event,\'real\')">'
+      +'</label>'
+      +'<label style="'+lblStyle+'">'
+        +'<span style="font-size:28px;flex-shrink:0;">📄</span>'
+        +'<div style="flex:1;">'
+          +'<div style="font-weight:600;font-size:15px;">Foto de patrón en papel</div>'
+          +'<div style="'+descStyle+'">Dibuja el esquema: líneas horizontales = baldas, barras verticales = separadores, ═ = gavetero.</div>'
+        +'</div>'
+        +'<input type="file" accept="image/*" capture="environment" style="display:none" onchange="_shelfScanFile(event,\'patron\')">'
+      +'</label>'
+      +'</div>'
+      +'<button onclick="closeShelfScan()" style="width:100%;margin-top:14px;background:var(--surface2);border:none;padding:13px;border-radius:10px;font-size:15px;cursor:pointer;font-family:inherit;">Cancelar</button>'
+      +'</div>';
+    document.body.appendChild(m);
+  }
+  m._scanSid=sid; // cambiar sid cancela automáticamente cualquier petición anterior
+  document.getElementById('shelf-scan-status').textContent='';
+  m.querySelectorAll('label,button').forEach(el=>el.style.pointerEvents='');
+  m.style.display='flex';
+}
+function closeShelfScan(){
+  const m=document.getElementById('modal-shelf-scan');
+  if(!m)return;
+  m._scanSid=null; // null = cancelado; las promesas en vuelo lo detectan
+  m.style.display='none';
+}
+async function _shelfScanFile(e,mode){
+  const file=e.target.files[0];if(!file)return;
+  e.target.value='';
+  const m=document.getElementById('modal-shelf-scan');if(!m)return;
+  const capturedSid=m._scanSid; // capturar antes de cualquier await
+  const status=document.getElementById('shelf-scan-status');
+  m.querySelectorAll('label,button').forEach(el=>el.style.pointerEvents='none');
+  status.textContent='⏳ Analizando la foto…';
+  // stale: comprueba si la petición fue cancelada o superada por otra estantería
+  const stale=()=>m._scanSid!==capturedSid;
+  try{
+    const dataUrl=await new Promise((res,rej)=>{
+      const reader=new FileReader();
+      reader.onload=ev=>{
+        const img=new Image();
+        img.onload=()=>{
+          const max=900;let w=img.width,h=img.height;
+          if(w>max||h>max){if(w>h){h=Math.round(h*max/w);w=max;}else{w=Math.round(w*max/h);h=max;}}
+          const cv=document.createElement('canvas');cv.width=w;cv.height=h;
+          const ctx=cv.getContext('2d');
+          if(!ctx){rej(new Error('No se pudo procesar la imagen'));return;}
+          ctx.drawImage(img,0,0,w,h);
+          res(cv.toDataURL('image/jpeg',0.85));
+        };
+        img.onerror=rej;img.src=ev.target.result;
+      };
+      reader.onerror=rej;reader.readAsDataURL(file);
+    });
+    if(stale())return;
+    const b64=dataUrl.split(',')[1];
+    const data=await aiBuscar(b64,_shelfScanPrompt(mode));
+    if(stale())return;
+    let text=(data.text||'').trim().replace(/```json[\s\S]*?```|```/g,'').trim();
+    const jsonMatch=text.match(/\{[\s\S]*\}/);
+    if(jsonMatch)text=jsonMatch[0];
+    let result;
+    try{result=JSON.parse(text);}catch(_){throw new Error('Respuesta no válida');}
+    if(!Number.isFinite(result?.baldas)||result.baldas<1)throw new Error('No se detectaron baldas en la imagen');
+    if(stale())return;
+    closeShelfScan();
+    _shelfScanApply(capturedSid,result);
+  }catch(err){
+    if(stale())return;
+    console.error('shelfScan',err);
+    status.textContent='⚠ '+aiErrorMsg(err);
+    m.querySelectorAll('label,button').forEach(el=>el.style.pointerEvents='');
+  }
+}
+function _shelfScanPrompt(mode){
+  const base=
+    'Devuelve SOLO un objeto JSON (sin texto adicional, sin markdown):\n'
+    +'{\n'
+    +'  "baldas": 4,\n'
+    +'  "layout": {\n'
+    +'    "1": [{"k":"h","n":5}],\n'
+    +'    "2": [{"k":"g","rows":3,"cols":4}],\n'
+    +'    "3": [{"k":"h","n":3},{"k":"g","rows":2,"cols":3}],\n'
+    +'    "4": []\n'
+    +'  }\n'
+    +'}\n'
+    +'Reglas: "k":"h"=huecos abiertos (n=cantidad), "k":"g"=gavetero (rows=filas cajones, cols=columnas cajones), []=balda simple. Numera baldas de arriba a abajo. Solo el JSON.';
+  if(mode==='patron'){
+    return 'Analiza este patrón dibujado en papel que representa la distribución de una estantería de almacén.\n'
+      +'Convenciones: líneas horizontales=baldas, barras verticales |=separadores entre huecos, cuadrícula o ═=gavetero. Cuenta los espacios entre separadores para el número de huecos.\n\n'
+      +base;
+  }
+  return 'Eres un experto en distribución de almacenes industriales. Analiza esta foto frontal de una estantería.\n'
+    +'Identifica: número de baldas (estantes horizontales), y en cada balda si hay separadores (cinta negra o divisores físicos) que formen huecos abiertos, o cajones/gaveteros.\n'
+    +'Si no hay separadores visibles en una balda, ponla como array vacío [].\n\n'
+    +base;
+}
+function _shelfScanApply(sid,result){
+  const sh=shelves.find(s=>s.id===sid);if(!sh)return;
+  // No mutar sh.baldas aquí: se aplica solo si el usuario guarda (saveLayout)
+  _layoutDraftBaldas=Math.max(1,Math.min(20,Math.round(result.baldas)));
+  const cleanLayout={};
+  if(result.layout&&typeof result.layout==='object'){
+    for(let b=1;b<=_layoutDraftBaldas;b++){
+      const key=String(b);
+      const blks=Array.isArray(result.layout[key])?result.layout[key]:[];
+      const cleaned=blks.map(blk=>{
+        if(blk.k==='h'){return{id:newBlockId(),k:'h',n:Math.max(1,Math.min(40,parseInt(blk.n)||1))};}
+        if(blk.k==='g'){
+          const rows=Math.max(1,Math.min(12,parseInt(blk.rows)||1));
+          const cols=Math.max(1,Math.min(12,parseInt(blk.cols)||1));
+          return{id:newBlockId(),k:'g',rows,cols,name:'Gavetero'};
+        }
+        return null;
+      }).filter(Boolean);
+      if(cleaned.length)cleanLayout[key]=cleaned;
+    }
+  }
+  layoutShelfId=sid;
+  layoutDraft=cleanLayout;
+  document.getElementById('layout-title').textContent='Distribución · '+sh.name+' (IA — revisa y guarda)';
+  renderLayoutEditor();
+  openModal('modal-layout');
+  toast('✓ '+_layoutDraftBaldas+' baldas detectadas. Revisa la distribución y guarda.');
 }
