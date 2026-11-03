@@ -4921,10 +4921,11 @@ function addHere(){
 }
 
 // ===== EDITOR DE DISTRIBUCIÓN (baldas / huecos / gavetas) =====
-let layoutDraft=null, layoutShelfId=null;
+let layoutDraft=null, layoutShelfId=null, _layoutDraftBaldas=null;
 function openLayout(sid){
   const sh=shelves.find(s=>s.id===sid); if(!sh)return;
   layoutShelfId=sid;
+  _layoutDraftBaldas=null; // no viene de escaneo: usar sh.baldas real
   layoutDraft=JSON.parse(JSON.stringify(sh.layout||{}));
   document.getElementById('layout-title').textContent='Distribución · '+sh.name;
   renderLayoutEditor();
@@ -4932,8 +4933,9 @@ function openLayout(sid){
 }
 function renderLayoutEditor(){
   const sh=shelves.find(s=>s.id===layoutShelfId); if(!sh)return;
+  const totalBaldas=_layoutDraftBaldas!==null?_layoutDraftBaldas:sh.baldas;
   let html='';
-  for(let b=1;b<=sh.baldas;b++){
+  for(let b=1;b<=totalBaldas;b++){
     const blocks=layoutDraft[String(b)]||[];
     html+='<div class="lay-balda"><div class="lay-balda-head"><span>Balda '+b+'</span><span style="font-size:12px;font-weight:400;color:var(--text3);">'+(blocks.length?'':'simple')+'</span></div>';
     if(!blocks.length){html+='<div class="lay-empty">Balda simple (sin huecos ni gavetas).</div>';}
@@ -4979,6 +4981,7 @@ function layDel(b,bi){
 }
 async function saveLayout(){
   const sh=shelves.find(s=>s.id===layoutShelfId); if(!sh)return;
+  if(_layoutDraftBaldas!==null){sh.baldas=_layoutDraftBaldas;_layoutDraftBaldas=null;}
   const clean={};
   Object.keys(layoutDraft).forEach(k=>{if(layoutDraft[k]&&layoutDraft[k].length)clean[k]=layoutDraft[k];});
   sh.layout=clean;
@@ -5980,13 +5983,18 @@ function openShelfScan(sid){
       +'</div>';
     document.body.appendChild(m);
   }
+  m._canceled=true; // cancela cualquier petición en vuelo anterior
   m._scanSid=sid;
   document.getElementById('shelf-scan-status').textContent='';
-  m.querySelectorAll('label').forEach(l=>l.style.pointerEvents='');
+  m.querySelectorAll('label,button').forEach(el=>el.style.pointerEvents='');
+  m._canceled=false;
   m.style.display='flex';
 }
 function closeShelfScan(){
-  const m=document.getElementById('modal-shelf-scan');if(m)m.style.display='none';
+  const m=document.getElementById('modal-shelf-scan');
+  if(!m)return;
+  m._canceled=true;
+  m.style.display='none';
 }
 async function _shelfScanFile(e,mode){
   const file=e.target.files[0];if(!file)return;
@@ -5994,7 +6002,8 @@ async function _shelfScanFile(e,mode){
   const m=document.getElementById('modal-shelf-scan');if(!m)return;
   const sid=m._scanSid;
   const status=document.getElementById('shelf-scan-status');
-  m.querySelectorAll('label').forEach(l=>l.style.pointerEvents='none');
+  m._canceled=false;
+  m.querySelectorAll('label,button').forEach(el=>el.style.pointerEvents='none');
   status.textContent='⏳ Analizando la foto…';
   try{
     const dataUrl=await new Promise((res,rej)=>{
@@ -6005,28 +6014,33 @@ async function _shelfScanFile(e,mode){
           const max=900;let w=img.width,h=img.height;
           if(w>max||h>max){if(w>h){h=Math.round(h*max/w);w=max;}else{w=Math.round(w*max/h);h=max;}}
           const cv=document.createElement('canvas');cv.width=w;cv.height=h;
-          cv.getContext('2d').drawImage(img,0,0,w,h);
+          const ctx=cv.getContext('2d');
+          if(!ctx){rej(new Error('No se pudo procesar la imagen'));return;}
+          ctx.drawImage(img,0,0,w,h);
           res(cv.toDataURL('image/jpeg',0.85));
         };
         img.onerror=rej;img.src=ev.target.result;
       };
       reader.onerror=rej;reader.readAsDataURL(file);
     });
+    if(m._canceled)return;
     const b64=dataUrl.split(',')[1];
     const data=await aiBuscar(b64,_shelfScanPrompt(mode));
+    if(m._canceled)return;
     let text=(data.text||'').trim().replace(/```json[\s\S]*?```|```/g,'').trim();
-    // A veces la IA devuelve el JSON dentro de un bloque de texto; extraer el primer {...}
     const jsonMatch=text.match(/\{[\s\S]*\}/);
     if(jsonMatch)text=jsonMatch[0];
     let result;
     try{result=JSON.parse(text);}catch(_){throw new Error('Respuesta no válida');}
     if(!result||typeof result.baldas!=='number'||result.baldas<1)throw new Error('No se detectaron baldas en la imagen');
+    if(m._canceled)return;
     closeShelfScan();
     _shelfScanApply(sid,result);
   }catch(err){
+    if(m._canceled)return;
     console.error('shelfScan',err);
     status.textContent='⚠ '+aiErrorMsg(err);
-    m.querySelectorAll('label').forEach(l=>l.style.pointerEvents='');
+    m.querySelectorAll('label,button').forEach(el=>el.style.pointerEvents='');
   }
 }
 function _shelfScanPrompt(mode){
@@ -6054,10 +6068,11 @@ function _shelfScanPrompt(mode){
 }
 function _shelfScanApply(sid,result){
   const sh=shelves.find(s=>s.id===sid);if(!sh)return;
-  sh.baldas=Math.max(1,Math.min(20,Math.round(result.baldas)));
+  // No mutar sh.baldas aquí: se aplica solo si el usuario guarda (saveLayout)
+  _layoutDraftBaldas=Math.max(1,Math.min(20,Math.round(result.baldas)));
   const cleanLayout={};
   if(result.layout&&typeof result.layout==='object'){
-    for(let b=1;b<=sh.baldas;b++){
+    for(let b=1;b<=_layoutDraftBaldas;b++){
       const key=String(b);
       const blks=Array.isArray(result.layout[key])?result.layout[key]:[];
       const cleaned=blks.map(blk=>{
@@ -6077,5 +6092,5 @@ function _shelfScanApply(sid,result){
   document.getElementById('layout-title').textContent='Distribución · '+sh.name+' (IA — revisa y guarda)';
   renderLayoutEditor();
   openModal('modal-layout');
-  toast('✓ '+sh.baldas+' baldas detectadas. Revisa la distribución y guarda.');
+  toast('✓ '+_layoutDraftBaldas+' baldas detectadas. Revisa la distribución y guarda.');
 }
