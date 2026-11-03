@@ -5983,28 +5983,27 @@ function openShelfScan(sid){
       +'</div>';
     document.body.appendChild(m);
   }
-  m._canceled=true; // cancela cualquier petición en vuelo anterior
-  m._scanSid=sid;
+  m._scanSid=sid; // cambiar sid cancela automáticamente cualquier petición anterior
   document.getElementById('shelf-scan-status').textContent='';
   m.querySelectorAll('label,button').forEach(el=>el.style.pointerEvents='');
-  m._canceled=false;
   m.style.display='flex';
 }
 function closeShelfScan(){
   const m=document.getElementById('modal-shelf-scan');
   if(!m)return;
-  m._canceled=true;
+  m._scanSid=null; // null = cancelado; las promesas en vuelo lo detectan
   m.style.display='none';
 }
 async function _shelfScanFile(e,mode){
   const file=e.target.files[0];if(!file)return;
   e.target.value='';
   const m=document.getElementById('modal-shelf-scan');if(!m)return;
-  const sid=m._scanSid;
+  const capturedSid=m._scanSid; // capturar antes de cualquier await
   const status=document.getElementById('shelf-scan-status');
-  m._canceled=false;
   m.querySelectorAll('label,button').forEach(el=>el.style.pointerEvents='none');
   status.textContent='⏳ Analizando la foto…';
+  // stale: comprueba si la petición fue cancelada o superada por otra estantería
+  const stale=()=>m._scanSid!==capturedSid;
   try{
     const dataUrl=await new Promise((res,rej)=>{
       const reader=new FileReader();
@@ -6023,21 +6022,21 @@ async function _shelfScanFile(e,mode){
       };
       reader.onerror=rej;reader.readAsDataURL(file);
     });
-    if(m._canceled)return;
+    if(stale())return;
     const b64=dataUrl.split(',')[1];
     const data=await aiBuscar(b64,_shelfScanPrompt(mode));
-    if(m._canceled)return;
+    if(stale())return;
     let text=(data.text||'').trim().replace(/```json[\s\S]*?```|```/g,'').trim();
     const jsonMatch=text.match(/\{[\s\S]*\}/);
     if(jsonMatch)text=jsonMatch[0];
     let result;
     try{result=JSON.parse(text);}catch(_){throw new Error('Respuesta no válida');}
-    if(!result||typeof result.baldas!=='number'||result.baldas<1)throw new Error('No se detectaron baldas en la imagen');
-    if(m._canceled)return;
+    if(!Number.isFinite(result?.baldas)||result.baldas<1)throw new Error('No se detectaron baldas en la imagen');
+    if(stale())return;
     closeShelfScan();
-    _shelfScanApply(sid,result);
+    _shelfScanApply(capturedSid,result);
   }catch(err){
-    if(m._canceled)return;
+    if(stale())return;
     console.error('shelfScan',err);
     status.textContent='⚠ '+aiErrorMsg(err);
     m.querySelectorAll('label,button').forEach(el=>el.style.pointerEvents='');
