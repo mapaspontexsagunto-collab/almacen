@@ -5856,7 +5856,7 @@ function _showDemoBanner(){
 }
 async function _demoLoadFile(e){
   const file=e.target.files[0];if(!file)return;
-  _demoFileInput.value='';
+  e.target.value='';
   const reader=new FileReader();
   reader.onload=async ev=>{
     let data;
