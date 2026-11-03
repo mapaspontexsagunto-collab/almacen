@@ -5821,22 +5821,66 @@ function cancelInvoiceCreate(){
 }
 
 // ===== MODO DEMO =====
+let _demoFileInput=null;
 function _showDemoBanner(){
   if(document.getElementById('demo-banner'))return;
+  // Input de archivo oculto para cargar backup real
+  _demoFileInput=document.createElement('input');
+  _demoFileInput.type='file';_demoFileInput.accept='.json,application/json';
+  _demoFileInput.style.display='none';
+  _demoFileInput.onchange=_demoLoadFile;
+  document.body.appendChild(_demoFileInput);
   const b=document.createElement('div');
   b.id='demo-banner';
-  b.innerHTML='<span style="font-weight:700;letter-spacing:.5px;">🎯 MODO DEMO</span>'
-    +'<span style="opacity:.85;font-size:11px;">Datos de muestra · cambios solo locales · bloquea 🔒 para ver vista de usuario</span>';
-  b.style.cssText='position:fixed;bottom:0;left:0;right:0;z-index:9999;'
-    +'background:linear-gradient(135deg,#1a1a2e,#16213e);color:#e8d5a3;'
-    +'padding:10px 18px;padding-bottom:calc(10px + env(safe-area-inset-bottom));'
-    +'display:flex;justify-content:space-between;align-items:center;gap:8px;'
-    +'font-family:DM Sans,sans-serif;font-size:12px;'
-    +'border-top:2px solid rgba(232,213,163,0.4);box-shadow:0 -4px 20px rgba(0,0,0,.4);';
+  b.innerHTML=
+    '<div style="display:flex;flex-direction:column;gap:1px;min-width:0;">'
+    +'<span style="font-weight:700;font-size:12px;white-space:nowrap;">🎯 MODO DEMO</span>'
+    +'<span style="opacity:.75;font-size:10px;white-space:nowrap;">Bloquea 🔒 para ver vista usuario</span>'
+    +'</div>'
+    +'<button onclick="_demoCargaDatos()" style="flex-shrink:0;background:rgba(232,213,163,0.15);border:1px solid rgba(232,213,163,0.45);color:#e8d5a3;padding:6px 12px;border-radius:8px;font-size:11px;font-family:DM Sans,sans-serif;cursor:pointer;white-space:nowrap;">📂 Cargar mis datos</button>';
+  b.style.cssText=
+    'position:fixed;left:0;right:0;z-index:59;'  // z-index 59 = justo debajo de bottomnav (60)
+    +'background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);color:#e8d5a3;'
+    +'padding:8px 14px;'
+    +'display:flex;justify-content:space-between;align-items:center;gap:10px;'
+    +'font-family:DM Sans,sans-serif;'
+    +'border-top:2px solid rgba(232,213,163,0.35);box-shadow:0 -3px 14px rgba(0,0,0,.35);';
   document.body.appendChild(b);
-  // Ajustar padding del app-root para que el banner no tape contenido
-  const root=document.getElementById('app-root');
-  if(root)root.style.paddingBottom='calc(44px + env(safe-area-inset-bottom))';
+  // Posicionar el banner encima de la bottomnav midiendo su altura real
+  requestAnimationFrame(()=>{
+    const nav=document.querySelector('.bottomnav');
+    const navH=nav?nav.getBoundingClientRect().height:56;
+    b.style.bottom=navH+'px';
+    // Añadir espacio extra al contenido para que no quede tapado
+    const root=document.getElementById('app-root');
+    if(root)root.style.paddingBottom=(navH+b.getBoundingClientRect().height+2)+'px';
+  });
+}
+function _demoCargaDatos(){if(_demoFileInput)_demoFileInput.click();}
+async function _demoLoadFile(e){
+  const file=e.target.files[0];if(!file)return;
+  _demoFileInput.value='';
+  const reader=new FileReader();
+  reader.onload=async ev=>{
+    let data;
+    try{data=JSON.parse(ev.target.result);}catch(_){toast('⚠ Archivo no válido');return;}
+    if(!data||!Array.isArray(data.items)||!data.items.length){toast('⚠ No es una copia de seguridad válida');return;}
+    const limpios=cleanItems(data.items);
+    if(!limpios.length){toast('⚠ No se encontraron artículos en el archivo');return;}
+    await dbClear();
+    for(const it of limpios)await dbPut(it);
+    if(Array.isArray(data.categories)&&data.categories.length){categories=cleanNames(data.categories);await cfgPut('categories',categories);}
+    if(Array.isArray(data.providers)&&data.providers.length){providers=cleanNames(data.providers);await cfgPut('providers',providers);}
+    if(Array.isArray(data.movements)&&data.movements.length){
+      await movClear();
+      for(const m of data.movements)await movPut({...m,synced:true});
+    }
+    items=await dbGetAll();
+    renderAll();
+    if(document.getElementById('page-inicio')?.classList.contains('active'))renderHomeMovements();
+    toast('✓ '+limpios.length+' artículos cargados');
+  };
+  reader.readAsText(file);
 }
 
 async function _seedDemoData(){
