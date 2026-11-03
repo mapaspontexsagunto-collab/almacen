@@ -1,6 +1,9 @@
 -- Registra QUIÉN hace cada movimiento de stock.
 -- Ejecutar UNA VEZ en Supabase → SQL Editor, cuando se use Supabase Auth (useSupabaseAuth: true).
--- Es seguro repetirlo. Los movimientos anteriores se quedan sin usuario.
+-- Es seguro repetirlo. Los movimientos anteriores se quedan sin usuario (solo lo llevan los registrados
+-- desde que se ejecutó este fichero).
+-- OJO: volver a ejecutarlo REINSTALA el disparador antiguo (escribe el correo en cualquier inserción,
+-- también desde el SQL Editor). Después, ejecuta de nuevo supabase_endurecimiento.sql, que lo corrige.
 
 CREATE OR REPLACE FUNCTION public.set_movimiento_usuario() RETURNS trigger
 LANGUAGE plpgsql SET search_path = '' AS $$

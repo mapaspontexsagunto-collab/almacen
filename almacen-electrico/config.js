@@ -9,8 +9,8 @@ const WAREHOUSE_CONFIG = {
   tblMov: 'movements',
   tblPrice: 'price_history',
   sesKey: 'almacen_sesion_electrico',
-  // false = acceso antiguo (usuario/contraseña de la tabla app_auth)
-  // true  = acceso con Supabase Auth (ver SEGURIDAD.md). Hay que activarlo en los DOS almacenes.
+  // Debe ser true. El acceso antiguo se eliminó; no usar false (con false nadie puede entrar).
+  // El acceso es con Supabase Auth (ver SEGURIDAD.md) y debe estar en true en los DOS almacenes.
   useSupabaseAuth: true
 };
 
