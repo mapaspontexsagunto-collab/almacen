@@ -5821,23 +5821,21 @@ function cancelInvoiceCreate(){
 }
 
 // ===== MODO DEMO =====
-let _demoFileInput=null;
 function _showDemoBanner(){
   if(document.getElementById('demo-banner'))return;
-  // Input de archivo oculto para cargar backup real
-  _demoFileInput=document.createElement('input');
-  _demoFileInput.type='file';_demoFileInput.accept='.json,application/json';
-  _demoFileInput.style.display='none';
-  _demoFileInput.onchange=_demoLoadFile;
-  document.body.appendChild(_demoFileInput);
   const b=document.createElement('div');
   b.id='demo-banner';
+  // El <input> va dentro del <label>: así iOS lo abre nativamente sin .click() programático
+  const btnStyle='flex-shrink:0;background:rgba(232,213,163,0.15);border:1px solid rgba(232,213,163,0.45);'
+    +'color:#e8d5a3;padding:6px 12px;border-radius:8px;font-size:11px;'
+    +'font-family:DM Sans,sans-serif;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:5px;';
   b.innerHTML=
     '<div style="display:flex;flex-direction:column;gap:1px;min-width:0;">'
     +'<span style="font-weight:700;font-size:12px;white-space:nowrap;">🎯 MODO DEMO</span>'
     +'<span style="opacity:.75;font-size:10px;white-space:nowrap;">Bloquea 🔒 para ver vista usuario</span>'
     +'</div>'
-    +'<button onclick="_demoCargaDatos()" style="flex-shrink:0;background:rgba(232,213,163,0.15);border:1px solid rgba(232,213,163,0.45);color:#e8d5a3;padding:6px 12px;border-radius:8px;font-size:11px;font-family:DM Sans,sans-serif;cursor:pointer;white-space:nowrap;">📂 Cargar mis datos</button>';
+    +'<label style="'+btnStyle+'">📂 Cargar mis datos'
+    +'<input type="file" accept=".json,application/json" style="display:none" onchange="_demoLoadFile(event)"></label>';
   b.style.cssText=
     'position:fixed;left:0;right:0;z-index:59;'  // z-index 59 = justo debajo de bottomnav (60)
     +'background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);color:#e8d5a3;'
@@ -5856,7 +5854,6 @@ function _showDemoBanner(){
     if(root)root.style.paddingBottom=(navH+b.getBoundingClientRect().height+2)+'px';
   });
 }
-function _demoCargaDatos(){if(_demoFileInput)_demoFileInput.click();}
 async function _demoLoadFile(e){
   const file=e.target.files[0];if(!file)return;
   _demoFileInput.value='';
