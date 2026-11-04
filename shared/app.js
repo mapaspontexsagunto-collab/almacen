@@ -1489,8 +1489,6 @@ async function refreshDetailStock(id){
   refreshVisiblePage();
 }
 function openDetail(id){
-  const mAi=document.getElementById('modal-ai');
-  if(mAi){mAi.classList.remove('open');mAi.style.display='';}
   _openDetail(id);
   refreshDetailStock(id);
   refreshDetailPhoto(id);
