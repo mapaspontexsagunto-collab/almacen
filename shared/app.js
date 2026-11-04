@@ -1112,6 +1112,24 @@ function goToShelfLoc(shId){
   currentCat='';currentPage=0;
   cameFromShelf=true;expandedShelf=shId;
   showPage('buscar');
+  _showVolverIA();
+}
+function _showVolverIA(){
+  if(!lastAIIdent)return;
+  let btn=document.getElementById('volver-ia-btn');
+  if(btn){btn.style.display='';return;}
+  btn=document.createElement('button');
+  btn.id='volver-ia-btn';
+  btn.className='btn btn-primary';
+  btn.style.cssText='width:100%;margin-bottom:10px;font-size:0.9em;';
+  btn.textContent='← Volver a resultados de búsqueda IA';
+  btn.onclick=()=>{
+    btn.style.display='none';
+    renderAIResult(buildAIMatches(lastAIIdent));
+    openModal('modal-ai');
+  };
+  const sb=document.querySelector('#page-buscar .search-bar');
+  if(sb)sb.after(btn);
 }
 
 async function showPage(id){
@@ -3269,15 +3287,18 @@ function handleAIPhoto(e){
   const file=e.target.files[0];if(!file)return;
   e.target.value=''; // permitir volver a elegir la misma foto
   const reader=new FileReader();
+  reader.onerror=()=>toast('⚠ No se pudo leer la imagen');
   reader.onload=ev=>{
     const img=new Image();
+    img.onerror=()=>toast('⚠ No se pudo cargar la imagen');
     img.onload=()=>{
       const max=600;let w=img.width,h=img.height;
       if(w>max||h>max){if(w>h){h=h*max/w;w=max;}else{w=w*max/h;h=max;}}
       const cv=document.createElement('canvas');cv.width=w;cv.height=h;
-      cv.getContext('2d').drawImage(img,0,0,w,h);
-      const dataUrl=cv.toDataURL('image/jpeg',0.8);
-      runAISearch(dataUrl);
+      const ctx=cv.getContext('2d');
+      if(!ctx){toast('⚠ No se pudo procesar la imagen');return;}
+      ctx.drawImage(img,0,0,w,h);
+      runAISearch(cv.toDataURL('image/jpeg',0.8));
     };
     img.src=ev.target.result;
   };
@@ -3285,6 +3306,7 @@ function handleAIPhoto(e){
 }
 
 async function runAISearch(dataUrl){
+  const _volver=document.getElementById('volver-ia-btn');if(_volver)_volver.remove();
   document.getElementById('ai-photo-preview').innerHTML=`<img src="${dataUrl}" style="width:100%;max-height:220px;object-fit:contain;border-radius:var(--radius);background:var(--surface2);">`;
   document.getElementById('ai-result').innerHTML='<div class="empty"><p>\u23f3 Analizando la imagen...</p></div>';
   openModal('modal-ai');
