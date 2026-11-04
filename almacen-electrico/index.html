@@ -113,7 +113,7 @@
     <div class="page-sub">Encuentra material por nombre o categoría</div>
     <div id="search-history-row" class="search-history"></div>
     <div class="search-bar"><input type="text" id="search-input" placeholder="Buscar nombre, referencia, marca..." oninput="onSearchInput()"><button class="btn" style="padding:13px 14px;" onclick="document.getElementById('ai-photo-file').click()" title="Buscar por foto con IA"><svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 9a2 2 0 012-2h.93a2 2 0 001.66-.9l.82-1.2A2 2 0 0110.07 4h3.86a2 2 0 011.66.9l.82 1.2a2 2 0 001.66.9H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z" stroke-width="1.7"/><circle cx="12" cy="13" r="3" stroke-width="1.7"/></svg></button></div>
-    <input type="file" id="ai-photo-file" accept="image/*" capture="environment" style="display:none;" onchange="handleAIPhoto(event)">
+    <input type="file" id="ai-photo-file" accept="image/*" style="display:none;" onchange="handleAIPhoto(event)">
     <div class="seg"><button id="view-gallery" class="active" onclick="setView('gallery')">Galería</button><button id="view-list" onclick="setView('list')">Lista</button></div>
     <button class="btn btn-sm" id="btn-select-mode" onclick="toggleSelectMode()" style="width:100%;margin-bottom:14px;">Seleccionar varios</button>
     <div class="cats" id="cats"></div>

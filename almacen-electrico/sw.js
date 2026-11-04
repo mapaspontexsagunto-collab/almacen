@@ -4,7 +4,7 @@
 // Las librerías externas (versiones fijas, con control de integridad) se guardan para poder abrir la app sin conexión.
 
 const PREFIX = 'almacen-electrico-';
-const CACHE_NAME = PREFIX + 'v5'; // v5: fuerza recarga limpia tras corrección del modal-detail detrás de modal-ai
+const CACHE_NAME = PREFIX + 'v6'; // v6: lupa restaura opción galería (quita capture=environment)
 const LEGACY_CACHE = 'almacen-v2';
 const NETWORK_TIMEOUT_MS = 4000;
 const CDN_HOSTS = ['cdnjs.cloudflare.com', 'cdn.jsdelivr.net'];
