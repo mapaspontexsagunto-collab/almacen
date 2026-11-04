@@ -4,7 +4,7 @@
 // Las librerías externas (versiones fijas, con control de integridad) se guardan para poder abrir la app sin conexión.
 
 const PREFIX = 'almacen-electrico-';
-const CACHE_NAME = PREFIX + 'v8'; // v8: fix modal-ai invisible tras openDetail (style.display='' en lugar de none)
+const CACHE_NAME = PREFIX + 'v9'; // v9: modal-ai permanece visible al abrir detalle desde resultados IA
 const LEGACY_CACHE = 'almacen-v2';
 const NETWORK_TIMEOUT_MS = 4000;
 const CDN_HOSTS = ['cdnjs.cloudflare.com', 'cdn.jsdelivr.net'];
