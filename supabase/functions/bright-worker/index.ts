@@ -1,6 +1,6 @@
 // Función Edge de Supabase "bright-worker" (Deno). Hace de intermediaria entre la app del almacén y:
 //   - OpenAI (GPT-4o): leer facturas (purpose 'factura') y reconocer fotos de componentes.
-//   - Brave Search: buscar fichas técnicas en internet (mode 'web').
+//   - OpenAI Search (gpt-4o-search-preview): buscar fichas técnicas en internet (mode 'web').
 //
 // ESTE FICHERO ES LA REFERENCIA EN EL REPOSITORIO. La función que responde de verdad vive en el panel de
 // Supabase (Edge Functions) y NO se actualiza sola al hacer commit: hay que desplegarla a mano
@@ -33,7 +33,7 @@
 //  - Límites de tamaño: imagen (base64) 5 M de caracteres, prompt 4000 (2200 para quien no es administrador, que solo
 //    puede pedir fotos), búsqueda 200; salida de Gemini fija. El cuerpo se lee por flujo y se corta con 413 al pasar
 //    el máximo en BYTES, aunque no venga Content-Length. La imagen se valida por sus bytes reales (JPEG/PNG/WEBP).
-//  - Límites de uso por usuario: IA por hora; Brave por hora y por día (una búsqueda de la app son 4 llamadas).
+//  - Límites de uso por usuario: IA por hora; búsqueda web por hora y por día.
 //  - Gemini 2.5 flash: se desactiva el razonamiento (thinkingBudget 0) porque sus tokens cuentan contra
 //    maxOutputTokens y podrían cortar el JSON; se pide la respuesta como application/json.
 //  - Se rechazan los campos desconocidos y los tipos incorrectos.
@@ -51,11 +51,11 @@ const MAX_QUERY = 200;
 const MAX_CUERPO = MAX_IMAGEN + MAX_PROMPT + 4096; // bytes máximos de la petición
 const VENTANA_MS = 60 * 60 * 1000;
 const VENTANA_DIA_MS = 24 * VENTANA_MS;
-const LIMITE_IA_POR_DEFECTO = 30;  // llamadas a Gemini por usuario y hora
-// Una búsqueda de la app hace 4 llamadas a Brave (datasheet, manual, comprar, general): 20 por hora = 5 búsquedas
+const LIMITE_IA_POR_DEFECTO = 30;  // llamadas a OpenAI (IA) por usuario y hora
+// Una búsqueda de la app hace 4 llamadas (datasheet, manual, comprar, general): 20 por hora = 5 búsquedas
 // por hora y 40 por día = 10 búsquedas al día por usuario.
-const LIMITE_WEB_POR_DEFECTO = 20;     // llamadas a Brave por usuario y hora
-const LIMITE_WEB_DIA_POR_DEFECTO = 40; // llamadas a Brave por usuario y día
+const LIMITE_WEB_POR_DEFECTO = 20;     // llamadas a OpenAI Search por usuario y hora
+const LIMITE_WEB_DIA_POR_DEFECTO = 40; // llamadas a OpenAI Search por usuario y día
 // maxOutputTokens fijo por propósito. En Gemini 2.5 los tokens de razonamiento cuentan contra este tope: por eso en los
 // modelos flash se desactivan (thinkingBudget 0). La factura puede ser larga; la ficha de una foto cabe en ~600.
 const TOKENS_SALIDA: Record<string, number> = { factura: 16384, foto: 1500 };
@@ -226,27 +226,43 @@ async function llamarOpenAI(image: string, prompt: string, purpose: string, rest
   return { text };
 }
 
-// ---------- Brave ----------
-async function llamarBrave(query: string, num: number): Promise<Response | { results: unknown[] }> {
-  const clave = entorno('BRAVE_API_KEY');
-  if (!clave) { console.error('BRAVE_API_KEY no configurada'); return new Response(null, { status: 502 }); }
-  const url = new URL('https://api.search.brave.com/res/v1/web/search');
-  url.searchParams.set('q', query);
-  url.searchParams.set('count', String(num));
-  const r = await fetch(url, {
-    headers: { Accept: 'application/json', 'X-Subscription-Token': clave },
-    signal: AbortSignal.timeout(15000),
+// ---------- OpenAI Search ----------
+async function llamarOpenAI_web(query: string, num: number): Promise<Response | { results: unknown[] }> {
+  const clave = entorno('OPENAI_API_KEY');
+  if (!clave) { console.error('OPENAI_API_KEY no configurada'); return new Response(null, { status: 502 }); }
+  const r = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + clave },
+    body: JSON.stringify({
+      model: 'gpt-4o-search-preview',
+      messages: [{ role: 'user', content: query }],
+    }),
+    signal: AbortSignal.timeout(30000),
   });
-  if (!r.ok) { console.error('Brave respondió', r.status); return new Response(null, { status: r.status }); }
+  if (!r.ok) { console.error('OpenAI Search respondió', r.status); return new Response(null, { status: r.status }); }
   const d = await r.json();
-  const lista = Array.isArray(d?.web?.results) ? d.web.results : [];
-  const results = lista.slice(0, num).map((x: Record<string, unknown>) => {
-    const link = enlaceHttp(x?.url);
+  const content: string = typeof d?.choices?.[0]?.message?.content === 'string' ? d.choices[0].message.content : '';
+  const annotations: unknown[] = Array.isArray(d?.choices?.[0]?.message?.annotations) ? d.choices[0].message.annotations : [];
+  const vistos = new Set<string>();
+  const results: unknown[] = [];
+  for (const a of annotations) {
+    if (results.length >= num) break;
+    if (!a || typeof a !== 'object') continue;
+    const ann = a as Record<string, unknown>;
+    if (ann.type !== 'url_citation') continue;
+    const uc = ann.url_citation as Record<string, unknown> | undefined;
+    if (!uc) continue;
+    const link = enlaceHttp(uc.url);
+    if (!link || vistos.has(link)) continue;
+    vistos.add(link);
     let host = '';
-    try { host = new URL(link).hostname; } catch (_) { /* sin enlace válido */ }
-    const meta = x?.meta_url as { hostname?: unknown } | undefined;
-    return { title: sinHtml(x?.title, 200), link, display: sinHtml(meta?.hostname, 100) || host, snippet: sinHtml(x?.description, 300) };
-  }).filter((x: { link: string }) => x.link);
+    try { host = new URL(link).hostname; } catch (_) { /* sin enlace */ }
+    const title = recortar(uc.title, 200) || host;
+    const si = typeof ann.start_index === 'number' ? ann.start_index : 0;
+    const ei = typeof ann.end_index === 'number' ? ann.end_index : si;
+    const snippet = content.slice(Math.max(0, si - 150), Math.max(ei, si + 150)).replace(/\[?\d+\]?/g, '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    results.push({ title, link, display: host, snippet });
+  }
   return { results };
 }
 
@@ -322,10 +338,10 @@ export async function handler(req: Request): Promise<Response> {
       devolverUso(claveH, t);
       return responder({ error: 'rate_limited' }, 429, cors, { 'Retry-After': String(esperaD) });
     }
-    return await enviar(() => llamarBrave(query, num), cors, () => { devolverUso(claveH, t); devolverUso(claveD, t); });
+    return await enviar(() => llamarOpenAI_web(query, num), cors, () => { devolverUso(claveH, t); devolverUso(claveD, t); });
   }
 
-  // ----- IA (Gemini) -----
+  // ----- IA (OpenAI) -----
   if (Object.keys(body).some((k) => !CAMPOS_IA.includes(k))) return responder({ error: 'bad_request' }, 400, cors);
   const { image, prompt } = body;
   if (typeof image !== 'string' || !image || typeof prompt !== 'string' || !prompt.trim()) return responder({ error: 'bad_request' }, 400, cors);
