@@ -1490,7 +1490,7 @@ async function refreshDetailStock(id){
 }
 function openDetail(id){
   const mAi=document.getElementById('modal-ai');
-  if(mAi){mAi.classList.remove('open');mAi.style.display='none';}
+  if(mAi){mAi.classList.remove('open');mAi.style.display='';}
   _openDetail(id);
   refreshDetailStock(id);
   refreshDetailPhoto(id);
@@ -3866,7 +3866,7 @@ function isOut(i){return (i.min||0)>0 && (i.stock||0)===0;}
 function isLow(i){return (i.min||0)>=2 && i.stock>0 && i.stock<=i.min;}
 function stockBadge(i){if(isOut(i))return'<span class="badge badge-out">Sin stock</span>';if(isLow(i))return`<span class="badge badge-low">↓ ${i.stock}</span>`;return`<span class="badge badge-ok">${i.stock} uds.</span>`;}
 function esc(s){return(s||'').toString().replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-function openModal(id){document.getElementById(id).classList.add('open');}
+function openModal(id){const el=document.getElementById(id);el.style.display='';el.classList.add('open');}
 function closeModal(id){
   document.getElementById(id).classList.remove('open');
   // Cerrar el escáner por cualquier vía (Cancelar, deslizar, Escape) apaga la cámara y olvida para qué se abrió
