@@ -1107,6 +1107,7 @@ function refreshVisiblePage(){
 }
 function renderAll(){updateStats();renderCats();renderItems();renderMap();renderCatManage();renderShelfSummary();}
 function goToShelfLoc(shId){
+  closeModal('modal-ai');
   document.getElementById('search-input').value='';
   currentCat='';currentPage=0;
   cameFromShelf=true;expandedShelf=shId;
@@ -3375,7 +3376,7 @@ function renderAIResult(r){
       let it=null;
       if(c.id)it=items.find(i=>i.id===c.id);
       if(!it&&c.nombre)it=items.find(i=>i.name===c.nombre);
-      html+=`<div class="detail-row" style="padding:12px 4px;cursor:${it?'pointer':'default'};" ${it?`onclick="openDetail('${it.id}')"`:''}>
+      html+=`<div class="detail-row" style="padding:12px 4px;cursor:${it?'pointer':'default'};" ${it?`onclick="closeModal('modal-ai');openDetail('${it.id}')"`:''}>
         <div style="flex:1;"><strong>${esc(it?it.name:(c.nombre||''))}</strong><br><span style="font-size:12px;color:var(--text2);">${esc(c.motivo||'')}</span></div>
         <span class="badge badge-loc">${esc(it?it.loc:(c.ubicacion||'?'))}</span>
       </div>`;
