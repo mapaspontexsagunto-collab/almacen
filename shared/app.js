@@ -3398,7 +3398,7 @@ function renderAIResult(r){
       let it=null;
       if(c.id)it=items.find(i=>i.id===c.id);
       if(!it&&c.nombre)it=items.find(i=>i.name===c.nombre);
-      html+=`<div class="detail-row" style="padding:12px 4px;cursor:${it?'pointer':'default'};" ${it?`onclick="closeModal('modal-ai');openDetail('${it.id}')"`:''}>
+      html+=`<div class="detail-row" style="padding:12px 4px;cursor:${it?'pointer':'default'};" ${it?`onclick="openDetail('${it.id}')"`:''}>
         <div style="flex:1;"><strong>${esc(it?it.name:(c.nombre||''))}</strong><br><span style="font-size:12px;color:var(--text2);">${esc(c.motivo||'')}</span></div>
         <span class="badge badge-loc">${esc(it?it.loc:(c.ubicacion||'?'))}</span>
       </div>`;
@@ -3864,9 +3864,19 @@ function isOut(i){return (i.min||0)>0 && (i.stock||0)===0;}
 function isLow(i){return (i.min||0)>=2 && i.stock>0 && i.stock<=i.min;}
 function stockBadge(i){if(isOut(i))return'<span class="badge badge-out">Sin stock</span>';if(isLow(i))return`<span class="badge badge-low">↓ ${i.stock}</span>`;return`<span class="badge badge-ok">${i.stock} uds.</span>`;}
 function esc(s){return(s||'').toString().replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-function openModal(id){const el=document.getElementById(id);el.style.display='';el.classList.add('open');}
+// Un modal que se abre queda siempre por encima de los ya abiertos (p. ej. el artículo o su QR sobre la búsqueda por foto)
+function _zModal(m){return parseInt(getComputedStyle(m).zIndex,10)||0;}
+function openModal(id){
+  const el=document.getElementById(id);
+  el.style.display='';el.style.zIndex='';
+  let top=0;
+  document.querySelectorAll('.modal-bg.open').forEach(m=>{if(m!==el)top=Math.max(top,_zModal(m));});
+  if(top>=_zModal(el))el.style.zIndex=String(top+1);
+  el.classList.add('open');
+}
 function closeModal(id){
-  document.getElementById(id).classList.remove('open');
+  const el=document.getElementById(id);
+  el.classList.remove('open');el.style.zIndex='';
   // Cerrar el escáner por cualquier vía (Cancelar, deslizar, Escape) apaga la cámara y olvida para qué se abrió
   if(id==='modal-scan'){scanPurpose=null;detenerScanner();}
   // Si se cierra el formulario de "Crear nuevo" desde una factura sin guardar, se olvida la línea y se vuelve a la factura
@@ -3882,7 +3892,7 @@ document.addEventListener('keydown',function(e){
   if(e.key!=='Escape')return;
   const open=[...document.querySelectorAll('.modal-bg.open')];
   if(!open.length)return;
-  const top=open[open.length-1];
+  const top=open.reduce((a,b)=>_zModal(b)>=_zModal(a)?b:a);
   closeModal(top.id);
 });
 // Cerrar el modal con un deslizamiento de izquierda a derecha (móvil)
