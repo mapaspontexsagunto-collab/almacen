@@ -1106,6 +1106,12 @@ function refreshVisiblePage(){
   if(document.getElementById('page-costes')?.classList.contains('active'))Promise.resolve(renderCostes(true)).catch(()=>{});
 }
 function renderAll(){updateStats();renderCats();renderItems();renderMap();renderCatManage();renderShelfSummary();}
+function goToShelfLoc(shId){
+  document.getElementById('search-input').value='';
+  currentCat='';currentPage=0;
+  cameFromShelf=true;expandedShelf=shId;
+  showPage('buscar');
+}
 
 async function showPage(id){
   if(id!=='buscar' && typeof selectMode!=='undefined' && selectMode){ selectMode=false; selectedIds.clear(); const _b=document.getElementById('btn-select-mode'); if(_b){_b.textContent='Seleccionar varios';_b.classList.remove('btn-primary');} updateSelBar(); }
@@ -3382,7 +3388,8 @@ function renderAIResult(r){
     html+='<div class="fl" style="margin:14px 0 8px;">Posibles ubicaciones</div>';
     r.ubicaciones_sugeridas.forEach(u=>{
       const sh=shelves.find(s=>u.ubicacion&&u.ubicacion.startsWith(s.id));
-      html+=`<div class="detail-row" style="padding:12px 4px;">
+      const clickable=sh?` data-shid="${esc(sh.id)}" onclick="goToShelfLoc(this.dataset.shid)" style="padding:12px 4px;cursor:pointer;"`:`style="padding:12px 4px;"`;
+      html+=`<div class="detail-row"${clickable}>
         <div style="flex:1;"><span style="font-size:12px;color:var(--text2);">${esc(u.motivo||'')}</span></div>
         <span class="badge badge-loc">${esc(u.ubicacion||'?')}${sh?' · '+esc(sh.name):''}</span>
       </div>`;
