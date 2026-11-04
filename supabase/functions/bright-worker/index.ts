@@ -1,5 +1,5 @@
 // Función Edge de Supabase "bright-worker" (Deno). Hace de intermediaria entre la app del almacén y:
-//   - Gemini (Google): leer facturas (purpose 'factura') y reconocer fotos de componentes.
+//   - OpenAI (GPT-4o): leer facturas (purpose 'factura') y reconocer fotos de componentes.
 //   - Brave Search: buscar fichas técnicas en internet (mode 'web').
 //
 // ESTE FICHERO ES LA REFERENCIA EN EL REPOSITORIO. La función que responde de verdad vive en el panel de
@@ -175,7 +175,7 @@ async function verificarUsuario(req: Request): Promise<Usuario | null> {
   }
 }
 
-// ---------- Gemini ----------
+// ---------- OpenAI ----------
 // Tipo de imagen por sus bytes reales: se decodifican los primeros 16 caracteres base64 (12 bytes) y se comprueba la firma.
 // Solo base64 estándar con longitud múltiplo de 4 (sin base64url ni caracteres sueltos); si no, devuelve ''.
 function tipoImagen(b64: string): string {
@@ -193,35 +193,36 @@ function tipoImagen(b64: string): string {
   return '';
 }
 
-async function llamarGemini(image: string, prompt: string, purpose: string, restringir: boolean): Promise<Response | { text: string }> {
-  const clave = entorno('GEMINI_API_KEY');
-  if (!clave) { console.error('GEMINI_API_KEY no configurada'); return new Response(null, { status: 502 }); }
-  const modelo = entorno('GEMINI_MODEL') || 'gemini-2.5-flash';
-  if (!/^[a-z0-9.\-]+$/.test(modelo)) { console.error('GEMINI_MODEL no válido'); return new Response(null, { status: 502 }); }
-  // Los dos prompts de la app piden JSON, así que se pide la respuesta como application/json. En los modelos flash se
-  // desactiva el razonamiento (thinkingBudget 0): sus tokens cuentan contra maxOutputTokens y podrían truncar el JSON.
-  // Los modelos -pro no admiten thinkingBudget 0, por eso no se envía en ellos.
-  const generationConfig: Record<string, unknown> = {
-    maxOutputTokens: TOKENS_SALIDA[purpose] ?? TOKENS_SALIDA.foto,
-    temperature: 0.1,
-    responseMimeType: 'application/json',
-  };
-  if (modelo.includes('flash') && !modelo.includes('-pro')) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+async function llamarOpenAI(image: string, prompt: string, purpose: string, restringir: boolean): Promise<Response | { text: string }> {
+  const clave = entorno('OPENAI_API_KEY');
+  if (!clave) { console.error('OPENAI_API_KEY no configurada'); return new Response(null, { status: 502 }); }
+  const modelo = entorno('OPENAI_MODEL') || 'gpt-4o';
+  if (!/^[a-z0-9.\-]+$/.test(modelo)) { console.error('OPENAI_MODEL no válido'); return new Response(null, { status: 502 }); }
+  // response_format json_object requiere que la instrucción mencione "JSON"
+  const instruccion = (restringir ? INSTRUCCION_FOTO : INSTRUCCION_FACTURA) + ' Responde siempre con un objeto JSON válido.';
+  const mime = tipoImagen(image);
   const cuerpo = {
-    systemInstruction: { parts: [{ text: restringir ? INSTRUCCION_FOTO : INSTRUCCION_FACTURA }] },
-    contents: [{ role: 'user', parts: [{ text: prompt }, { inline_data: { mime_type: tipoImagen(image), data: image } }] }],
-    generationConfig,
+    model: modelo,
+    messages: [
+      { role: 'system', content: instruccion },
+      { role: 'user', content: [
+        { type: 'text', text: prompt },
+        { type: 'image_url', image_url: { url: `data:${mime};base64,${image}`, detail: 'auto' } },
+      ]},
+    ],
+    max_tokens: TOKENS_SALIDA[purpose] ?? TOKENS_SALIDA.foto,
+    temperature: 0.1,
+    response_format: { type: 'json_object' },
   };
-  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + modelo + ':generateContent', {
+  const r = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': clave }, // la clave va en cabecera, no en la URL
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + clave },
     body: JSON.stringify(cuerpo),
     signal: AbortSignal.timeout(50000),
   });
-  if (!r.ok) { console.error('Gemini respondió', r.status); return new Response(null, { status: r.status }); }
+  if (!r.ok) { console.error('OpenAI respondió', r.status); return new Response(null, { status: r.status }); }
   const d = await r.json();
-  const partes = d?.candidates?.[0]?.content?.parts;
-  const text = Array.isArray(partes) ? partes.map((p: { text?: unknown }) => (typeof p?.text === 'string' ? p.text : '')).join('') : '';
+  const text = typeof d?.choices?.[0]?.message?.content === 'string' ? d.choices[0].message.content : '';
   return { text };
 }
 
@@ -345,7 +346,7 @@ export async function handler(req: Request): Promise<Response> {
   const claveIa = 'ia:' + usuario.id;
   const espera = permitirUso(claveIa, entero('RATE_LIMIT_AI_PER_HOUR', LIMITE_IA_POR_DEFECTO), VENTANA_MS, t);
   if (espera) return responder({ error: 'rate_limited' }, 429, cors, { 'Retry-After': String(espera) });
-  return await enviar(() => llamarGemini(image, prompt, purpose, restringir), cors, () => devolverUso(claveIa, t));
+  return await enviar(() => llamarOpenAI(image, prompt, purpose, restringir), cors, () => devolverUso(claveIa, t));
 }
 
 // Ejecuta la llamada al proveedor y traduce sus fallos a códigos propios (sin devolver su contenido):
