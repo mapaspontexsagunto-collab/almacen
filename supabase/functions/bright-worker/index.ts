@@ -1,6 +1,6 @@
 // Función Edge de Supabase "bright-worker" (Deno). Hace de intermediaria entre la app del almacén y:
 //   - OpenAI (GPT-4o): leer facturas (purpose 'factura') y reconocer fotos de componentes.
-//   - OpenAI Search (gpt-4o-search-preview): buscar fichas técnicas en internet (mode 'web').
+//   - OpenAI web_search (API Responses, gpt-4o): buscar fichas técnicas en internet (mode 'web').
 //
 // ESTE FICHERO ES LA REFERENCIA EN EL REPOSITORIO. La función que responde de verdad vive en el panel de
 // Supabase (Edge Functions) y NO se actualiza sola al hacer commit: hay que desplegarla a mano
@@ -9,12 +9,12 @@
 // ---- Contrato con la app (shared/app.js: aiBuscar y braveSearch) -------------------------------------
 //  POST, JSON, cabeceras Authorization: Bearer <token de la sesión> y apikey.
 //  1) IA:   {"image": "<JPEG/PNG/WEBP en base64, sin 'data:'>", "prompt": "<texto>", "purpose": "factura" | "foto" (opcional)}
-//           -> 200 {"text": "<respuesta de Gemini>"}
+//           -> 200 {"text": "<respuesta de OpenAI>"}
 //  2) Web:  {"mode": "web", "query": "<texto>", "num": 1..10 (opcional, 4 por defecto)}
 //           -> 200 {"results": [{"title", "link", "display", "snippet"}]}
 //  Errores: {"error": "<código>"} con 400/401/403/405/413/415/422/429/502/504. Nunca se devuelve texto de errores
 //  internos ni de los proveedores (podría contener datos o claves).
-//   - 422 upstream_rejected: el proveedor (Gemini/Brave) rechazó la petición con un 4xx distinto de 429. NO es
+//   - 422 upstream_rejected: el proveedor (OpenAI) rechazó la petición con un 4xx distinto de 429. NO es
 //     transitorio: la app no lo reintenta. 502 upstream_error / 504 upstream_timeout sí son transitorios.
 //   - Cuando el proveedor falla (cualquier error) se devuelve el hueco del límite de uso: solo cuentan las llamadas que van bien.
 //
@@ -230,28 +230,39 @@ async function llamarOpenAI(image: string, prompt: string, purpose: string, rest
 async function llamarOpenAI_web(query: string, num: number): Promise<Response | { results: unknown[] }> {
   const clave = entorno('OPENAI_API_KEY');
   if (!clave) { console.error('OPENAI_API_KEY no configurada'); return new Response(null, { status: 502 }); }
-  const r = await fetch('https://api.openai.com/v1/chat/completions', {
+  const r = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + clave },
     body: JSON.stringify({
-      model: 'gpt-4o-search-preview',
-      messages: [{ role: 'user', content: query }],
+      model: 'gpt-4o',
+      tools: [{ type: 'web_search' }],
+      input: query,
     }),
     signal: AbortSignal.timeout(30000),
   });
-  if (!r.ok) { console.error('OpenAI Search respondió', r.status); return new Response(null, { status: r.status }); }
+  if (!r.ok) { console.error('OpenAI Search respondió', r.status, (await r.text()).slice(0, 300)); return new Response(null, { status: r.status }); }
   const d = await r.json();
-  const content: string = typeof d?.choices?.[0]?.message?.content === 'string' ? d.choices[0].message.content : '';
-  const annotations: unknown[] = Array.isArray(d?.choices?.[0]?.message?.annotations) ? d.choices[0].message.annotations : [];
+  let content = '';
+  const annotations: unknown[] = [];
+  for (const o of Array.isArray(d?.output) ? d.output : []) {
+    if (o?.type !== 'message' || !Array.isArray(o.content)) continue;
+    for (const c of o.content) {
+      if (c?.type !== 'output_text' || typeof c.text !== 'string') continue;
+      // los índices de cada cita son relativos a su propio texto: se desplazan al texto acumulado
+      const base = content.length;
+      content += c.text;
+      for (const a of Array.isArray(c.annotations) ? c.annotations : []) {
+        if (a && typeof a === 'object') annotations.push({ ...a, start_index: (a.start_index ?? 0) + base, end_index: (a.end_index ?? 0) + base });
+      }
+    }
+  }
   const vistos = new Set<string>();
   const results: unknown[] = [];
   for (const a of annotations) {
     if (results.length >= num) break;
-    if (!a || typeof a !== 'object') continue;
     const ann = a as Record<string, unknown>;
     if (ann.type !== 'url_citation') continue;
-    const uc = ann.url_citation as Record<string, unknown> | undefined;
-    if (!uc) continue;
+    const uc = (ann.url_citation as Record<string, unknown> | undefined) ?? ann;
     const link = enlaceHttp(uc.url);
     if (!link || vistos.has(link)) continue;
     vistos.add(link);
@@ -260,7 +271,7 @@ async function llamarOpenAI_web(query: string, num: number): Promise<Response | 
     const title = recortar(uc.title, 200) || host;
     const si = typeof ann.start_index === 'number' ? ann.start_index : 0;
     const ei = typeof ann.end_index === 'number' ? ann.end_index : si;
-    const snippet = content.slice(Math.max(0, si - 150), Math.max(ei, si + 150)).replace(/\[?\d+\]?/g, '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    const snippet = content.slice(Math.max(0, si - 150), Math.max(ei, si + 150)).replace(/\(?\[([^\]]*)\]\([^)]*\)\)?/g, '$1').replace(/\[\d+\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 300);
     results.push({ title, link, display: host, snippet });
   }
   return { results };
