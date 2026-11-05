@@ -1933,6 +1933,8 @@ function aiErrorMsg(err){
   const s=err&&err.status;
   if(err&&err.kind==='red') return 'Sin conexión con el servidor. Comprueba tu internet e inténtalo de nuevo.';
   if(s===502||s===503||s===504||s===500) return 'El servidor de IA está saturado o ha dado un error ('+s+'). Espera unos segundos e inténtalo otra vez.';
+  if(s===402) return 'La cuenta de OpenAI no tiene saldo. Hay que añadir crédito en platform.openai.com (Billing).';
+  if(s===424) return 'La clave de OpenAI configurada en Supabase (OPENAI_API_KEY) no es válida.';
   if(s===429||s===529) return 'La IA está recibiendo muchas peticiones ahora mismo ('+s+'). Espera unos segundos y reintenta.';
   if(s===413) return 'La imagen es demasiado grande para la IA. Prueba con una foto más pequeña.';
   if(s===415) return 'Formato de imagen no admitido (solo JPEG, PNG o WEBP).';
@@ -3492,11 +3494,12 @@ async function runWebSearch(){
     {titulo:'B\u00fasqueda general', icono:'\ud83d\udd0d', color:'var(--text2)', extra:''}
   ];
 
-  let huboLimite=false, huboAlgo=false, html='';
+  let huboLimite=false, huboAlgo=false, html='', fallaCuenta=0;
   for(const c of cats){
     const r=await braveSearch((base+c.extra).trim(),4);
     if(r.error){
       if(r.status===429)huboLimite=true;
+      if(r.status===402||r.status===424){fallaCuenta=r.status;break;} // sin saldo o clave mala: las dem\u00e1s fallar\u00edan igual
       continue; // si una categor\u00eda falla, seguimos con las dem\u00e1s
     }
     const its=(r.results||[]);
@@ -3527,6 +3530,7 @@ async function runWebSearch(){
   if(!huboAlgo){
     let msg='No se encontraron resultados en internet.';
     if(huboLimite)msg='Has alcanzado el l\u00edmite de b\u00fasquedas por hora/d\u00eda; int\u00e9ntalo m\u00e1s tarde.';
+    if(fallaCuenta)msg=aiErrorMsg({status:fallaCuenta});
     cont.innerHTML='<div style="font-size:13px;color:var(--text2);">'+esc(msg)+'</div>';
     return;
   }

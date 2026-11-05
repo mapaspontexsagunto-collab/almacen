@@ -12,7 +12,7 @@
 //           -> 200 {"text": "<respuesta de OpenAI>"}
 //  2) Web:  {"mode": "web", "query": "<texto>", "num": 1..10 (opcional, 4 por defecto)}
 //           -> 200 {"results": [{"title", "link", "display", "snippet"}]}
-//  Errores: {"error": "<código>"} con 400/401/403/405/413/415/422/429/502/504. Nunca se devuelve texto de errores
+//  Errores: {"error": "<código>"} con 400/401/402/403/405/413/415/422/424/429/502/504 (402 no_quota: OpenAI sin saldo; 424 upstream_auth: clave de OpenAI no válida). Nunca se devuelve texto de errores
 //  internos ni de los proveedores (podría contener datos o claves).
 //   - 422 upstream_rejected: el proveedor (OpenAI) rechazó la petición con un 4xx distinto de 429. NO es
 //     transitorio: la app no lo reintenta. 502 upstream_error / 504 upstream_timeout sí son transitorios.
@@ -220,10 +220,25 @@ async function llamarOpenAI(image: string, prompt: string, purpose: string, rest
     body: JSON.stringify(cuerpo),
     signal: AbortSignal.timeout(50000),
   });
-  if (!r.ok) { console.error('OpenAI respondió', r.status); return new Response(null, { status: r.status }); }
+  if (!r.ok) return await falloOpenAI(r, 'OpenAI');
   const d = await r.json();
   const text = typeof d?.choices?.[0]?.message?.content === 'string' ? d.choices[0].message.content : '';
   return { text };
+}
+
+// El motivo del fallo de OpenAI solo va a los Logs. "Sin saldo" llega como 429 insufficient_quota y se separa del
+// límite de peticiones (402), igual que la clave no válida (424), para que la app no diga "espera unos segundos".
+async function falloOpenAI(r: Response, etiqueta: string): Promise<Response> {
+  let code = '', msg = '';
+  try {
+    const e = (await r.json())?.error;
+    code = String(e?.code ?? e?.type ?? '');
+    msg = String(e?.message ?? '').slice(0, 200);
+  } catch (_) { /* sin cuerpo JSON */ }
+  console.error(etiqueta + ' respondió', r.status, code, msg);
+  if (r.status === 429 && code === 'insufficient_quota') return new Response(null, { status: 402 });
+  if (r.status === 401) return new Response(null, { status: 424 });
+  return new Response(null, { status: r.status });
 }
 
 // ---------- OpenAI Search ----------
@@ -240,7 +255,7 @@ async function llamarOpenAI_web(query: string, num: number): Promise<Response | 
     }),
     signal: AbortSignal.timeout(30000),
   });
-  if (!r.ok) { console.error('OpenAI Search respondió', r.status, (await r.text()).slice(0, 300)); return new Response(null, { status: r.status }); }
+  if (!r.ok) return await falloOpenAI(r, 'OpenAI Search');
   const d = await r.json();
   let content = '';
   const annotations: unknown[] = [];
@@ -386,6 +401,8 @@ async function enviar(llamada: () => Promise<Response | Record<string, unknown>>
     const r = await llamada();
     if (r instanceof Response) {
       devolver();
+      if (r.status === 402) return responder({ error: 'no_quota' }, 402, cors);
+      if (r.status === 424) return responder({ error: 'upstream_auth' }, 424, cors);
       if (r.status === 429) return responder({ error: 'rate_limited' }, 429, cors, { 'Retry-After': '60' });
       if (r.status >= 400 && r.status < 500) return responder({ error: 'upstream_rejected' }, 422, cors);
       return responder({ error: 'upstream_error' }, 502, cors);
