@@ -226,7 +226,7 @@ async function llamarOpenAI(image: string, prompt: string, purpose: string, rest
   return { text };
 }
 
-// El motivo del fallo de OpenAI solo va a los Logs. "Sin saldo" llega como 429 insufficient_quota y se separa del
+// El motivo del fallo de OpenAI solo va a los Logs. "Sin saldo" llega como 429 insufficient_quota o credit_balance_exhausted y se separa del
 // límite de peticiones (402), igual que la clave no válida (424), para que la app no diga "espera unos segundos".
 async function falloOpenAI(r: Response, etiqueta: string): Promise<Response> {
   let code = '', msg = '';
@@ -236,7 +236,7 @@ async function falloOpenAI(r: Response, etiqueta: string): Promise<Response> {
     msg = String(e?.message ?? '').slice(0, 200);
   } catch (_) { /* sin cuerpo JSON */ }
   console.error(etiqueta + ' respondió', r.status, code, msg);
-  if (r.status === 429 && code === 'insufficient_quota') return new Response(null, { status: 402 });
+  if (r.status === 429 && (code === 'insufficient_quota' || code === 'credit_balance_exhausted')) return new Response(null, { status: 402 });
   if (r.status === 401) return new Response(null, { status: 424 });
   return new Response(null, { status: r.status });
 }
