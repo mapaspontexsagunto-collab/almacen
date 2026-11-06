@@ -13,11 +13,12 @@ const el = new Proxy(function () {}, { get: () => el, apply: () => el, set: () =
 const ctx = vm.createContext({
   console, setTimeout, clearTimeout, Date, JSON, Math, Promise,
   document: { addEventListener: noop, getElementById: () => null, querySelectorAll: () => [], createElement: () => el },
-  window: {}, navigator: {}, location: { reload: noop },
+  window: {}, navigator: {}, location: { reload: noop, search: '' },
   localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = String(v); }, removeItem: k => { delete store[k]; } },
   sessionStorage: { getItem: () => null, setItem: noop, removeItem: noop },
   indexedDB: {}, crypto: {}, fetch: async () => ({ ok: false }), alert: noop, confirm: () => true,
-  Intl, URL, Blob: function () {}, FileReader: function () {}, Image: function () {},
+  Intl, URL, URLSearchParams, Blob: function () {}, FileReader: function () {}, Image: function () {},
+  getComputedStyle: () => ({ zIndex: '' }), // openModal/closeModal leen el z-index de las ventanas abiertas
 });
 // Las declaraciones `let/const` de nivel superior no cuelgan del contexto: las exponemos con una función
 vm.runInContext(src + '\n;globalThis.__t={isSafeId,safePhoto,safeUrl,cleanItem,cleanItems,cleanShelves,cleanAisles,strArr,jsq,esc,cleanText,sessionValid,quienMov,whBarHtml,sesStorageKey,logout,isAdminRole,ensureOnline,GUARDED_FUNCS,asegurarFotos,noPhotoIds,pedirFoto,parseNumES,_invSanitize,_invValidate,assignInvoiceLine,_invoiceAfterSave,_invCleanProvider,invoiceSetProvider};', ctx);
@@ -4728,9 +4729,9 @@ function arranqueAparte({ ls: datos = {}, bases = {}, idb } = {}) {
   const c2 = vm.createContext({
     console, setTimeout, clearTimeout, Date, JSON, Math, Promise,
     document: { addEventListener: (t, f) => { handlers[t] = f; }, getElementById: () => el, querySelectorAll: () => [], createElement: () => ({ style: {} }), body: { appendChild: x => cuerpo.push(x) } },
-    window: {}, navigator: {}, location: { reload: noop }, localStorage: ls, sessionStorage: { getItem: () => null, setItem: noop, removeItem: noop },
+    window: {}, navigator: {}, location: { reload: noop, search: '' }, localStorage: ls, sessionStorage: { getItem: () => null, setItem: noop, removeItem: noop },
     indexedDB: idb || indexedDB, crypto: {}, fetch: async () => ({ ok: false }), alert: noop, confirm: () => true,
-    Intl, URL, Blob: function () {}, FileReader: function () {}, Image: function () {},
+    Intl, URL, URLSearchParams, Blob: function () {}, FileReader: function () {}, Image: function () {},
   });
   vm.runInContext("var WAREHOUSE_CONFIG={key:'electrico',name:'Almacén Eléctrico',icon:'E',db:'almacen_db',useSupabaseAuth:true};var WAREHOUSE_OTHER_CONFIG={key:'mecanico',name:'Almacén Mecánico',icon:'M',db:'almacen_mec_db'};\n" + src, c2);
   return { handlers, log, ls, cuerpo };
@@ -5071,7 +5072,7 @@ test('R7 C-1: aiCatList corta en una coma (nunca a mitad de nombre), no toca lis
 });
 
 test('R7 C-1: runAISearch envía a la IA el prompt con tope (no la lista completa) y aiFillFromPhoto usa el mismo constructor', async () => {
-  const el = { innerHTML: '', style: {}, classList: { add() {}, remove() {} } };
+  const el = { innerHTML: '', style: {}, classList: { add() {}, remove() {} }, remove() {} }; // runAISearch quita el botón 'volver' si existe
   const getAntes = ctx.document.getElementById;
   ctx.document.getElementById = () => el;
   const items0 = ev('items');
