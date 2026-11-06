@@ -5668,7 +5668,7 @@ function renderInvoiceLines(){
     }
     return `<div class="inv-line${l.status!=='pending'?' done':''}" id="inv-line-${i}">
       <div class="inv-line-desc">${esc(l.desc||'Sin descripción')}</div>
-      ${l.ref?`<div class="inv-line-info"><span style="font-family:'DM Mono',monospace;background:var(--surface2);border-radius:4px;padding:1px 5px;">${esc(l.ref)}</span></div>`:''}
+      ${l.ref?`<div class="inv-line-info"><span style="font-family:Arial,sans-serif;background:var(--surface2);border-radius:4px;padding:1px 5px;">${esc(l.ref)}</span></div>`:''}
       ${editHtml}
       ${badgeHtml}
       <div class="inv-line-acts">${actsHtml}</div>
@@ -5902,7 +5902,7 @@ function _showDemoBanner(){
   // El <input> va dentro del <label>: así iOS lo abre nativamente sin .click() programático
   const btnStyle='flex-shrink:0;background:rgba(232,213,163,0.15);border:1px solid rgba(232,213,163,0.45);'
     +'color:#e8d5a3;padding:6px 12px;border-radius:8px;font-size:11px;'
-    +'font-family:DM Sans,sans-serif;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:5px;';
+    +'font-family:Arial,sans-serif;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:5px;';
   b.innerHTML=
     '<div style="display:flex;flex-direction:column;gap:1px;min-width:0;">'
     +'<span style="font-weight:700;font-size:12px;white-space:nowrap;">🎯 MODO DEMO</span>'
@@ -5915,7 +5915,7 @@ function _showDemoBanner(){
     +'background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);color:#e8d5a3;'
     +'padding:8px 14px;'
     +'display:flex;justify-content:space-between;align-items:center;gap:10px;'
-    +'font-family:DM Sans,sans-serif;'
+    +'font-family:Arial,sans-serif;'
     +'border-top:2px solid rgba(232,213,163,0.35);box-shadow:0 -3px 14px rgba(0,0,0,.35);';
   document.body.appendChild(b);
   // Posicionar el banner encima de la bottomnav midiendo su altura real

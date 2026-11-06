@@ -4,7 +4,7 @@
 // Las librerías externas (versiones fijas, con control de integridad) se guardan para poder abrir la app sin conexión.
 
 const PREFIX = 'almacen-mecanico-';
-const CACHE_NAME = PREFIX + 'v12'; // v12: escáner de facturas lee y aplica el descuento de cada línea
+const CACHE_NAME = PREFIX + 'v13'; // v13: apariencia corporativa Newell Brands (Arial, NWL Blue, NWL Gray)
 const LEGACY_CACHE = 'almacen-mec-v2';
 const NETWORK_TIMEOUT_MS = 4000;
 const CDN_HOSTS = ['cdnjs.cloudflare.com', 'cdn.jsdelivr.net'];
