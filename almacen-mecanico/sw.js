@@ -4,7 +4,7 @@
 // Las librerías externas (versiones fijas, con control de integridad) se guardan para poder abrir la app sin conexión.
 
 const PREFIX = 'almacen-mecanico-';
-const CACHE_NAME = PREFIX + 'v13'; // v13: apariencia corporativa Newell Brands (Arial, NWL Blue, NWL Gray)
+const CACHE_NAME = PREFIX + 'v14'; // v14: librerías servidas desde shared/vendor (sin depender de CDN)
 const LEGACY_CACHE = 'almacen-mec-v2';
 const NETWORK_TIMEOUT_MS = 4000;
 const CDN_HOSTS = ['cdnjs.cloudflare.com', 'cdn.jsdelivr.net'];
@@ -16,12 +16,12 @@ const PRECACHE_URLS = [
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png',
-  'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js',
-  'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js'
+  '../shared/vendor/qrcode.min.js',
+  '../shared/vendor/html5-qrcode.min.js',
+  '../shared/vendor/exceljs.min.js',
+  '../shared/vendor/jspdf.umd.min.js',
+  '../shared/vendor/jspdf.plugin.autotable.min.js',
+  '../shared/vendor/supabase.js'
 ];
 
 const PRECACHE_CRITICOS = ['./index.html', '../shared/app.js'];
