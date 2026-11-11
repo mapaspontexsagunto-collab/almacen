@@ -5374,9 +5374,9 @@ const INV_MAX_LINES=200;
 const INV_MAX_QTY=100000;
 const INV_MAX_PRICE=1000000;
 // pdf.js: versión fija con comprobación de integridad (script y worker). Se abre con isEvalSupported:false (CVE-2024-4367).
-const PDFJS_URL='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+const PDFJS_URL='../shared/vendor/pdf.min.js';
 const PDFJS_SRI='sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e';
-const PDFJS_WORKER_URL='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+const PDFJS_WORKER_URL='../shared/vendor/pdf.worker.min.js';
 const PDFJS_WORKER_SRI='sha384-SnzOobpRMLXZ52iJvZm/C0fYw0OQemTXzTjIsdsfMcrCtCEe9qgzxTd3RSklO5x2';
 
 // Número en formato español o inglés ("12,50", "1.234,56", "12.5", "12 €") → número, o NaN si no es válido.
