@@ -1993,7 +1993,7 @@ async function aiFillFromPhoto(e){
   // Reducir la imagen antes de enviarla
   const dataUrl=await new Promise((res,rej)=>{
     const reader=new FileReader();
-    reader.onload=ev=>{const img=new Image();img.onload=()=>{const max=600;let w=img.width,h=img.height;if(w>max||h>max){if(w>h){h=h*max/w;w=max;}else{w=w*max/h;h=max;}}const cv=document.createElement('canvas');cv.width=w;cv.height=h;cv.getContext('2d').drawImage(img,0,0,w,h);res(cv.toDataURL('image/jpeg',0.8));};img.onerror=rej;img.src=ev.target.result;};
+    reader.onload=ev=>{const img=new Image();img.onload=()=>{const max=1280;let w=img.width,h=img.height;if(w>max||h>max){if(w>h){h=h*max/w;w=max;}else{w=w*max/h;h=max;}}const cv=document.createElement('canvas');cv.width=w;cv.height=h;cv.getContext('2d').drawImage(img,0,0,w,h);res(cv.toDataURL('image/jpeg',0.8));};img.onerror=rej;img.src=ev.target.result;};
     reader.onerror=rej;reader.readAsDataURL(file);
   });
   const b64=dataUrl.split(',')[1];
@@ -2038,7 +2038,7 @@ Rellena solo lo que puedas deducir de la foto. Si un dato no se ve, deja la cade
 
 // Lista de categorías para los prompts de foto: como mucho ~1000 caracteres, cortada en una coma (nunca a mitad de nombre).
 // Sin este tope, 500 categorías de 60 caracteres superarían el límite de 2200 de la función (413 "payload_too_large").
-const AI_CATS_MAX=1000;
+const AI_CATS_MAX=900;
 function aiCatList(cats){
   const s=(Array.isArray(cats)?cats:[]).map(c=>String(c)).join(', ');
   if(s.length<=AI_CATS_MAX)return s;
@@ -3292,7 +3292,7 @@ function handleAIPhoto(e){
     const img=new Image();
     img.onerror=()=>toast('⚠ No se pudo cargar la imagen');
     img.onload=()=>{
-      const max=600;let w=img.width,h=img.height;
+      const max=1280;let w=img.width,h=img.height;
       if(w>max||h>max){if(w>h){h=h*max/w;w=max;}else{w=w*max/h;h=max;}}
       const cv=document.createElement('canvas');cv.width=w;cv.height=h;
       const ctx=cv.getContext('2d');
@@ -3332,6 +3332,7 @@ async function runAISearch(dataUrl){
 function aiPromptBusqueda(cats){
   const expertoEn = (WH && WH.key==='mecanico') ? 'material mec\u00e1nico industrial' : 'material el\u00e9ctrico industrial';
   return `Eres un experto en ${expertoEn}. Identifica el componente de la foto.
+Lee primero TODO el texto visible (etiqueta, placa, serigrafía): la marca, el modelo y la referencia mandan sobre la forma. Si reconoces la referencia, identifica el componente por ella.
 
 Categor\u00edas existentes en el almac\u00e9n: ${aiCatList(cats)||'ninguna'}
 
