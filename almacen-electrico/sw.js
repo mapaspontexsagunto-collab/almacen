@@ -4,7 +4,7 @@
 // Las librerías externas (versiones fijas, con control de integridad) se guardan para poder abrir la app sin conexión.
 
 const PREFIX = 'almacen-electrico-';
-const CACHE_NAME = PREFIX + 'v14'; // v14: librerías servidas desde shared/vendor (sin depender de CDN)
+const CACHE_NAME = PREFIX + 'v15'; // v15: foto de la IA a 1280 px y leer primero la etiqueta
 const LEGACY_CACHE = 'almacen-v2';
 const NETWORK_TIMEOUT_MS = 4000;
 const CDN_HOSTS = ['cdnjs.cloudflare.com', 'cdn.jsdelivr.net'];

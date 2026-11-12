@@ -207,7 +207,7 @@ async function llamarOpenAI(image: string, prompt: string, purpose: string, rest
       { role: 'system', content: instruccion },
       { role: 'user', content: [
         { type: 'text', text: prompt },
-        { type: 'image_url', image_url: { url: `data:${mime};base64,${image}`, detail: 'auto' } },
+        { type: 'image_url', image_url: { url: `data:${mime};base64,${image}`, detail: 'high' } },
       ]},
     ],
     max_tokens: TOKENS_SALIDA[purpose] ?? TOKENS_SALIDA.foto,
